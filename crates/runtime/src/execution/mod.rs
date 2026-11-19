@@ -147,7 +147,7 @@ pub trait Executor: Send + Sync {
     /// Inspect a task's native checkpoint before dispatch.
     ///
     /// Executors without native resumable state return
-    /// [`ResumeInspection::Unsupported`].
+    /// `ResumeInspection::Unsupported`.
     async fn inspect_resume(&self, _task: &Task) -> ResumeInspection {
         ResumeInspection::Unsupported
     }

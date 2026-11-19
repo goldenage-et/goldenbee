@@ -2,7 +2,7 @@
 //!
 //! The control plane owns approvals, Worker leases, dispatch intent, request
 //! identity, audit decisions, and stream mappings. Routing and authorization
-//! policy stays in [`crate::gateway`]; these interfaces enforce storage
+//! policy stays in `crate::gateway`; these interfaces enforce storage
 //! invariants only: uniqueness, optimistic revisions, atomic claims, lease
 //! timestamps, and append-only audit.
 //!
