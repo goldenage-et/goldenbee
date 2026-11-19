@@ -579,6 +579,11 @@ impl Composer {
         let outcome = instance::profile(&self.config.instances_root(), instance, &args)
             .map_err(composer_error)?;
         if outcome.status != 0 {
+            eprintln!(
+                "host.profile_failed instance={instance} status={} stderr={}",
+                outcome.status,
+                common::redact(outcome.stderr.trim())
+            );
             return Err(ApiError::new(
                 "host.profile_failed",
                 format!("profile activation failed with status {}", outcome.status),
