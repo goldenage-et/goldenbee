@@ -20,6 +20,7 @@ use common::{
 use super::support::normalize;
 use super::worker_client::probe;
 use super::Gateway;
+use std::time::{Duration, Instant};
 
 impl Gateway {
     /// Configured host composers with their live supported operations.
@@ -135,7 +136,7 @@ impl Gateway {
                 ApiError::new(error.code, error.message).with("instance", request.instance.clone())
             })?;
         let worker = self
-            .reconcile_worker(&request.worker, &request.instance, None)
+            .reconcile_worker_when_ready(&request.worker, &request.instance, None)
             .await?;
         let worker_id = worker.id.clone();
         let mut outcome = outcome;
@@ -223,7 +224,9 @@ impl Gateway {
                 ));
             }
         };
-        let worker = self.reconcile_worker(&worker.id, instance, None).await?;
+        let worker = self
+            .reconcile_worker_when_ready(&worker.id, instance, None)
+            .await?;
         let worker_id = worker.id.clone();
         let mut outcome = outcome;
         outcome.worker = Some(worker);
@@ -289,7 +292,9 @@ impl Gateway {
                 ));
             }
         };
-        let worker = self.reconcile_worker(&worker.id, instance, None).await?;
+        let worker = self
+            .reconcile_worker_when_ready(&worker.id, instance, None)
+            .await?;
         let worker_id = worker.id.clone();
         let mut outcome = outcome;
         outcome.worker = Some(worker);
@@ -407,6 +412,27 @@ impl Gateway {
             updated_at: self.state.registry.now(),
         })?;
         Ok(outcome)
+    }
+
+    /// A freshly started or restarted Worker can announce its listener before
+    /// its health route is ready. Bound the wait so a broken Worker still fails
+    /// with the typed retryable error instead of hanging provisioning.
+    async fn reconcile_worker_when_ready(
+        &self,
+        worker: &str,
+        instance: &str,
+        endpoint: Option<&str>,
+    ) -> Result<AdminWorkerSummary, ApiError> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match self.reconcile_worker(worker, instance, endpoint).await {
+                Ok(worker) => return Ok(worker),
+                Err(error) if error.retryable && Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     async fn reconcile_worker(
