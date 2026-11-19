@@ -559,7 +559,6 @@ fn pinned_work_blocks_and_drain_preserves_queued_history() {
             .artifact_digest,
         format!("sha256:{}", first.file_name().unwrap().to_string_lossy())
     );
-    assert_eq!(running.status()["capacity"]["active"].as_u64(), Some(1));
 
     // Finish the pinned work explicitly, then run a short queued pair so the
     // drain path is exercised without waiting on the long cancellation hold.

@@ -1,5 +1,5 @@
 .NOTPARALLEL:
-.PHONY: setup check build format format-check lint test docs dev dev-status dev-stop start stop worker\:general worker\:general\:build worker\:general\:dev worker\:general\:run worker\:general\:stop
+.PHONY: setup check build format format-check lint test test-fixtures docs dev dev-status dev-stop start stop worker\:general worker\:general\:build worker\:general\:dev worker\:general\:run worker\:general\:stop
 
 # `make start gateway`, `make start gb-client`, `make start worker general`
 START_ARGS := $(filter-out start,$(MAKECMDGOALS))
@@ -33,9 +33,12 @@ format-check:
 lint:
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-test:
+test: test-fixtures
 	cargo test --workspace --all-features --locked
 	python3 -m unittest discover -s tests/smoke -v
+
+test-fixtures:
+	cargo build --workspace --bins --locked
 
 docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked

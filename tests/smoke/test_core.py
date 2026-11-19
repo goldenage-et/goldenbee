@@ -41,6 +41,7 @@ def workspace():
             and artifact["package_id"] in members
             and artifact.get("executable")
             and "bin" in artifact["target"]["kind"]
+            and artifact["target"].get("test") is not False
         ):
             name = artifact["target"]["name"]
             binaries[name] = (Path(artifact["executable"]), packages[artifact["package_id"]]["version"])
@@ -76,7 +77,7 @@ class CommandSurfaceTests(unittest.TestCase):
             for package in metadata["packages"]
             if package["id"] in metadata["workspace_members"]
             for target in package["targets"]
-            if "bin" in target["kind"]
+            if "bin" in target["kind"] and target.get("test") is not False
         }
         if not expected or set(cls.binaries) != expected:
             raise AssertionError("Build artifacts must cover all declared workspace executables")

@@ -620,7 +620,9 @@ fn gateway_forwards_the_exact_digest_and_approval_resumes_one_worker_effect() {
 
 #[test]
 fn rejection_and_expiry_block_the_effect_through_the_gateway() {
-    let stack = Stack::start(Some(150));
+    // Keep rejection deterministic: task startup and the decision round trip
+    // can exceed a very short approval TTL under a loaded CI runner.
+    let stack = Stack::start(Some(5_000));
     let rejected = stack.submit("approval-reject", "rejected-target");
     stack.wait_state(&rejected, "waiting_approval");
     let approval = stack.pending(&rejected);
@@ -639,6 +641,8 @@ fn rejection_and_expiry_block_the_effect_through_the_gateway() {
         "rejection blocked the effect"
     );
 
+    // Use a separate short-lived approval for the expiry assertion.
+    let stack = Stack::start(Some(150));
     let expired = stack.submit("approval-expire", "expired-target");
     stack.wait_state(&expired, "waiting_approval");
     let approval = stack.pending(&expired);
