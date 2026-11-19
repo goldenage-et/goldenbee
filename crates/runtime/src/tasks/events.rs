@@ -106,6 +106,7 @@ pub(crate) fn push_event(
     incarnation: &str,
     retention: usize,
     task_id: &str,
+    seq: u64,
     kind: &str,
     payload: Value,
     durable: bool,
@@ -122,7 +123,12 @@ pub(crate) fn push_event(
         .map(|task| task.trace_id.clone())
         .filter(|trace| !trace.is_empty());
     let stream = state.events.entry(task_id.to_string()).or_default();
-    let seq = stream.last().map(|event| event.seq + 1).unwrap_or(1);
+    if stream.iter().any(|stored| stored.seq == seq) {
+        return Err(ApiError::new(
+            "stream.sequence_conflict",
+            "task stream already contains this sequence",
+        ));
+    }
     let event = StreamEvent {
         event_id: new_id("evt"),
         source: source.to_string(),
@@ -136,7 +142,8 @@ pub(crate) fn push_event(
         trace_id,
         at: now(),
     };
-    stream.push(event.clone());
+    let position = stream.partition_point(|stored| stored.seq < seq);
+    stream.insert(position, event.clone());
     if stream.len() > retention.max(1) {
         let remove = stream.len() - retention.max(1);
         stream.drain(0..remove);

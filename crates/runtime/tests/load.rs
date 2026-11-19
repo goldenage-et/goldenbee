@@ -307,7 +307,15 @@ async fn slow_subscriber_bursts_and_stream_slots_expose_bounded_limits() {
     }
     let task = wait_terminal(&runtime, &id).await;
     assert_eq!(task.state, TaskState::Succeeded);
-    assert_eq!(terminal_events, 1);
+    assert_eq!(
+        terminal_events,
+        1,
+        "{:?}",
+        events
+            .iter()
+            .map(|(event, _)| event.kind.as_str())
+            .collect::<Vec<_>>()
+    );
 
     let mut lag_report = WorkloadReport::new(
         "live-event-arrival-lag",

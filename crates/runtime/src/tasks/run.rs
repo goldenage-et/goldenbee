@@ -448,10 +448,16 @@ impl Runtime {
         let incarnation = self.incarnation().to_string();
         let retention = self.config().event_retention.max(1);
         let forced = self.forced_stop();
+        let policy_seq = if policy.is_some() {
+            Some(self.next_seq(task_id).await)
+        } else {
+            None
+        };
+        let terminal_seq = self.next_seq(task_id).await;
         let updated = self
             .store()
             .write(|state_map| {
-                let updated_task = {
+                let (updated_task, changed) = {
                     let task = state_map
                         .tasks
                         .get_mut(task_id)
@@ -460,48 +466,51 @@ impl Runtime {
                     // native attempts become explicit uncertainty. Work that never
                     // started is left exactly as accepted or queued so restart
                     // recovery can make the truthful decision.
-                    if forced && state == TaskState::Cancelled && outcome.error.is_none() {
-                        if matches!(task.state, TaskState::Accepted | TaskState::Queued) {
-                            return Ok((task.clone(), false));
-                        }
-                        if matches!(
+                    let forced_pending =
+                        forced && state == TaskState::Cancelled && outcome.error.is_none();
+                    if forced_pending
+                        && matches!(task.state, TaskState::Accepted | TaskState::Queued)
+                    {
+                        return Ok((task.clone(), None, false));
+                    }
+                    if forced_pending
+                        && matches!(
                             task.state,
                             TaskState::Running | TaskState::WaitingApproval | TaskState::Cancelling
-                        ) {
-                            task.state = if effect_unknown {
-                                TaskState::Unknown
-                            } else {
-                                TaskState::Recovering
-                            };
-                            task.output = None;
-                            task.error = None;
-                            task.uncertainty = uncertainty.clone().or_else(|| {
-                                Some(
-                                    "forced shutdown before the native outcome was confirmed"
-                                        .into(),
-                                )
-                            });
-                            task.updated_at = now();
-                            return Ok((task.clone(), true));
+                        )
+                    {
+                        task.state = if effect_unknown {
+                            TaskState::Unknown
+                        } else {
+                            TaskState::Recovering
+                        };
+                        task.output = None;
+                        task.error = None;
+                        task.uncertainty = uncertainty.clone().or_else(|| {
+                            Some("forced shutdown before the native outcome was confirmed".into())
+                        });
+                    } else {
+                        task.state = state;
+                        task.output = outcome.output.clone();
+                        task.error = failure.clone();
+                        task.uncertainty = uncertainty.clone();
+                        task.usage = outcome.usage.clone();
+                        if let Some(id) = outcome.native_invocation_id.clone() {
+                            task.native_invocation_id = Some(id);
+                        }
+                        if let Some(id) = outcome.native_thread_id.clone() {
+                            task.native_thread_id = Some(id);
+                        }
+                        if let Some(id) = outcome.native_a2a_task_id.clone() {
+                            task.native_a2a_task_id = Some(id);
                         }
                     }
-                    task.state = state;
-                    task.output = outcome.output.clone();
-                    task.error = failure.clone();
-                    task.uncertainty = uncertainty.clone();
-                    task.usage = outcome.usage.clone();
-                    if let Some(id) = outcome.native_invocation_id.clone() {
-                        task.native_invocation_id = Some(id);
-                    }
-                    if let Some(id) = outcome.native_thread_id.clone() {
-                        task.native_thread_id = Some(id);
-                    }
-                    if let Some(id) = outcome.native_a2a_task_id.clone() {
-                        task.native_a2a_task_id = Some(id);
-                    }
                     task.updated_at = now();
-                    task.clone()
+                    (task.clone(), true)
                 };
+                if !changed {
+                    return Ok((updated_task, None, false));
+                }
                 if let Some((kind, payload)) = policy.clone() {
                     crate::tasks::events::push_event(
                         state_map,
@@ -509,36 +518,53 @@ impl Runtime {
                         &incarnation,
                         retention,
                         task_id,
+                        policy_seq.expect("reserved policy sequence"),
                         kind,
                         payload,
                         true,
                     )?;
                 }
-                Ok((updated_task, true))
+                // Commit the terminal projection and its replayable event in
+                // one transaction. A caller that observes a terminal task can
+                // therefore always replay the matching terminal event.
+                let payload = serde_json::json!({
+                    "state": updated_task.state,
+                    "output": updated_task.output,
+                    "error": updated_task.error,
+                    "uncertainty": updated_task.uncertainty,
+                    "usage": updated_task.usage,
+                });
+                let kind = match updated_task.state {
+                    TaskState::Succeeded => "task.succeeded",
+                    TaskState::Cancelled => "task.cancelled",
+                    TaskState::Unknown => "task.unknown",
+                    TaskState::Recovering => "task.recovering",
+                    TaskState::Failed => "task.failed",
+                    _ => "task.updated",
+                };
+                let event = crate::tasks::events::push_event(
+                    state_map,
+                    &source,
+                    &incarnation,
+                    retention,
+                    task_id,
+                    terminal_seq,
+                    kind,
+                    payload,
+                    true,
+                )?;
+                Ok((updated_task, Some(event), true))
             })
             .await;
-        let Ok((task, changed)) = updated else {
+        let Ok((task, event, changed)) = updated else {
             return;
         };
         if !changed {
             return;
         }
-        let payload = serde_json::json!({
-            "state": task.state,
-            "output": task.output,
-            "error": task.error,
-            "uncertainty": task.uncertainty,
-            "usage": task.usage,
-        });
-        let kind = match task.state {
-            TaskState::Succeeded => "task.succeeded",
-            TaskState::Cancelled => "task.cancelled",
-            TaskState::Unknown => "task.unknown",
-            TaskState::Recovering => "task.recovering",
-            TaskState::Failed => "task.failed",
-            _ => "task.updated",
-        };
-        let _ = self.append_event(task_id, kind, payload, true).await;
+        if let Some(event) = event {
+            let _ = self.live_sender().send(event);
+        }
         if task.state == TaskState::Recovering {
             let _ = self
                 .append_event(

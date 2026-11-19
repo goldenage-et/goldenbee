@@ -697,6 +697,10 @@ impl Runtime {
         seq
     }
 
+    pub(crate) async fn forget_seq(&self, task_id: &str) {
+        self.inner.seqs.lock().await.remove(task_id);
+    }
+
     pub(crate) fn live_sender(&self) -> &broadcast::Sender<common::StreamEvent> {
         &self.inner.live
     }

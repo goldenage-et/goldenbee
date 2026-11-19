@@ -163,8 +163,10 @@ impl Runtime {
         let asset_revision = self.config_revision();
         let trace_id = common::trace_id(trace);
         let traffic = if claims.is_some() { "product" } else { "local" };
+        let id = new_id("task");
+        let accepted_seq = self.next_seq(&id).await;
 
-        let (task, replayed) = self
+        let written = self
             .store()
             .write(|state| {
                 if let Some(existing_id) = state.task_index.get(&key) {
@@ -299,7 +301,6 @@ impl Runtime {
                     revision.compaction.as_ref(),
                 )?;
                 let timestamp = now();
-                let id = new_id("task");
                 let task = Task {
                     id: id.clone(),
                     namespace: namespace.clone(),
@@ -347,6 +348,7 @@ impl Runtime {
                     &incarnation,
                     retention,
                     &id,
+                    accepted_seq,
                     "task.accepted",
                     serde_json::json!({
                         "state": "accepted",
@@ -374,7 +376,17 @@ impl Runtime {
                 );
                 Ok((task, false))
             })
-            .await?;
+            .await;
+        let (task, replayed) = match written {
+            Ok((task, replayed)) => (task, replayed),
+            Err(error) => {
+                self.forget_seq(&id).await;
+                return Err(error);
+            }
+        };
+        if replayed {
+            self.forget_seq(&id).await;
+        }
         // Acceptance is durable now; a later drain may proceed.
         drop(admission);
 
