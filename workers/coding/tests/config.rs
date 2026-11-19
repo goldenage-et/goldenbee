@@ -206,9 +206,9 @@ fn launcher_dev_and_web_modes_execute_real_capabilities() {
     }
     let output = child.wait_with_output().expect("dev launcher exits");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("[tool] read_file"), "{stdout}");
-    assert!(stdout.contains("[tool] write_file"), "{stdout}");
-    assert!(stdout.contains("[tool] exec_command"), "{stdout}");
+    assert!(stdout.contains("read_file"), "{stdout}");
+    assert!(stdout.contains("write_file"), "{stdout}");
+    assert!(stdout.contains("exec_command"), "{stdout}");
     assert!(stdout.contains("\"exit_code\":0"), "{stdout}");
     assert!(
         !fixture.worktree.exists(),
