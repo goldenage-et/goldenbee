@@ -309,6 +309,51 @@ fn cli_management_activates_revisions_and_native_execution_uses_them() {
 }
 
 #[test]
+fn identical_profile_create_is_idempotent_for_provision_retries() {
+    let data = tempfile::tempdir().expect("data");
+    let fixture = fixture::write(
+        data.path(),
+        fixture::Options {
+            instance: "profile-retry".into(),
+            token: Some("dev-token".into()),
+            model: "deterministic".into(),
+            principals: Vec::new(),
+            settings: Vec::new(),
+            token_scopes: vec!["*".into()],
+        },
+    );
+
+    create_research(&fixture.config, "PROFILE-RETRY", &[]);
+    create_research(&fixture.config, "PROFILE-RETRY", &[]);
+    let shown = cli_json(&fixture.config, &["profile", "show", "research"]);
+    assert_eq!(shown["active_revision"], 1);
+    assert_eq!(shown["revisions"].as_array().unwrap().len(), 1);
+
+    let conflict = cli(
+        &fixture.config,
+        &[
+            "profile",
+            "create",
+            "research",
+            "--instruction",
+            "PROFILE-CHANGED",
+            "--model",
+            "deterministic",
+            "--composition",
+            "single",
+            "--member",
+            "general",
+            "--capability",
+            "general",
+            "--grant",
+            "task:submit",
+        ],
+    );
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("profile.conflict"));
+}
+
+#[test]
 fn two_instances_activate_different_profiles_without_shared_state() {
     let first_data = tempfile::tempdir().expect("first data");
     let second_data = tempfile::tempdir().expect("second data");

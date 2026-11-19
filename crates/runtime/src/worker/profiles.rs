@@ -7,6 +7,18 @@ use common::{
 };
 use std::collections::BTreeSet;
 
+fn same_profile_revision(left: &ProfileRevision, right: &ProfileRevision) -> bool {
+    fn normalized(revision: &ProfileRevision) -> serde_json::Value {
+        let mut value = serde_json::to_value(revision).unwrap_or(serde_json::Value::Null);
+        if let Some(object) = value.as_object_mut() {
+            object.remove("revision");
+            object.remove("created_at");
+        }
+        value
+    }
+    normalized(left) == normalized(right)
+}
+
 impl Runtime {
     /// Create a profile with revision 1. Creation does not activate it.
     pub async fn create_profile(
@@ -23,10 +35,20 @@ impl Runtime {
         revision.revision = 1;
         revision.created_at = now();
         self.validate_revision(&revision, &Default::default())?;
+        let desired = revision.clone();
         self.store()
-            .write(|state| {
+            .write(move |state| {
                 let key = crate::profile_key(namespace, name);
-                if state.profiles.contains_key(&key) {
+                if let Some(existing) = state.profiles.get(&key) {
+                    // Provision retries can re-run the same create command after
+                    // the profile was committed but before the caller saw the
+                    // acknowledgment. Treat an identical first revision as the
+                    // same operation, while still rejecting a different one.
+                    if existing.revisions.len() == 1
+                        && same_profile_revision(&existing.revisions[0], &desired)
+                    {
+                        return Ok(existing.clone());
+                    }
                     return Err(ApiError::new(
                         "profile.conflict",
                         "profile already exists in this namespace",
