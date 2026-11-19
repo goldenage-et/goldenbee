@@ -167,11 +167,19 @@ fn worker_hook_order_rejection_and_redacted_failures_are_real() {
 
     let accepted = worker.run("general", "hook-normal", "hook-normal");
     assert_eq!(accepted["state"], "succeeded");
-    let events = worker.events(accepted["id"].as_str().unwrap());
-    let after_failure = events
-        .iter()
-        .find(|event| event["kind"] == "hook.after_task_failed")
-        .expect("after-task failure is recorded");
+    let task_id = accepted["id"].as_str().unwrap();
+    let mut after_failure = None;
+    for _ in 0..100 {
+        let events = worker.events(task_id);
+        after_failure = events
+            .into_iter()
+            .find(|event| event["kind"] == "hook.after_task_failed");
+        if after_failure.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let after_failure = after_failure.expect("after-task failure is recorded");
     assert_eq!(after_failure["payload"]["code"], "policy.after_task_failed");
     assert!(!after_failure["payload"]["message"]
         .as_str()
