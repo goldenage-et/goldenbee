@@ -6,10 +6,12 @@ use common::ApiError;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
-/// Bounded client for request/response calls.
+/// Bounded client for request/response calls. Lifecycle provisioning can
+/// legitimately wait for Worker startup and readiness, so the overall bound is
+/// wider than an ordinary management request.
 pub(super) fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(120))
         .build()
         .unwrap_or_default()
 }

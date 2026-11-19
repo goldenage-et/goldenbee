@@ -250,6 +250,9 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn driver_available() -> bool {
+    if std::env::var_os("GOLDENBEE_SKIP_BROWSER_TESTS").is_some() {
+        return false;
+    }
     std::env::var("GOLDENBEE_WEBDRIVER")
         .map(|url| !url.trim().is_empty())
         .unwrap_or(false)

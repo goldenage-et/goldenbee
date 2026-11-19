@@ -34,7 +34,7 @@ lint:
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 test: test-fixtures
-	RUST_MIN_STACK=67108864 RUST_TEST_THREADS=1 cargo test --workspace --all-features --locked
+	RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --workspace --all-features --locked
 	python3 -m unittest discover -s tests/smoke -v
 
 test-fixtures:
