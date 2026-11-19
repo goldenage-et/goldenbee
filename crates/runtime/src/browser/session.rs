@@ -563,7 +563,7 @@ async fn create_entry(
         .page_load_timeout(30)
         .require_explicit_start(true);
     let session = Arc::new(adk_browser::BrowserSession::new(config));
-    match tokio::time::timeout(Duration::from_secs(45), session.start()).await {
+    match tokio::time::timeout(Duration::from_secs(120), session.start()).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             facade.shutdown();
