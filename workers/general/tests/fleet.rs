@@ -185,10 +185,17 @@ fn spawn_announced(mut command: Command) -> (Process, String) {
         .spawn()
         .expect("process starts");
     let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
     let mut line = String::new();
-    BufReader::new(stdout)
+    reader
         .read_line(&mut line)
         .expect("process announces its listener");
+    // Keep draining later startup lines. Dropping the read end after the first
+    // announcement can deliver SIGPIPE to a composer that prints its supported
+    // operations on the next line.
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+    });
     let base = line
         .trim()
         .rsplit_once(' ')
@@ -565,6 +572,17 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
         Some("worker-a")
     );
 
+    let worker_base = format!("http://{worker_addr}");
+    wait_for(
+        || {
+            client()
+                .get(format!("{worker_base}/v1/health"))
+                .send()
+                .map(|response| response.status().is_success())
+                .unwrap_or(false)
+        },
+        "provisioned worker health",
+    );
     let inspected = cli_json(
         &gateway_base,
         ADMIN_TOKEN,
@@ -576,7 +594,6 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
     assert_eq!(inspected["worker"]["reachable"], true);
 
     // The provisioned Worker executes on its host without Gateway help.
-    let worker_base = format!("http://{worker_addr}");
     let standalone = submit(&worker_base, WORKER_A_TOKEN, None, "standalone-1");
     assert_eq!(standalone["state"], "succeeded");
     assert!(
