@@ -71,10 +71,14 @@ fn spawn(config: &Path) -> (Child, String) {
         .spawn()
         .expect("worker serves");
     let stdout = child.stdout.take().expect("stdout is piped");
+    let mut reader = BufReader::new(stdout);
     let mut line = String::new();
-    BufReader::new(stdout)
+    reader
         .read_line(&mut line)
         .expect("listener address is announced");
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+    });
     let base = line
         .split("listening on ")
         .nth(1)

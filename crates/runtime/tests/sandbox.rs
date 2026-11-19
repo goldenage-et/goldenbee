@@ -311,13 +311,16 @@ async fn separate_boundaries_use_independent_identities_and_resource_policies() 
     let first = SandboxPolicy::new(root.path().join("first"))
         .with_identity(65533, 65533)
         .with_limits(runtime::native::sandbox::SandboxLimits {
-            max_processes: 2048,
+            // Keep this above the host user's existing thread count. On a busy
+            // developer machine, RLIMIT_NPROC is evaluated for the real user,
+            // not only for processes inside the new namespace.
+            max_processes: 8192,
             ..Default::default()
         });
     let second = SandboxPolicy::new(root.path().join("second"))
         .with_identity(65534, 65534)
         .with_limits(runtime::native::sandbox::SandboxLimits {
-            max_processes: 4096,
+            max_processes: 16384,
             ..Default::default()
         });
     let first = Sandbox::new(first).unwrap();
@@ -334,23 +337,31 @@ async fn separate_boundaries_use_independent_identities_and_resource_policies() 
 
     assert!(
         first_output.stdout.contains("65533"),
-        "{}",
-        first_output.stdout
+        "stdout={:?} stderr={:?} exit={}",
+        first_output.stdout,
+        first_output.stderr,
+        first_output.exit_code
     );
     assert!(
-        first_output.stdout.contains("2048"),
-        "{}",
-        first_output.stdout
+        first_output.stdout.contains("8192"),
+        "stdout={:?} stderr={:?} exit={}",
+        first_output.stdout,
+        first_output.stderr,
+        first_output.exit_code
     );
     assert!(
         second_output.stdout.contains("65534"),
-        "{}",
-        second_output.stdout
+        "stdout={:?} stderr={:?} exit={}",
+        second_output.stdout,
+        second_output.stderr,
+        second_output.exit_code
     );
     assert!(
-        second_output.stdout.contains("4096"),
-        "{}",
-        second_output.stdout
+        second_output.stdout.contains("16384"),
+        "stdout={:?} stderr={:?} exit={}",
+        second_output.stdout,
+        second_output.stderr,
+        second_output.exit_code
     );
 }
 
