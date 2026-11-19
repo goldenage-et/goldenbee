@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  RUST_MIN_STACK: "16777216"
+  RUST_MIN_STACK: "67108864"
   RUST_TEST_THREADS: "1"
 
 concurrency:
