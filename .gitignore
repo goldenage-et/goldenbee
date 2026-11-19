@@ -1,0 +1,24 @@
+target/
+__pycache__/
+*.py[cod]
+.venv/
+
+.env
+.env.*
+!.env.example
+.goldenbee/
+.opencode/
+.gitnexus/
+.claude/
+CLAUDE.md
+
+# Private planning, evidence, and local agent state
+.scratch/
+docs/evidence/
+
+.DS_Store
+*~
+*.log
+
+# Generated Worker Instance state from local examples
+config/*/state/

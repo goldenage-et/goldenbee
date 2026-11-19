@@ -1,0 +1,45 @@
+[package]
+name = "general"
+description = "General Worker Package composed through shared Goldenbee runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "general"
+path = "src/main.rs"
+
+# Test-support Worker that drives the runtime's protected effect adapter with a
+# real file-backed external ledger. It is not a product capability.
+[[bin]]
+name = "effect-fixture"
+path = "tests/support/effect_fixture.rs"
+test = false
+bench = false
+doc = false
+
+[dependencies]
+common = { path = "../../crates/common" }
+runtime = { path = "../../crates/runtime", features = ["launcher-cli"] }
+adk-rust = { version = "=2.3.0", default-features = false, features = ["agents", "runner", "sessions", "server", "plugin"] }
+axum = "0.8"
+async-trait.workspace = true
+tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+dotenvy = "0.15"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true }
+load-harness = { path = "../../tests/load-harness" }
+install = { path = "../../crates/install" }
+instance = { path = "../../crates/instance" }
+sdk = { path = "../../crates/sdk" }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64.workspace = true
+
+[lints]
+workspace = true

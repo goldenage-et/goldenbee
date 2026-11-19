@@ -1,0 +1,10 @@
+[Unit]
+Description=Goldenbee Worker and Gateway services
+# The target starts the standalone Gateway. Worker instances are enabled
+# separately, so Gateway and Worker processes start independently. There is no
+# Requires= dependency between them.
+Wants=network-online.target goldenbee-gateway.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

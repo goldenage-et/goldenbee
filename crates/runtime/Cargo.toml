@@ -1,0 +1,77 @@
+[package]
+name = "runtime"
+description = "Single-node Goldenbee Worker runtime, native ADK integration, and durable projections"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+# Native ADK graph workflows. Enables the pinned `adk-graph` crate and its
+# SQLite checkpointer. Packages that register no graph leave it disabled so
+# their binaries do not link the graph engine.
+graph = ["adk-rust/graph-sqlite"]
+# Full pinned native ADK Launcher (`adk_cli::Launcher`) for Worker development
+# CLI and web-server modes. The facade selects `adk_cli::Launcher` only when
+# this feature is enabled; otherwise it re-exports the lightweight console
+# launcher from `adk-runner`.
+launcher-cli = ["adk-rust/cli", "dep:adk-cli"]
+
+[dependencies]
+adk-cli = { version = "=2.3.0", default-features = false, optional = true }
+common = { path = "../common" }
+provider-crypto = { path = "../provider-crypto" }
+adk-rust = { version = "=2.3.0", default-features = false, features = ["agents", "runner", "sessions", "openrouter", "ollama", "openai", "skills", "plugin", "server", "a2a"] }
+# Delegate team relationships lower to native AgentTools. The facade's `tools`
+# feature would also add unrelated toolsets, so enable the narrower upstream
+# feature on the pinned agent crate directly.
+adk-agent = { version = "=2.3.0", default-features = false, features = ["team-tools"] }
+# The A2A v1 extension point (`TaskStore`) and its wire types live in
+# a2a-protocol-types. Pin the exact version adk-server 2.3.0 resolves so the
+# adapter implements the same trait and serializes the same wire values.
+a2a-protocol-types = "=0.12.1"
+# Dedicated per-instance task store; sqlx 0.8.6 is already pinned by adk-memory.
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+adk-artifact = "=2.3.0"
+adk-memory = { version = "=2.3.0", default-features = false, features = ["sqlite-memory", "graph-memory"] }
+adk-tool = { version = "=2.3.0", default-features = false, features = ["memory-tools", "mcp", "http-transport"] }
+adk-browser = "=2.3.0"
+url = "2.5"
+tracing = "0.1"
+# The facade disables adk-runner's default features. Worker run-scope plugins
+# are dispatched by the pinned Runner and the native artifact service must be
+# attached to that Runner, so enable both features explicitly.
+adk-runner = { version = "=2.3.0", default-features = false, features = ["plugins", "artifacts", "context-compaction"] }
+# The graph adapter owns the SQLite pool it shares with the pinned native
+# `GraphMemoryService` (`from_pool`) so it can add a provenance table and
+# inspect native valid-time history.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml = "0.8"
+sha2.workspace = true
+hmac.workspace = true
+base64.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+tokio = { workspace = true }
+async-trait.workspace = true
+futures.workspace = true
+axum = "0.8"
+reqwest.workspace = true
+# MCP Streamable HTTP is pinned to reqwest 0.13 by rmcp 3.1. The adapter needs
+# its own client to enforce redirect, TLS, timeout, and DNS-pinning policy that
+# the pinned McpHttpClientBuilder does not expose.
+reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+chrono.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+load-harness = { path = "../../tests/load-harness" }
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "instance"
+description = "On-host Worker instance provisioning and local lifecycle management"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gb-instance"
+path = "src/main.rs"
+
+[dependencies]
+common = { path = "../common" }
+install = { path = "../install" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest.workspace = true
+uuid = { workspace = true }
+toml = "0.8"
+
+[dev-dependencies]
+base64.workspace = true
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

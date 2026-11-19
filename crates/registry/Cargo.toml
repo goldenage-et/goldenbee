@@ -1,0 +1,16 @@
+[package]
+name = "registry"
+description = "Goldenbee Worker release registry client: discovery, publish, and content-addressed download"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

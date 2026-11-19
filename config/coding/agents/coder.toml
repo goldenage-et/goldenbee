@@ -1,0 +1,6 @@
+name = "coder"
+description = "Configured writable developer role"
+model = "deterministic"
+prompt = "developer"
+skills = ["review"]
+tools = ["exec_command"]

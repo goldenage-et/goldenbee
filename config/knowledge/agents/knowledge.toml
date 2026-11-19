@@ -1,0 +1,6 @@
+name = "knowledge"
+description = "Knowledge librarian using the package's native ingestion and citation tools"
+model = "deterministic"
+prompt = "knowledge"
+tools = ["knowledge_ingest", "knowledge_ask", "knowledge_remove"]
+skills = ["citation"]

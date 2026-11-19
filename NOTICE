@@ -1,0 +1,8 @@
+Goldenbee Harness
+Copyright 2026 The Goldenbee Authors
+
+This product includes software developed by the Goldenbee Authors.
+
+The project depends on third-party crates listed in Cargo.lock. Their licenses
+are declared in their own package metadata and do not change the license of
+this repository.

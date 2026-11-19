@@ -1,0 +1,885 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goldenbee.local/schema/gateway-v1.json",
+  "title": "Goldenbee Gateway protocol v1",
+  "description": "Client-facing Gateway envelopes for explicit Worker routing. Worker task payloads reuse schema/worker-v1.json.",
+  "definitions": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable", "recovery"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "recovery": { "type": "string" },
+        "details": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_duration_ms": { "type": "integer", "minimum": 0 },
+        "max_model_calls": { "type": "integer", "minimum": 0 },
+        "max_tool_calls": { "type": "integer", "minimum": 0 },
+        "max_tokens": { "type": "integer", "minimum": 0 },
+        "max_fanout": { "type": "integer", "minimum": 0 },
+        "max_depth": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "capability": {
+      "type": "object",
+      "required": ["id", "kind", "description"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "type": "string", "enum": ["agent", "tool"] },
+        "description": { "type": "string" },
+        "permissions": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "queued",
+        "running",
+        "waiting_approval",
+        "cancelling",
+        "recovering",
+        "unknown",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "connectivity": {
+      "type": "string",
+      "description": "Gateway observation of the last Worker exchange. It is not a task outcome.",
+      "enum": ["unknown", "online", "unreachable"]
+    },
+    "teamMember": {
+      "type": "object",
+      "required": ["worker", "capabilities"],
+      "properties": {
+        "worker": { "type": "string", "minLength": 1 },
+        "role": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "max_depth": { "type": "integer", "minimum": 0, "maximum": 16 },
+        "instance": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "teamSpec": {
+      "type": "object",
+      "required": ["master", "members"],
+      "properties": {
+        "master": { "type": "string", "minLength": 1 },
+        "members": { "type": "array", "items": { "$ref": "#/definitions/teamMember" }, "minItems": 2 },
+        "limits": { "$ref": "#/definitions/limits" },
+        "locality": { "type": "string", "enum": ["local", "remote"] }
+      },
+      "additionalProperties": false
+    },
+    "team": {
+      "type": "object",
+      "required": ["name", "version", "master", "members", "limits", "active"],
+      "properties": {
+        "namespace": { "type": "string" },
+        "name": { "type": "string" },
+        "version": { "type": "integer", "minimum": 1 },
+        "master": { "type": "string" },
+        "members": { "type": "array", "items": { "$ref": "#/definitions/teamMember" } },
+        "limits": { "$ref": "#/definitions/limits" },
+        "locality": { "type": "string", "enum": ["local", "remote"] },
+        "active": { "type": "boolean" },
+        "created_at": { "type": "integer" },
+        "updated_at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "createTeamRequest": {
+      "type": "object",
+      "required": ["name", "master", "members"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "master": { "type": "string", "minLength": 1 },
+        "members": { "type": "array", "items": { "$ref": "#/definitions/teamMember" }, "minItems": 2 },
+        "limits": { "$ref": "#/definitions/limits" },
+        "locality": { "type": "string", "enum": ["local", "remote"] }
+      },
+      "additionalProperties": false
+    },
+    "updateTeamRequest": {
+      "type": "object",
+      "required": ["master", "members"],
+      "properties": {
+        "expected_version": { "type": "integer", "minimum": 1 },
+        "master": { "type": "string", "minLength": 1 },
+        "members": { "type": "array", "items": { "$ref": "#/definitions/teamMember" }, "minItems": 2 },
+        "limits": { "$ref": "#/definitions/limits" },
+        "locality": { "type": "string", "enum": ["local", "remote"] }
+      },
+      "additionalProperties": false
+    },
+    "teamVersionRequest": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "contextCompaction": {
+      "type": "object",
+      "required": ["strategy", "context_budget", "preserve_recent", "max_retries"],
+      "properties": {
+        "strategy": { "type": "string", "enum": ["truncation"] },
+        "context_budget": { "type": "integer", "minimum": 0 },
+        "preserve_recent": { "type": "integer", "minimum": 0 },
+        "max_retries": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "profileRevision": {
+      "type": "object",
+      "required": ["revision", "instruction", "model", "created_at"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "instruction": { "type": "string", "maxLength": 100000 },
+        "model": { "type": "string", "minLength": 1 },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "grants": { "type": "array", "items": { "type": "string" } },
+        "restrictions": { "type": "array", "items": { "type": "string" } },
+        "composition": { "type": "string" },
+        "members": { "type": "array", "items": { "type": "string" } },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "mcp": { "type": "array", "items": { "type": "string" } },
+        "workflow": { "type": "string" },
+        "limits": { "$ref": "#/definitions/limits" },
+        "compaction": { "$ref": "#/definitions/contextCompaction" },
+        "secret_refs": { "type": "array", "items": { "type": "string" } },
+        "created_at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "required": ["name", "active_revision", "revisions"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "active_revision": { "type": "integer", "minimum": 0 },
+        "revisions": { "type": "array", "items": { "$ref": "#/definitions/profileRevision" } }
+      },
+      "additionalProperties": false
+    },
+    "createProfileRequest": {
+      "type": "object",
+      "required": ["name", "revision"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "revision": { "$ref": "#/definitions/profileRevision" }
+      },
+      "additionalProperties": false
+    },
+    "reviseProfileRequest": {
+      "type": "object",
+      "required": ["expected_revision", "revision"],
+      "properties": {
+        "expected_revision": { "type": "integer", "minimum": 1 },
+        "revision": { "$ref": "#/definitions/profileRevision" }
+      },
+      "additionalProperties": false
+    },
+    "profileVersionRequest": {
+      "type": "object",
+      "properties": {
+        "revision": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "deletedProfile": {
+      "type": "object",
+      "required": ["deleted"],
+      "properties": {
+        "deleted": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "submitRequest": {
+      "type": "object",
+      "required": ["agent", "session_id", "input", "idempotency_key"],
+      "properties": {
+        "worker": { "type": "string", "minLength": 1 },
+        "agent": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "input": { "type": "string" },
+        "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "profile": { "type": "string" },
+        "team": { "type": "string" },
+        "team_version": { "type": "integer", "minimum": 1 },
+        "limits": { "$ref": "#/definitions/limits" }
+      },
+      "anyOf": [
+        { "required": ["worker"] },
+        { "required": ["team"] }
+      ],
+      "additionalProperties": false
+    },
+    "submitResponse": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "worker",
+        "worker_instance",
+        "agent",
+        "profile",
+        "state",
+        "replayed"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Stable Gateway external execution identity. It is reused for every retry of the same caller-scoped idempotency key."
+        },
+        "worker": { "type": "string" },
+        "worker_instance": { "type": "string" },
+        "worker_incarnation": { "type": "string" },
+        "agent": { "type": "string" },
+        "profile": { "type": "string" },
+        "state": { "$ref": "#/definitions/state" },
+        "replayed": { "type": "boolean" },
+        "team_version": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "workerSummary": {
+      "type": "object",
+      "required": [
+        "id", "endpoint", "instance", "package", "version", "capabilities",
+        "reachable", "declared_capabilities", "approved_capabilities", "protocol", "incarnation",
+        "incarnations", "locality", "capacity", "lease_expires_at",
+        "renewed_at", "status"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "instance": { "type": "string" },
+        "package": { "type": "string" },
+        "version": { "type": "string" },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/capability" }
+        },
+        "declared_capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/capability" }
+        },
+        "approved_capabilities": { "type": "array", "items": { "type": "string" } },
+        "protocol": { "type": "string" },
+        "incarnation": { "type": "string" },
+        "incarnations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/incarnation" }
+        },
+        "locality": { "type": "string", "enum": ["local", "remote"] },
+        "capacity": { "$ref": "#/definitions/capacity" },
+        "lease_expires_at": { "type": "integer" },
+        "renewed_at": { "type": "integer" },
+        "status": {
+          "type": "string",
+          "enum": ["approved", "registered", "unreachable", "disabled", "decommissioned"]
+        },
+        "reachable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "adminWorkerSummary": {
+      "type": "object",
+      "required": [
+        "id", "endpoint", "instance", "package", "approved_capabilities",
+        "declared_capabilities", "enabled", "revision", "source", "status",
+        "reachable", "control_token_set", "incarnation", "incarnations",
+        "locality", "lease_expires_at", "renewed_at", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "instance": { "type": "string" },
+        "package": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "approved_capabilities": { "type": "array", "items": { "type": "string" } },
+        "declared_capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/capability" }
+        },
+        "enabled": { "type": "boolean" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "source": { "type": "string", "enum": ["config", "runtime"] },
+        "status": {
+          "type": "string",
+          "enum": ["approved", "registered", "unreachable", "disabled", "decommissioned"]
+        },
+        "reachable": { "type": "boolean" },
+        "control_token_set": { "type": "boolean" },
+        "incarnation": { "type": "string" },
+        "incarnations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/incarnation" }
+        },
+        "locality": { "type": "string", "enum": ["local", "remote"] },
+        "lease_expires_at": { "type": "integer" },
+        "renewed_at": { "type": "integer" },
+        "created_at": { "type": "integer" },
+        "updated_at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "adminAddRequest": {
+      "type": "object",
+      "required": ["id", "endpoint", "idempotency_key"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "endpoint": { "type": "string" },
+        "instance": { "type": "string" },
+        "package": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "control_token": {
+          "type": "string",
+          "description": "Optional input. When omitted the Gateway generates a token and returns it exactly once."
+        },
+        "preflight": { "type": "boolean", "default": true },
+        "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "adminAddResponse": {
+      "type": "object",
+      "required": ["worker"],
+      "properties": {
+        "worker": { "$ref": "#/definitions/adminWorkerSummary" },
+        "control_token": {
+          "type": "string",
+          "description": "Generated token. Present only in the response that created the approval; never shown again."
+        }
+      },
+      "additionalProperties": false
+    },
+    "adminUpdateRequest": {
+      "type": "object",
+      "required": ["revision"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 1 },
+        "endpoint": { "type": "string" },
+        "instance": { "type": "string" },
+        "package": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "capacity": {
+      "type": "object",
+      "required": ["active", "limit", "queued", "queue_limit"],
+      "properties": {
+        "active": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 0 },
+        "queued": { "type": "integer", "minimum": 0 },
+        "queue_limit": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "incarnation": {
+      "type": "object",
+      "required": ["incarnation", "first_seen_at", "last_seen_at"],
+      "properties": {
+        "incarnation": { "type": "string" },
+        "first_seen_at": { "type": "integer" },
+        "last_seen_at": { "type": "integer" },
+        "superseded_at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "registrationRequest": {
+      "type": "object",
+      "required": ["endpoint", "incarnation"],
+      "properties": {
+        "endpoint": { "type": "string" },
+        "incarnation": { "type": "string" },
+        "capacity": { "$ref": "#/definitions/capacity" }
+      },
+      "additionalProperties": false
+    },
+    "leaseRequest": {
+      "type": "object",
+      "required": ["incarnation"],
+      "properties": {
+        "incarnation": { "type": "string" },
+        "capacity": { "$ref": "#/definitions/capacity" }
+      },
+      "additionalProperties": false
+    },
+    "workerLease": {
+      "type": "object",
+      "required": [
+        "worker", "instance", "endpoint", "incarnation", "package", "version",
+        "protocol", "capabilities", "declared_capabilities", "approved_capabilities", "capacity",
+        "lease_expires_at", "renewed_at", "status", "incarnations"
+      ],
+      "properties": {
+        "worker": { "type": "string" },
+        "instance": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "incarnation": { "type": "string" },
+        "package": { "type": "string" },
+        "version": { "type": "string" },
+        "protocol": { "type": "string" },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/capability" }
+        },
+        "declared_capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/capability" }
+        },
+        "approved_capabilities": { "type": "array", "items": { "type": "string" } },
+        "capacity": { "$ref": "#/definitions/capacity" },
+        "lease_expires_at": { "type": "integer" },
+        "renewed_at": { "type": "integer" },
+        "status": {
+          "type": "string",
+          "enum": ["approved", "registered", "unreachable", "disabled", "decommissioned"]
+        },
+        "incarnations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/incarnation" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "auditEntry": {
+      "type": "object",
+      "required": ["at", "action", "worker", "principal", "outcome", "detail"],
+      "properties": {
+        "at": { "type": "integer" },
+        "action": { "type": "string" },
+        "worker": { "type": "string" },
+        "principal": { "type": "string" },
+        "outcome": { "type": "string", "enum": ["accepted", "denied"] },
+        "detail": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "health": {
+      "type": "object",
+      "required": ["status", "workers", "reachable"],
+      "properties": {
+        "status": { "type": "string" },
+        "workers": { "type": "integer", "minimum": 0 },
+        "reachable": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "id", "task_id", "native_invocation_id", "attempt", "version",
+        "namespace", "owner", "name", "content_type", "size", "digest",
+        "finalized", "created_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Opaque artifact identity. Never a filesystem path or URL."
+        },
+        "task_id": { "type": "string", "description": "Worker task identity that produced this immutable version." },
+        "native_invocation_id": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "version": { "type": "integer", "minimum": 1 },
+        "namespace": { "type": "string" },
+        "owner": { "type": "string" },
+        "name": { "type": "string" },
+        "content_type": { "type": "string" },
+        "size": { "type": "integer", "minimum": 0 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "finalized": { "type": "boolean" },
+        "created_at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["event_id", "source", "incarnation", "stream_id", "seq", "schema_version", "kind", "durable", "payload", "at"],
+      "properties": {
+        "event_id": { "type": "string" },
+        "source": { "type": "string" },
+        "incarnation": { "type": "string" },
+        "stream_id": { "type": "string" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "schema_version": { "type": "integer", "minimum": 1 },
+        "kind": { "type": "string" },
+        "durable": { "type": "boolean" },
+        "payload": true,
+        "trace_id": { "type": "string" },
+        "at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "eventPage": {
+      "type": "object",
+      "required": ["stream_id", "events", "next_seq", "oldest_seq", "cursor_expired"],
+      "properties": {
+        "stream_id": { "type": "string" },
+        "events": { "type": "array", "items": { "$ref": "#/definitions/event" } },
+        "next_seq": { "type": "integer", "minimum": 0 },
+        "oldest_seq": { "type": "integer", "minimum": 0 },
+        "cursor_expired": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "approval": {
+      "type": "object",
+      "required": ["id", "task_id", "namespace", "operation", "target", "digest", "risk", "requested_by", "expires_at", "status", "created_at"],
+      "properties": {
+        "id": { "type": "string" },
+        "task_id": { "type": "string", "description": "Worker task handle; the Gateway wrapper carries the external execution id." },
+        "namespace": { "type": "string" },
+        "operation": { "type": "string" },
+        "target": { "type": "string" },
+        "digest": { "type": "string", "description": "Canonical exact-operation digest. A decision must carry this value unchanged." },
+        "risk": { "type": "string" },
+        "requested_by": { "type": "string" },
+        "expires_at": { "type": "integer" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "expired", "revoked"] },
+        "decided_by": { "type": "string" },
+        "decided_at": { "type": "integer" },
+        "receipt": { "type": "string" },
+        "created_at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "gatewayApproval": {
+      "type": "object",
+      "required": ["task_id", "worker", "approval"],
+      "properties": {
+        "task_id": { "type": "string", "description": "Gateway external execution identity." },
+        "worker": { "type": "string" },
+        "approval": { "$ref": "#/definitions/approval" }
+      },
+      "additionalProperties": false
+    },
+    "approvalDecision": {
+      "type": "object",
+      "required": ["decision", "digest"],
+      "properties": {
+        "decision": { "type": "string", "enum": ["approved", "rejected"] },
+        "digest": { "type": "string", "description": "The exact digest the approver observed." }
+      },
+      "additionalProperties": false
+    },
+    "socketTicket": {
+      "type": "object",
+      "required": ["ticket", "expires_at_ms", "path"],
+      "properties": {
+        "ticket": { "type": "string", "description": "Opaque one-use upgrade ticket. Not a bearer credential." },
+        "expires_at_ms": { "type": "integer" },
+        "path": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "socketScope": {
+      "type": "object",
+      "properties": {
+        "worker": { "type": "string" },
+        "task_id": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "socketCommand": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["subscribe", "submit", "cancel", "approval"] },
+        "task_id": { "type": "string" },
+        "after": { "type": "integer", "minimum": 0 },
+        "request": { "$ref": "#/definitions/submitRequest" },
+        "approval_id": { "type": "string" },
+        "decision": { "$ref": "#/definitions/approvalDecision" }
+      },
+      "additionalProperties": false
+    },
+    "socketClientFrame": {
+      "type": "object",
+      "required": ["schema_version", "command_id", "scope", "command"],
+      "properties": {
+        "schema_version": { "type": "integer", "minimum": 1 },
+        "command_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scope": { "$ref": "#/definitions/socketScope" },
+        "command": { "$ref": "#/definitions/socketCommand" }
+      },
+      "additionalProperties": false
+    },
+    "socketServerFrame": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["ack", "error", "event", "heartbeat"] },
+        "command_id": { "type": "string" },
+        "outcome": true,
+        "error": { "$ref": "#/definitions/error" },
+        "task_id": { "type": "string" },
+        "event": { "$ref": "#/definitions/event" },
+        "at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "routedTask": {
+      "type": "object",
+      "required": ["task_id", "worker", "worker_instance", "connectivity", "task"],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Stable Gateway external execution identity."
+        },
+        "worker": { "type": "string" },
+        "worker_instance": { "type": "string" },
+        "worker_incarnation": { "type": "string" },
+        "connectivity": { "$ref": "#/definitions/connectivity" },
+        "task": {
+          "type": "object",
+          "description": "Durable Worker task projection from schema/worker-v1.json. The Worker remains authoritative.",
+          "required": ["id", "namespace", "caller", "agent", "session_id", "state"],
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "hostLimits": {
+      "type": "object",
+      "required": ["max_active", "max_queue", "per_principal"],
+      "properties": {
+        "max_active": { "type": "integer", "minimum": 0 },
+        "max_queue": { "type": "integer", "minimum": 0 },
+        "per_principal": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "hostProfileSelection": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "create": { "type": "boolean" },
+        "instruction": { "type": "string" },
+        "members": { "type": "array", "items": { "type": "string" } },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "grants": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "hostProvisionRequest": {
+      "type": "object",
+      "required": ["operation_id", "instance", "worker", "release_digest"],
+      "properties": {
+        "operation_id": { "type": "string" },
+        "instance": { "type": "string" },
+        "worker": { "type": "string" },
+        "release_digest": { "type": "string", "description": "Verified sha256 digest; never an executable or host path." },
+        "config": { "type": "string", "description": "Opaque host-local configuration selection validated by the adapter." },
+        "workspace": { "type": "string", "description": "Opaque host-local workspace selection validated by the adapter." },
+        "read_only": { "type": "boolean" },
+        "grants": { "type": "array", "items": { "type": "string" } },
+        "limits": { "$ref": "#/definitions/hostLimits" },
+        "secret_refs": { "type": "array", "items": { "type": "string" } },
+        "profile": { "$ref": "#/definitions/hostProfileSelection" },
+        "addr": { "type": "string" },
+        "control_token": { "type": "string", "description": "Narrow Worker control token bound by the Gateway; never a host credential." }
+      },
+      "additionalProperties": false
+    },
+    "hostUpgradeRequest": {
+      "type": "object",
+      "required": ["operation_id", "release_digest"],
+      "properties": {
+        "operation_id": { "type": "string" },
+        "release_digest": { "type": "string" },
+        "authorized_permissions": { "type": "array", "items": { "type": "string" } },
+        "work_policy": { "type": "string", "enum": ["drain", "pin", "migrate"] },
+        "verify_input": { "type": "string" },
+        "addr": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "hostRollbackRequest": {
+      "type": "object",
+      "required": ["operation_id"],
+      "properties": {
+        "operation_id": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "hostCompatibility": {
+      "type": "object",
+      "required": ["target", "protocol", "runtime", "adk", "compatible", "issues"],
+      "properties": {
+        "target": { "type": "string" },
+        "protocol": { "type": "string" },
+        "runtime": { "type": "string" },
+        "adk": { "type": "string" },
+        "compatible": { "type": "boolean" },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "hostTrustView": {
+      "type": "object",
+      "required": ["decision", "reason"],
+      "properties": {
+        "decision": { "type": "string", "enum": ["continue", "restrict", "quarantine"] },
+        "reason": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "hostInstanceView": {
+      "type": "object",
+      "required": ["host", "instance", "package", "version", "artifact_digest", "binary_digest", "signer", "target", "protocol", "lifecycle", "process_health", "task_activity", "limits", "workspace_write", "operator_config", "compatibility"],
+      "properties": {
+        "host": { "type": "string" },
+        "instance": { "type": "string" },
+        "package": { "type": "string" },
+        "version": { "type": "string" },
+        "artifact_digest": { "type": "string" },
+        "binary_digest": { "type": "string" },
+        "signer": { "type": "string" },
+        "target": { "type": "string" },
+        "protocol": { "type": "string" },
+        "lifecycle": { "type": "string" },
+        "process_health": { "type": "string" },
+        "task_activity": { "type": "string" },
+        "runtime_phase": { "type": "string" },
+        "incarnation": { "type": "string" },
+        "active_profile": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "grants": { "type": "array", "items": { "type": "string" } },
+        "limits": { "$ref": "#/definitions/hostLimits" },
+        "workspace_write": { "type": "boolean" },
+        "secret_refs": { "type": "array", "items": { "type": "string" } },
+        "operator_config": { "type": "boolean" },
+        "trust": { "$ref": "#/definitions/hostTrustView" },
+        "compatibility": { "$ref": "#/definitions/hostCompatibility" }
+      },
+      "additionalProperties": false
+    },
+    "hostDescriptor": {
+      "type": "object",
+      "required": ["host", "protocol", "adapter_version"],
+      "properties": {
+        "host": { "type": "string" },
+        "protocol": { "type": "string" },
+        "adapter_version": { "type": "string" },
+        "supported": { "type": "array", "items": { "type": "string", "enum": ["provision", "inspect", "upgrade", "rollback"] } },
+        "reachable": { "type": "boolean" },
+        "error": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "hostInspection": {
+      "type": "object",
+      "required": ["host", "view"],
+      "properties": {
+        "host": { "type": "string" },
+        "view": { "$ref": "#/definitions/hostInstanceView" },
+        "worker": { "$ref": "#/definitions/adminWorkerSummary" }
+      },
+      "additionalProperties": false
+    },
+    "hostFinding": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "hostUpgradeSummary": {
+      "type": "object",
+      "required": ["current_digest", "candidate_digest", "authorization_satisfied", "config_preserved", "schema_status", "work_action"],
+      "properties": {
+        "current_digest": { "type": "string" },
+        "candidate_digest": { "type": "string" },
+        "permissions_added": { "type": "array", "items": { "type": "string" } },
+        "permissions_removed": { "type": "array", "items": { "type": "string" } },
+        "blocked": { "type": "array", "items": { "$ref": "#/definitions/hostFinding" } },
+        "authorization_satisfied": { "type": "boolean" },
+        "config_preserved": { "type": "boolean" },
+        "schema_status": { "type": "string" },
+        "work_action": { "type": "string" },
+        "launcher_modes": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "hostRecoverySummary": {
+      "type": "object",
+      "required": ["binary_restored", "data_restored", "quarantine", "journal_status"],
+      "properties": {
+        "binary_restored": { "type": "boolean" },
+        "data_restored": { "type": "boolean" },
+        "quarantine": { "type": "boolean" },
+        "journal_status": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "hostOperationOutcome": {
+      "type": "object",
+      "required": ["operation_id", "kind", "host", "instance", "status"],
+      "properties": {
+        "operation_id": { "type": "string" },
+        "kind": { "type": "string", "enum": ["provision", "inspect", "upgrade", "rollback"] },
+        "host": { "type": "string" },
+        "instance": { "type": "string" },
+        "status": { "type": "string", "enum": ["succeeded", "recovered", "quarantined"] },
+        "view": { "$ref": "#/definitions/hostInstanceView" },
+        "worker": { "$ref": "#/definitions/adminWorkerSummary" },
+        "upgrade": { "$ref": "#/definitions/hostUpgradeSummary" },
+        "recovery": { "$ref": "#/definitions/hostRecoverySummary" },
+        "replayed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/definitions/submitRequest" },
+    { "$ref": "#/definitions/submitResponse" },
+    { "$ref": "#/definitions/workerSummary" },
+    { "$ref": "#/definitions/health" },
+    { "$ref": "#/definitions/eventPage" },
+    { "$ref": "#/definitions/artifact" },
+    { "type": "array", "items": { "$ref": "#/definitions/artifact" } },
+    { "$ref": "#/definitions/routedTask" },
+    { "$ref": "#/definitions/approvalDecision" },
+    { "$ref": "#/definitions/gatewayApproval" },
+    { "type": "array", "items": { "$ref": "#/definitions/gatewayApproval" } },
+    { "$ref": "#/definitions/registrationRequest" },
+    { "$ref": "#/definitions/leaseRequest" },
+    { "$ref": "#/definitions/workerLease" },
+    { "$ref": "#/definitions/adminWorkerSummary" },
+    { "$ref": "#/definitions/adminAddRequest" },
+    { "$ref": "#/definitions/adminAddResponse" },
+    { "$ref": "#/definitions/adminUpdateRequest" },
+    { "$ref": "#/definitions/auditEntry" },
+    { "$ref": "#/definitions/hostDescriptor" },
+    { "$ref": "#/definitions/hostInspection" },
+    { "$ref": "#/definitions/hostProvisionRequest" },
+    { "$ref": "#/definitions/hostUpgradeRequest" },
+    { "$ref": "#/definitions/hostRollbackRequest" },
+    { "$ref": "#/definitions/hostOperationOutcome" },
+    { "$ref": "#/definitions/socketTicket" },
+    { "$ref": "#/definitions/socketClientFrame" },
+    { "$ref": "#/definitions/socketServerFrame" },
+    { "$ref": "#/definitions/error" }
+  ]
+}

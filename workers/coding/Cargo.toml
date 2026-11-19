@@ -1,0 +1,38 @@
+[package]
+name = "coding"
+description = "Coding Worker Package composed through shared Goldenbee runtime and native ADK CodingAgent"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "coding"
+path = "src/main.rs"
+
+[dependencies]
+common = { path = "../../crates/common" }
+runtime = { path = "../../crates/runtime", features = ["launcher-cli"] }
+adk-rust = { version = "=2.3.0", default-features = false, features = ["agents", "runner", "sessions", "server", "plugin"] }
+adk-agent = { version = "=2.3.0", features = ["coding"] }
+adk-artifact = "=2.3.0"
+adk-devtools = "=2.3.0"
+async-trait.workspace = true
+base64.workspace = true
+dotenvy = "0.15"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true }
+install = { path = "../../crates/install" }
+instance = { path = "../../crates/instance" }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[lints]
+workspace = true

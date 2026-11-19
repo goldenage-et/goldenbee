@@ -1,0 +1,46 @@
+[Unit]
+Description=Goldenbee Gateway
+Wants=network-online.target
+After=network-online.target
+# Bounded restart policy. Worker processes are separate units and are never
+# started or stopped by this service.
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=goldenbee
+Group=goldenbee
+# Secrets live in a root-owned file with mode 0600; never on ExecStart.
+EnvironmentFile=/etc/goldenbee/gateway.env
+Environment=HOME=/var/lib/goldenbee/gateway
+WorkingDirectory=/var/lib/goldenbee/gateway
+ExecStart=/usr/local/bin/gb-gateway serve --config /etc/goldenbee/gateway.json
+Restart=on-failure
+RestartSec=5s
+# Gives in-flight HTTP requests time to finish before systemd escalates. The
+# Gateway has no admission drain; Worker work drains in its own unit. SIGTERM is
+# the supported stop signal.
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+UMask=0077
+StateDirectory=goldenbee/gateway
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/goldenbee/gateway
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Loopback operator listeners and Worker HTTP/SSE; DNS uses AF_INET/AF_INET6.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=goldenbee.target

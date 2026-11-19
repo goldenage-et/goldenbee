@@ -1,0 +1,35 @@
+# Coding Worker example configuration
+#
+# The repository below is operator-owned. Create it before starting:
+#
+#   mkdir -p .goldenbee/scratch/coding/workspace/repo
+#   git -C .goldenbee/scratch/coding/workspace/repo init
+#   git -C .goldenbee/scratch/coding/workspace/repo commit --allow-empty -m fixture
+#
+# Relative paths resolve against this file's directory.
+instance = "coding-a"
+namespace = "local"
+default_agent = "coder"
+token = "local-dev-token"
+token_scopes = ["*"]
+addr = "127.0.0.1:8099"
+
+[paths]
+agents = "coding/agents"
+prompts = "coding/prompts"
+skills = "coding/skills"
+
+[storage]
+directory = "coding/state"
+
+[settings]
+workspace_root = "../.goldenbee/scratch/coding/workspace"
+repo = "repo"
+base_ref = "HEAD"
+checks = "sh tests/check.sh, sh tests/lint.sh"
+developer_model = "deterministic"
+reviewer_model = "deterministic"
+build_parallelism = "1"
+max_build_seconds = "120"
+max_output_bytes = "262144"
+max_memory_bytes = "1073741824"

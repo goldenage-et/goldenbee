@@ -1,0 +1,31 @@
+//! Native graph workflow Worker Package executable.
+
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    let _ = dotenvy::dotenv();
+    let worker = match graph::worker() {
+        Ok(worker) => worker,
+        Err(error) => {
+            eprintln!("graph: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("graph: runtime could not start: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    match runtime.block_on(worker.run()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("graph: {}: {}", error.code, common::redact(&error.message));
+            ExitCode::from(if error.code.starts_with("cli.") { 2 } else { 1 })
+        }
+    }
+}

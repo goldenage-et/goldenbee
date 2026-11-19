@@ -1,0 +1,6 @@
+name = "general"
+description = "General purpose native ADK agent"
+model = "deterministic"
+prompt = "general"
+skills = ["tone"]
+tools = ["exec_command", "save_artifact", "remember_memory"]

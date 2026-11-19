@@ -1,0 +1,4 @@
+name = "echo"
+description = "Deterministic native ADK echo agent"
+model = "deterministic"
+prompt = "echo"

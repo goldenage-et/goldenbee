@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goldenbee.local/schema/worker-v1.json",
+  "title": "Goldenbee Worker protocol v1",
+  "description": "Harness management routes exposed by every Worker Package alongside native ADK serving.",
+  "definitions": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable", "recovery"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "recovery": { "type": "string" },
+        "details": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_duration_ms": { "type": "integer", "minimum": 0 },
+        "max_model_calls": { "type": "integer", "minimum": 0 },
+        "max_tool_calls": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "contextCompaction": {
+      "type": "object",
+      "required": ["strategy", "context_budget", "preserve_recent", "max_retries"],
+      "properties": {
+        "strategy": { "type": "string", "enum": ["truncation"] },
+        "context_budget": { "type": "integer", "minimum": 0 },
+        "preserve_recent": { "type": "integer", "minimum": 0 },
+        "max_retries": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "profileRevision": {
+      "type": "object",
+      "required": ["revision", "instruction", "model", "created_at"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "instruction": { "type": "string", "maxLength": 100000 },
+        "model": { "type": "string", "minLength": 1 },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "grants": { "type": "array", "items": { "type": "string" } },
+        "restrictions": { "type": "array", "items": { "type": "string" } },
+        "composition": { "type": "string" },
+        "members": { "type": "array", "items": { "type": "string" } },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "mcp": { "type": "array", "items": { "type": "string" } },
+        "workflow": { "type": "string" },
+        "limits": { "$ref": "#/definitions/limits" },
+        "compaction": { "$ref": "#/definitions/contextCompaction" },
+        "secret_refs": { "type": "array", "items": { "type": "string" } },
+        "created_at": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "required": ["name", "active_revision", "revisions"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "active_revision": { "type": "integer", "minimum": 0 },
+        "revisions": { "type": "array", "items": { "$ref": "#/definitions/profileRevision" } }
+      },
+      "additionalProperties": false
+    },
+    "createProfileRequest": {
+      "type": "object",
+      "required": ["name", "revision"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "revision": { "$ref": "#/definitions/profileRevision" }
+      },
+      "additionalProperties": false
+    },
+    "reviseProfileRequest": {
+      "type": "object",
+      "required": ["expected_revision", "revision"],
+      "properties": {
+        "expected_revision": { "type": "integer", "minimum": 1 },
+        "revision": { "$ref": "#/definitions/profileRevision" }
+      },
+      "additionalProperties": false
+    },
+    "profileVersionRequest": {
+      "type": "object",
+      "properties": {
+        "revision": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "deletedProfile": {
+      "type": "object",
+      "required": ["deleted"],
+      "properties": {
+        "deleted": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "submitTaskRequest": {
+      "type": "object",
+      "required": ["agent", "session_id", "input", "idempotency_key"],
+      "properties": {
+        "namespace": { "type": "string" },
+        "agent": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "input": { "type": "string" },
+        "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "profile": { "type": "string" },
+        "team": { "type": "string" },
+        "worker": { "type": "string" },
+        "limits": { "$ref": "#/definitions/limits" }
+      }
+    },
+    "submitTaskResponse": {
+      "type": "object",
+      "required": ["task_id", "state", "replayed", "unknown_submission", "agent", "profile"],
+      "properties": {
+        "task_id": { "type": "string" },
+        "state": {
+          "enum": ["accepted", "queued", "running", "cancelling", "succeeded", "failed", "cancelled", "unknown", "recovering", "input_required", "paused"]
+        },
+        "replayed": { "type": "boolean" },
+        "unknown_submission": { "type": "boolean" },
+        "agent": { "type": "string" },
+        "profile": { "type": "string" },
+        "team_version": { "type": "integer" }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "namespace", "caller", "agent", "session_id", "state", "attempt"],
+      "properties": {
+        "id": { "type": "string" },
+        "namespace": { "type": "string" },
+        "caller": { "type": "string" },
+        "agent": { "type": "string" },
+        "session_id": { "type": "string" },
+        "state": { "type": "string" },
+        "attempt": { "type": "integer" },
+        "profile_revision": { "type": "integer", "minimum": 1 },
+        "asset_revision": { "type": "integer", "minimum": 1 },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "traffic": { "type": "string", "enum": ["local", "product"] },
+        "resolved_model": {
+          "type": ["object", "null"],
+          "required": ["provider", "adapter", "model", "local", "residency", "profile_revision"],
+          "properties": {
+            "provider": { "type": "string" },
+            "adapter": { "type": "string" },
+            "model": { "type": "string" },
+            "local": { "type": "boolean" },
+            "residency": { "type": "string" },
+            "endpoint": { "type": ["string", "null"] },
+            "credential": { "type": ["string", "null"] },
+            "profile_revision": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "output": { "type": ["string", "null"] },
+        "error": { "$ref": "#/definitions/error" },
+        "uncertainty": { "type": ["string", "null"] },
+        "native_invocation_id": { "type": ["string", "null"] },
+        "team": { "type": "string" },
+        "team_version": { "type": "integer", "minimum": 0 },
+        "team_roster": { "type": ["object", "null"] },
+        "scopes": { "type": "array", "items": { "type": "string" } },
+        "delegation_path": { "type": "array", "items": { "type": "string" } },
+        "authority_expires_at": { "type": ["integer", "null"] },
+        "usage": { "type": "object" }
+      }
+    },
+    "streamEvent": {
+      "type": "object",
+      "required": ["event_id", "source", "incarnation", "stream_id", "seq", "schema_version", "kind", "durable"],
+      "properties": {
+        "event_id": { "type": "string" },
+        "source": { "type": "string" },
+        "incarnation": { "type": "string" },
+        "stream_id": { "type": "string" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "schema_version": { "type": "integer" },
+        "kind": { "type": "string" },
+        "durable": { "type": "boolean" },
+        "payload": {},
+        "trace_id": { "type": ["string", "null"] },
+        "at": { "type": "integer" }
+      }
+    },
+    "streamPage": {
+      "type": "object",
+      "required": ["stream_id", "events", "next_seq", "oldest_seq", "cursor_expired"],
+      "properties": {
+        "stream_id": { "type": "string" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/streamEvent" }
+        },
+        "next_seq": { "type": "integer" },
+        "oldest_seq": { "type": "integer" },
+        "cursor_expired": { "type": "boolean" }
+      }
+    },
+    "planCriterionEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "const": "output_contains" },
+            "text": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "artifact_digest" },
+            "artifact_id": { "type": "string" },
+            "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "createPlanRequest": {
+      "type": "object",
+      "required": ["parent_task_id", "objective", "criteria", "children"],
+      "properties": {
+        "parent_task_id": { "type": "string", "minLength": 1 },
+        "objective": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string" },
+        "limits": { "$ref": "#/definitions/limits" },
+        "criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "child", "evidence"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "description": { "type": "string" },
+              "child": { "type": "string", "minLength": 1 },
+              "evidence": { "$ref": "#/definitions/planCriterionEvidence" }
+            }
+          }
+        },
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["id", "capability", "objective"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "member": { "type": "string" },
+              "peer": { "type": "string" },
+              "capability": { "type": "string", "minLength": 1 },
+              "objective": { "type": "string", "minLength": 1 },
+              "required": { "type": "boolean" },
+              "limits": { "$ref": "#/definitions/limits" }
+            }
+          }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["id", "task_id", "native_invocation_id", "attempt", "version", "namespace", "owner", "name", "content_type", "size", "digest", "finalized", "created_at"],
+      "properties": {
+        "id": { "type": "string" },
+        "task_id": { "type": "string" },
+        "native_invocation_id": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "version": { "type": "integer", "minimum": 1 },
+        "namespace": { "type": "string" },
+        "owner": { "type": "string" },
+        "name": { "type": "string" },
+        "content_type": { "type": "string" },
+        "size": { "type": "integer", "minimum": 0 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "finalized": { "type": "boolean" },
+        "created_at": { "type": "integer" }
+      }
+    },
+    "artifactGrant": {
+      "type": "object",
+      "required": ["artifact_id", "grant", "expires_at"],
+      "properties": {
+        "artifact_id": { "type": "string" },
+        "grant": { "type": "string" },
+        "expires_at": { "type": "integer" }
+      }
+    },
+    "retainedObligation": {
+      "type": "object",
+      "required": ["class", "id", "reason"],
+      "properties": {
+        "class": { "type": "string" },
+        "id": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "blockedStep": {
+      "type": "object",
+      "required": ["store", "code", "message"],
+      "properties": {
+        "store": { "type": "string" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "lifecycleReport": {
+      "type": "object",
+      "required": ["job_id", "resumed", "completed", "removed", "retained", "blocked", "cursor_expiry"],
+      "properties": {
+        "job_id": { "type": "string" },
+        "resumed": { "type": "boolean" },
+        "completed": { "type": "boolean" },
+        "removed": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "retained": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/retainedObligation" }
+        },
+        "blocked": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/blockedStep" }
+        },
+        "cursor_expiry": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["package", "version", "protocol", "runtime", "adk", "instance", "durable_tasks", "a2a_task_storage", "a2a_durable", "artifact_storage", "artifact_transfer", "artifact_max_bytes", "capabilities"],
+      "properties": {
+        "package": { "type": "string" },
+        "version": { "type": "string" },
+        "protocol": { "type": "string" },
+        "runtime": { "type": "string" },
+        "adk": { "type": "string" },
+        "instance": { "type": "string" },
+        "durable_tasks": { "type": "boolean" },
+        "a2a_task_storage": { "type": "string" },
+        "a2a_durable": { "type": "boolean" },
+        "artifact_storage": { "type": "string" },
+        "artifact_transfer": { "type": "string" },
+        "artifact_max_bytes": { "type": "integer", "minimum": 1 },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "kind": { "type": "string" },
+              "description": { "type": "string" },
+              "permissions": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}

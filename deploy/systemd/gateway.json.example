@@ -1,0 +1,32 @@
+{
+  "listen": "127.0.0.1:8080",
+  "data_dir": "/var/lib/goldenbee/gateway",
+  "registry": "/var/lib/goldenbee/gateway/registry.json",
+  "lease_ttl_ms": 30000,
+  "callers": [
+    {
+      "token": "replace-with-a-caller-token",
+      "id": "local-operator",
+      "namespace": "local",
+      "scopes": ["task:submit", "task:read", "task:cancel"],
+      "workers": ["general-a"]
+    },
+    {
+      "token": "replace-with-an-admin-token",
+      "id": "local-admin",
+      "namespace": "local",
+      "scopes": ["admin", "task:read"]
+    }
+  ],
+  "workers": [
+    {
+      "id": "general-a",
+      "endpoint": "http://127.0.0.1:8081",
+      "instance": "worker-replace-with-observed-instance",
+      "package": "general",
+      "capabilities": ["general", "echo"],
+      "control_token": "replace-with-the-worker-control-token",
+      "preflight": true
+    }
+  ]
+}

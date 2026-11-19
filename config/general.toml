@@ -1,0 +1,63 @@
+# Local development example. `token` is a development convenience only.
+instance = "general-local"
+namespace = "local"
+default_agent = "general"
+token = "local-dev-token"
+addr = "127.0.0.1:8080"
+
+# Optional bounded stream settings. Execution is independent of viewers.
+# max_streams = 64
+# stream_buffer = 512
+# stream_keepalive_ms = 15000
+
+[paths]
+agents = "general/agents"
+prompts = "general/prompts"
+skills = "general/skills"
+
+[storage]
+directory = "general/state"
+
+[settings]
+mode = "local"
+
+# Optional logical providers. The built-in `deterministic` and `echo` profiles
+# are local and credential-free. Declare an id here to use another native
+# adapter, then name that id from an agent definition or profile revision.
+# A non-local provider additionally requires top-level `allow_remote = true`.
+# [providers.local-json]
+# adapter = "http-json"
+# model = "local-model"
+# endpoint = "http://127.0.0.1:9000/generate"
+# modalities = ["text"]
+# tool_calling = true
+# local = true
+# residency = "local"
+# context_window = 32768
+# [providers.remote-openai]
+# adapter = "openai-compatible"
+# model = "operator-model"
+# endpoint = "https://provider.example/v1"
+# local = false
+# residency = "remote"
+# credential = "env:PROVIDER_API_KEY"
+
+# Optional Gateway registration and lease heartbeat. Omit this section to run
+# standalone. The control token is a secret and is never committed for real.
+# [gateway]
+# url = "http://127.0.0.1:8088"
+# control_token = "replace-with-the-gateway-issued-token"
+# renew_interval_ms = 15000
+# advertise_url = "http://127.0.0.1:8080"
+
+# Optional explicitly authorized static peer. Both Worker processes must share
+# GOLDENBEE_DELEGATION_SECRET. Non-loopback endpoints require allow_remote and
+# HTTPS. Capabilities are narrowed to the peer's advertised A2A agent skills.
+# [peers.general-b]
+# identity = "general-b"
+# endpoint = "http://127.0.0.1:8081"
+# capabilities = ["general"]
+# token_ttl_ms = 30000
+# max_depth = 1
+# max_fanout = 1
+# limits = { max_duration_ms = 60000, max_depth = 1, max_fanout = 1 }

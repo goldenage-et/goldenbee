@@ -1,0 +1,25 @@
+# Copy to /etc/goldenbee/workers/general-a.toml.
+# Relative paths resolve against this file's directory. The paths below are
+# absolute so the unit stays readable as one deployment description.
+instance = "general-a"
+namespace = "local"
+default_agent = "general"
+token = "replace-with-a-worker-development-token"
+token_scopes = ["*"]
+addr = "127.0.0.1:8081"
+
+[paths]
+agents = "/etc/goldenbee/workers/assets/general-a/agents"
+prompts = "/etc/goldenbee/workers/assets/general-a/prompts"
+skills = "/etc/goldenbee/workers/assets/general-a/skills"
+
+[storage]
+directory = "/var/lib/goldenbee/workers/general-a"
+
+# Optional Gateway registration. The control token is a secret; keep the
+# configuration file root-owned and mode 0600.
+[gateway]
+url = "http://127.0.0.1:8080"
+control_token = "replace-with-the-gateway-issued-token"
+renew_interval_ms = 15000
+advertise_url = "http://127.0.0.1:8081"

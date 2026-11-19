@@ -1,0 +1,5 @@
+name = "auditor"
+description = "Configured read-only reviewer role"
+model = "deterministic"
+prompt = "review"
+skills = ["review"]

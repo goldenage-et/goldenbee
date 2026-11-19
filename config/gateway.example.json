@@ -1,0 +1,42 @@
+{
+  "listen": "127.0.0.1:8080",
+  "data_dir": "gateway-state",
+  "registry": "./gateway-registry.json",
+  "lease_ttl_ms": 30000,
+  "max_streams": 256,
+  "socket": {
+    "max_frame_bytes": 65536,
+    "subscriber_queue": 64,
+    "max_subscriptions": 4,
+    "idle_timeout_ms": 60000,
+    "heartbeat_ms": 20000,
+    "send_timeout_ms": 5000,
+    "ticket_ttl_ms": 30000
+  },
+  "callers": [
+    {
+      "token": "replace-with-a-caller-token",
+      "id": "local-operator",
+      "namespace": "local",
+      "scopes": ["task:submit", "task:read", "task:cancel", "artifact:read"],
+      "workers": ["general-a"]
+    },
+    {
+      "token": "replace-with-an-admin-token",
+      "id": "local-admin",
+      "namespace": "local",
+      "scopes": ["admin", "task:read"]
+    }
+  ],
+  "workers": [
+    {
+      "id": "general-a",
+      "endpoint": "http://127.0.0.1:8081",
+      "instance": "worker-replace-with-observed-instance",
+      "package": "general",
+      "capabilities": ["general", "echo"],
+      "control_token": "replace-with-the-worker-control-token",
+      "preflight": true
+    }
+  ]
+}

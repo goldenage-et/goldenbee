@@ -1,0 +1,20 @@
+[package]
+name = "sdk-client"
+description = "Separately compiled use-case application over the reusable Rust Gateway SDK"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sdk-client"
+path = "src/main.rs"
+
+[dependencies]
+common = { path = "../../crates/common" }
+sdk = { path = "../../crates/sdk" }
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

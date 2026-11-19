@@ -1,0 +1,16 @@
+[package]
+name = "load-harness"
+description = "Reproducible measurement and provenance helpers for Goldenbee load acceptance"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+common = { path = "../../crates/common" }
+chrono.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

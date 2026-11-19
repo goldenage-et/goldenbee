@@ -1,0 +1,47 @@
+[Unit]
+Description=Goldenbee Worker instance %i
+Wants=network-online.target
+After=network-online.target
+# Workers start and restart independently of the Gateway. The Worker heartbeat
+# retries registration when the Gateway is not yet reachable.
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=goldenbee
+Group=goldenbee
+# Secrets are per-instance and root-owned with mode 0600; never on ExecStart.
+EnvironmentFile=/etc/goldenbee/workers/%i.env
+Environment=HOME=/var/lib/goldenbee/workers/%i
+Environment=GOLDENBEE_DATA_DIR=/var/lib/goldenbee/workers/%i
+Environment=GOLDENBEE_SANDBOX_DIR=/var/lib/goldenbee/workers/%i/workspace
+WorkingDirectory=/var/lib/goldenbee/workers/%i
+ExecStart=/usr/local/bin/goldenbee-worker serve --config /etc/goldenbee/workers/%i.toml
+Restart=on-failure
+RestartSec=5s
+# The shared runtime drains admission for up to 10 seconds before shutdown
+# hooks run. This leaves room for hooks and native cleanup before SIGKILL.
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+UMask=0077
+StateDirectory=goldenbee/workers/%i
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/goldenbee/workers/%i
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Worker HTTP/SSE, Gateway registration, provider HTTPS, and DNS.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=goldenbee.target

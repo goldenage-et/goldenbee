@@ -1,0 +1,30 @@
+# Knowledge Worker Package example.
+#
+# Every relative path resolves against this file's directory, not the
+# executable or the current working directory. The packaged executable loads
+# these assets without a rebuild and without a package-specific loader.
+
+instance = "knowledge-dev"
+namespace = "local"
+default_agent = "knowledge"
+token = "dev-token"
+token_scopes = ["*"]
+addr = "127.0.0.1:8081"
+
+[paths]
+agents = "knowledge/agents"
+prompts = "knowledge/prompts"
+skills = "knowledge/skills"
+
+[storage]
+directory = "knowledge/state"
+
+[settings]
+# Authorized source roots. Comma- or newline-separated; the adapter refuses a
+# canonical target outside every root and refuses symlink targets.
+source_roots = "knowledge/sources"
+max_document_bytes = "16777216"
+chunk_size = "512"
+max_chunks = "10000"
+top_k = "5"
+max_top_k = "20"
