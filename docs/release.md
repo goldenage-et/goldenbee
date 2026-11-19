@@ -37,6 +37,21 @@ digest is the immutable release identity; see
 release directory and are bound by the release manifest and signed
 `SHA256SUMS`.
 
+GitHub releases publish target-suffixed operator assets and a separate
+`SHA256SUMS` for the `gb` bootstrap path:
+
+```text
+gb-x86_64-unknown-linux-gnu
+gb-gateway-x86_64-unknown-linux-gnu
+gb-composer-x86_64-unknown-linux-gnu
+gb-client-x86_64-unknown-linux-gnu
+install.sh
+SHA256SUMS
+```
+
+The bootstrap is `install.sh` at the repository root. `gb i` downloads these
+assets and verifies `SHA256SUMS`; `--from` remains available for local installs.
+
 ## Reproducible assembly
 
 `tools/release.sh` accepts already-tested binaries. It never compiles, changes

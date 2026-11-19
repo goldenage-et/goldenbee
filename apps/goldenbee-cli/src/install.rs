@@ -1,5 +1,6 @@
 //! Component installation and local policy generation.
 
+use crate::download::{self, Remote};
 use crate::paths::{release_dir, Paths};
 use serde_json::json;
 use std::fs;
@@ -29,6 +30,12 @@ pub struct InstallOptions {
     pub config_dir: Option<PathBuf>,
     /// State destination override.
     pub data_dir: Option<PathBuf>,
+    /// Release tag or version for remote installs.
+    pub release: Option<String>,
+    /// GitHub repository, `owner/name`.
+    pub repo: Option<String>,
+    /// Release base URL override.
+    pub release_base: Option<String>,
     /// Replace existing binaries and generated config.
     pub force: bool,
     /// Install binaries without generating local configuration.
@@ -76,55 +83,108 @@ fn install_client(paths: &Paths, options: &InstallOptions) -> Result<(), String>
 }
 
 fn copy_component(paths: &Paths, options: &InstallOptions, name: &str) -> Result<(), String> {
-    let source = find_source(name, options.from.as_deref())?;
     let destination = paths.bin.join(name);
-    if source == destination {
-        return Ok(());
-    }
     if destination.exists() && !options.force {
         println!("gb: kept existing {}", destination.display());
         return Ok(());
     }
-    let temporary = destination.with_extension(format!("tmp.{}", std::process::id()));
-    fs::copy(&source, &temporary).map_err(|error| {
-        format!(
-            "gb: cannot copy {} to {}: {error}",
-            source.display(),
-            temporary.display()
-        )
-    })?;
-    set_mode(&temporary, 0o755)?;
-    fs::rename(&temporary, &destination)
-        .map_err(|error| format!("gb: cannot install {}: {error}", destination.display()))?;
+    if let Some(source) = local_source(name, options)? {
+        if source == destination {
+            return Ok(());
+        }
+        let temporary = destination.with_extension(format!("tmp.{}", std::process::id()));
+        fs::copy(&source, &temporary).map_err(|error| {
+            format!(
+                "gb: cannot copy {} to {}: {error}",
+                source.display(),
+                temporary.display()
+            )
+        })?;
+        set_mode(&temporary, 0o755)?;
+        fs::rename(&temporary, &destination)
+            .map_err(|error| format!("gb: cannot install {}: {error}", destination.display()))?;
+    } else {
+        let remote = Remote {
+            repo: options
+                .repo
+                .clone()
+                .or_else(|| std::env::var("GOLDENBEE_REPO").ok())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "goldenage-et/goldenbee".to_string()),
+            tag: release_tag(options.release.as_deref()),
+            base: options
+                .release_base
+                .clone()
+                .or_else(|| std::env::var("GOLDENBEE_RELEASE_BASE").ok())
+                .filter(|value| !value.is_empty()),
+            token: std::env::var("GOLDENBEE_GITHUB_TOKEN")
+                .ok()
+                .filter(|value| !value.is_empty()),
+        };
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            return Err(
+                "gb: remote installs currently support only x86_64-unknown-linux-gnu".to_string(),
+            );
+        }
+        download::install_asset(&remote, &asset_name(name), &destination)?;
+    }
     println!("gb: installed {}", destination.display());
     Ok(())
 }
 
-fn find_source(name: &str, explicit: Option<&Path>) -> Result<PathBuf, String> {
-    let mut candidates = Vec::new();
-    if let Some(directory) = explicit {
-        candidates.push(directory.join(name));
+fn local_source(name: &str, options: &InstallOptions) -> Result<Option<PathBuf>, String> {
+    if let Some(directory) = &options.from {
+        return find_in(directory, name).map(Some).ok_or_else(|| {
+            format!(
+                "gb: {name} or {} was not found under {}",
+                asset_name(name),
+                directory.display()
+            )
+        });
     }
+    if options.release_base.is_some() || std::env::var_os("GOLDENBEE_RELEASE_BASE").is_some() {
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
     if let Some(directory) = release_dir() {
-        candidates.push(directory.join(name));
+        candidates.push(directory);
     }
     if let Ok(current) = std::env::current_exe() {
         if let Some(parent) = current.parent() {
-            candidates.push(parent.join(name));
+            candidates.push(parent.to_path_buf());
         }
     }
     if let Ok(current) = std::env::current_dir() {
-        candidates.push(current.join("target/debug").join(name));
-        candidates.push(current.join("target/release").join(name));
+        candidates.push(current.join("target/debug"));
+        candidates.push(current.join("target/release"));
     }
-    candidates
+    Ok(candidates
         .into_iter()
+        .find_map(|directory| find_in(&directory, name)))
+}
+
+fn find_in(directory: &Path, name: &str) -> Option<PathBuf> {
+    [name.to_string(), asset_name(name)]
+        .into_iter()
+        .map(|candidate| directory.join(candidate))
         .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            format!(
-                "gb: {name} was not found; pass --from <release-dir> or run from a release bundle"
-            )
-        })
+}
+
+fn asset_name(name: &str) -> String {
+    format!("{name}-x86_64-unknown-linux-gnu")
+}
+
+fn release_tag(explicit: Option<&str>) -> String {
+    let value = explicit
+        .map(str::to_string)
+        .or_else(|| std::env::var("GOLDENBEE_VERSION").ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    if value == "latest" || value.starts_with('v') {
+        value
+    } else {
+        format!("v{value}")
+    }
 }
 
 fn install_gateway_config(paths: &Paths, force: bool) -> Result<(), String> {
@@ -273,9 +333,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_component_names_the_install_hint() {
-        let error = find_source("definitely-missing-gb-binary", None).unwrap_err();
-        assert!(error.contains("--from"));
+    fn missing_explicit_component_names_the_directory() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let options = InstallOptions {
+            from: Some(directory.path().to_path_buf()),
+            ..InstallOptions::default()
+        };
+        let error = local_source("gb-gateway", &options).unwrap_err();
+        assert!(error.contains("gb-gateway"));
+        assert!(error.contains(&directory.path().display().to_string()));
+    }
+
+    #[test]
+    fn local_source_accepts_target_suffixed_assets() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("gb-gateway-x86_64-unknown-linux-gnu");
+        fs::write(&path, "binary").expect("asset");
+        let options = InstallOptions {
+            from: Some(directory.path().to_path_buf()),
+            ..InstallOptions::default()
+        };
+        assert_eq!(local_source("gb-gateway", &options).unwrap(), Some(path));
+    }
+
+    #[test]
+    fn release_tags_are_normalized() {
+        assert_eq!(release_tag(Some("0.1.0")), "v0.1.0");
+        assert_eq!(release_tag(Some("v0.1.0")), "v0.1.0");
+        assert_eq!(release_tag(Some("latest")), "latest");
     }
 
     #[test]

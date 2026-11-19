@@ -88,6 +88,9 @@ fn parse_install(args: Vec<String>) -> Result<(Component, InstallOptions), Strin
                 options.config_dir = Some(PathBuf::from(value(&mut args, "--config-dir")?))
             }
             "--data-dir" => options.data_dir = Some(PathBuf::from(value(&mut args, "--data-dir")?)),
+            "--release" => options.release = Some(value(&mut args, "--release")?),
+            "--repo" => options.repo = Some(value(&mut args, "--repo")?),
+            "--release-base" => options.release_base = Some(value(&mut args, "--release-base")?),
             "--force" => options.force = true,
             "--no-config" => options.no_config = true,
             other => return Err(format!("gb: unrecognized install option '{other}'")),
@@ -116,7 +119,7 @@ fn help() {
     println!(
         "Usage: gb <command> [options]\n\n\
          Install components:\n  \
-         i|install gateway [--from <dir>] [--bin-dir <dir>] [--config-dir <dir>] [--data-dir <dir>] [--force] [--no-config]\n  \
+         i|install gateway [--from <dir>] [--release <tag>] [--repo <owner/name>] [--release-base <url>] [--bin-dir <dir>] [--config-dir <dir>] [--data-dir <dir>] [--force] [--no-config]\n  \
          i|install composer [same options]\n  \
          i|install client-cli [same options]\n  \
          i|install all [same options]      install Gateway and composer\n\n\
@@ -124,8 +127,9 @@ fn help() {
          gw|gateway <gateway args...>      run gb-gateway\n  \
          cmp|composer <composer args...>   run gb-composer\n\n\
          With no `--config`, lifecycle commands use the installed default config.\n\
-         Source binaries resolve from --from, GOLDENBEE_RELEASE_DIR, the gb\n\
-         directory, then target/debug or target/release.\n\n\
+         Without --from, installs download from GitHub release assets and verify\n\
+         SHA256SUMS. The default tag matches this gb version. --from keeps local\n\
+         sibling or release-directory installation.\n\n\
          Defaults:\n  \
          binaries  $GOLDENBEE_BIN_DIR or ~/.local/bin\n  \
          config    $GOLDENBEE_CONFIG_DIR or ~/.config/goldenbee\n  \
@@ -173,6 +177,8 @@ mod tests {
             "composer".into(),
             "--from".into(),
             "/release".into(),
+            "--release".into(),
+            "v0.2.0".into(),
             "--force".into(),
         ]) else {
             panic!("expected composer install");
@@ -181,6 +187,7 @@ mod tests {
             options.from.as_deref(),
             Some(std::path::Path::new("/release"))
         );
+        assert_eq!(options.release.as_deref(), Some("v0.2.0"));
         assert!(options.force);
     }
 }

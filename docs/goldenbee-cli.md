@@ -4,6 +4,26 @@
 executables from a release directory and dispatches their existing command
 surfaces. It is not a Client and does not include `gb-client`.
 
+## Bootstrap
+
+Install the bootstrap from GitHub:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh
+```
+
+The script supports Linux `x86_64`, downloads `gb` from the latest GitHub
+release, verifies `SHA256SUMS`, and installs to `~/.local/bin`.
+
+Then install components:
+
+```text
+gb i gateway
+gb i composer
+gb i client-cli
+gb i all
+```
+
 ## Commands
 
 ```text
@@ -51,19 +71,34 @@ The installer writes configuration and `local-token` with mode `0600`.
 Existing binaries and configuration are kept unless `--force` is supplied.
 `--no-config` installs only the executable.
 
-Source lookup order:
+`gb i` downloads release assets from GitHub by default. It installs the
+Gateway, composer, and Client from the release tag matching the running `gb`
+version. Downloads are verified against `SHA256SUMS` before installation.
 
-1. `--from <dir>`
-2. `GOLDENBEE_RELEASE_DIR`
-3. the directory containing `gb`
-4. `target/debug` or `target/release`
+Local sources remain available:
 
-The expected sibling executable names are:
+1. `--from <dir>` uses that directory only.
+2. `GOLDENBEE_RELEASE_DIR` uses a local release directory.
+3. `target/debug` or `target/release` keeps the development workflow.
+4. Otherwise `gb` downloads from GitHub.
+
+Local lookup accepts both unsuffixed development binaries and target-suffixed
+release assets.
+
+The local sibling executable names are:
 
 ```text
 gb-gateway
 gb-composer
 gb-client
+```
+
+Remote assets are target-suffixed:
+
+```text
+gb-gateway-x86_64-unknown-linux-gnu
+gb-composer-x86_64-unknown-linux-gnu
+gb-client-x86_64-unknown-linux-gnu
 ```
 
 `gb i` installs operator executables; it does not install signed Worker
@@ -73,6 +108,9 @@ packages. Use `gb-install` and `gb-instance` for that path.
 
 ```text
 --from <dir>
+--release <vX.Y.Z|latest>
+--repo <owner/name>
+--release-base <url>
 --bin-dir <dir>
 --config-dir <dir>
 --data-dir <dir>
@@ -86,8 +124,15 @@ Environment overrides:
 GOLDENBEE_BIN_DIR
 GOLDENBEE_CONFIG_DIR
 GOLDENBEE_DATA_DIR
-GOLDENBEE_RELEASE_DIR
+GOLDENBEE_VERSION
+GOLDENBEE_REPO
+GOLDENBEE_RELEASE_BASE
+GOLDENBEE_GITHUB_TOKEN
 ```
+
+Checksum verification detects corrupted or mismatched downloads. It is not a
+signed-package trust root; signed Worker package installation remains the
+`gb-install` path.
 
 ## Dispatch
 

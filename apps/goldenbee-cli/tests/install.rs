@@ -2,6 +2,7 @@
 
 #![cfg(unix)]
 
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -87,6 +88,79 @@ fn installs_components_and_dispatches_with_default_config() {
 
     run(&["i", "client-cli"], &release, &bin, &config, &data);
     assert!(bin.join("gb-client").is_file());
+}
+
+fn digest(path: &Path) -> String {
+    let bytes = fs::read(path).expect("read asset");
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[test]
+fn remote_install_verifies_sha256() {
+    let temp = TempDir::new().expect("tempdir");
+    let release = temp.path().join("release");
+    let bin = temp.path().join("bin");
+    let config = temp.path().join("config");
+    let data = temp.path().join("data");
+    fs::create_dir_all(&release).expect("release dir");
+    let asset = release.join("gb-gateway-x86_64-unknown-linux-gnu");
+    fake_binary(&asset, "remote-gateway");
+    fs::write(
+        release.join("SHA256SUMS"),
+        format!("{}  gb-gateway-x86_64-unknown-linux-gnu\n", digest(&asset)),
+    )
+    .expect("sums");
+
+    let output = Command::new(binary())
+        .args(["i", "gateway", "--release", "v0.1.0"])
+        .env("GOLDENBEE_BIN_DIR", &bin)
+        .env("GOLDENBEE_CONFIG_DIR", &config)
+        .env("GOLDENBEE_DATA_DIR", &data)
+        .env(
+            "GOLDENBEE_RELEASE_BASE",
+            format!("file://{}", release.display()),
+        )
+        .output()
+        .expect("gb runs");
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(bin.join("gb-gateway").is_file());
+}
+
+#[test]
+fn remote_install_rejects_bad_checksum() {
+    let temp = TempDir::new().expect("tempdir");
+    let release = temp.path().join("release");
+    let bin = temp.path().join("bin");
+    let config = temp.path().join("config");
+    let data = temp.path().join("data");
+    fs::create_dir_all(&release).expect("release dir");
+    let asset = release.join("gb-gateway-x86_64-unknown-linux-gnu");
+    fake_binary(&asset, "remote-gateway");
+    fs::write(
+        release.join("SHA256SUMS"),
+        "0000000000000000000000000000000000000000000000000000000000000000  gb-gateway-x86_64-unknown-linux-gnu\n",
+    )
+    .expect("sums");
+
+    let output = Command::new(binary())
+        .args(["i", "gateway", "--release", "v0.1.0"])
+        .env("GOLDENBEE_BIN_DIR", &bin)
+        .env("GOLDENBEE_CONFIG_DIR", &config)
+        .env("GOLDENBEE_DATA_DIR", &data)
+        .env(
+            "GOLDENBEE_RELEASE_BASE",
+            format!("file://{}", release.display()),
+        )
+        .output()
+        .expect("gb runs");
+    assert!(!output.status.success());
+    assert!(!bin.join("gb-gateway").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
 }
 
 #[test]

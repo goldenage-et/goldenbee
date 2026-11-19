@@ -1,0 +1,57 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+
+      - name: Verify tag matches workspace version
+        shell: bash
+        run: |
+          version="$(python3 -c 'import tomllib; from pathlib import Path; print(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          test "${GITHUB_REF_NAME}" = "v${version}" || {
+            echo "tag ${GITHUB_REF_NAME} does not match v${version}" >&2
+            exit 1
+          }
+
+      - name: Build operator executables
+        run: |
+          cargo build --release --locked \
+            -p goldenbee-cli \
+            -p goldenbee-gateway \
+            -p goldenbee-composer \
+            -p goldenbee-client-cli
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/gb dist/gb-x86_64-unknown-linux-gnu
+          cp target/release/gb-gateway dist/gb-gateway-x86_64-unknown-linux-gnu
+          cp target/release/gb-composer dist/gb-composer-x86_64-unknown-linux-gnu
+          cp target/release/gb-client dist/gb-client-x86_64-unknown-linux-gnu
+          cp install.sh dist/install.sh
+          (cd dist && sha256sum gb-* install.sh > SHA256SUMS)
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/gb-x86_64-unknown-linux-gnu
+            dist/gb-gateway-x86_64-unknown-linux-gnu
+            dist/gb-composer-x86_64-unknown-linux-gnu
+            dist/gb-client-x86_64-unknown-linux-gnu
+            dist/install.sh
+            dist/SHA256SUMS

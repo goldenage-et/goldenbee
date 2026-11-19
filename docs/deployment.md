@@ -47,8 +47,14 @@ signature proves provenance; it does not replace isolation or grants.
 
 ## Single-command operator install
 
-From an assembled release directory, `gb` installs the operator executables and
-generates a matching local Gateway/composer configuration:
+Install the bootstrap from GitHub:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh
+```
+
+Then install the operator executables and generate matching local
+Gateway/composer configuration:
 
 ```sh
 gb i gateway
@@ -62,8 +68,10 @@ gb gw status
 gb cmp serve
 ```
 
-`gb i` is not `gb-install`; it installs the Gateway, composer, and independent
-Client executables, not signed Worker packages. See
+`gb i` downloads target-specific assets from the GitHub release matching the
+`gb` version and verifies `SHA256SUMS`. `--from <dir>` keeps local installation
+available. `gb i` is not `gb-install`; it installs the Gateway, composer, and
+independent Client executables, not signed Worker packages. See
 [Operator CLI](goldenbee-cli.md) for paths, source lookup, and dispatch rules.
 
 ## Local development from zero

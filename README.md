@@ -34,7 +34,13 @@ cargo run --locked -p goldenbee-client-cli -- --version
 
 Rust dependencies are pinned by `Cargo.lock`. Offline builds require their sources to be cached. Validation commands describe the checks to run; they do not assert that another agent's in-progress migration already passes.
 
-`gb` is the operator bootstrap. From a release directory:
+`gb` is the operator bootstrap. Install it from GitHub:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh
+```
+
+Then install components from the matching GitHub release:
 
 ```sh
 gb i gateway
@@ -44,8 +50,9 @@ gb gw up
 gb cmp serve
 ```
 
-`gb i` installs executables and local configuration; it is not the signed
-Worker-package installer. See [Operator CLI](docs/goldenbee-cli.md).
+`gb i` downloads and verifies release assets. `--from <dir>` keeps local
+installation available. It is not the signed Worker-package installer. See
+[Operator CLI](docs/goldenbee-cli.md).
 
 ## Run the General Worker
 

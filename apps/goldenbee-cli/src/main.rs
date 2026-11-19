@@ -6,6 +6,7 @@
 
 mod cli;
 mod dispatch;
+mod download;
 mod install;
 mod paths;
 
