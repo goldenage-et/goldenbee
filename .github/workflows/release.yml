@@ -16,6 +16,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.100.0"
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Verify tag matches workspace version
         shell: bash

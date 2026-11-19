@@ -241,6 +241,14 @@ fn percent_decode(value: &str) -> String {
 
 // ── Driver ────────────────────────────────────────────────────────────
 
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .expect("runtime")
+}
+
 fn driver_available() -> bool {
     std::env::var("GOLDENBEE_WEBDRIVER")
         .map(|url| !url.trim().is_empty())
@@ -405,7 +413,7 @@ fn text_of(value: &Value) -> String {
 
 #[test]
 fn denied_navigation_is_refused_before_a_browser_session_starts() {
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         let settings = BrowserOptions {
             enabled: true,
@@ -438,7 +446,7 @@ fn denied_navigation_is_refused_before_a_browser_session_starts() {
 
 #[test]
 fn browser_is_degraded_when_webdriver_is_unreachable() {
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         let settings = BrowserOptions {
             enabled: true,
@@ -469,7 +477,7 @@ fn browser_is_degraded_when_webdriver_is_unreachable() {
 
 #[test]
 fn discovery_does_not_start_a_browser() {
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         let settings = BrowserOptions {
             enabled: true,
@@ -503,7 +511,7 @@ fn sessions_isolate_cookies_and_page_effects() {
     let _browser = browser_guard();
     let site = TestSite::start();
     let downloads = browser_tempdir();
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         BrowserController::start(
             "browser".into(),
@@ -613,7 +621,7 @@ fn downloads_are_written_to_the_session_directory() {
     let _browser = browser_guard();
     let site = TestSite::start();
     let downloads = browser_tempdir();
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         BrowserController::start(
             "browser".into(),
@@ -711,7 +719,7 @@ fn redirect_to_an_unlisted_destination_is_blocked_by_the_egress_proxy() {
     let site = TestSite::start();
     let blocked = TestSite::start();
     let downloads = browser_tempdir();
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         BrowserController::start(
             "browser".into(),
@@ -749,7 +757,7 @@ fn human_takeover_fences_delayed_agent_commands_and_records_page_effects() {
     let _browser = browser_guard();
     let site = TestSite::start();
     let downloads = browser_tempdir();
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         BrowserController::start(
             "browser".into(),
@@ -909,7 +917,7 @@ fn human_takeover_fences_delayed_agent_commands_and_records_page_effects() {
 
 #[test]
 fn output_is_bounded_by_configuration() {
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         let mut settings = BrowserOptions {
             enabled: true,
@@ -944,7 +952,7 @@ fn shutdown_quits_the_browser_and_removes_session_state() {
     let _browser = browser_guard();
     let site = TestSite::start();
     let downloads = browser_tempdir();
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         BrowserController::start(
             "browser".into(),
@@ -995,7 +1003,7 @@ fn large_tool_output_is_truncated_before_it_reaches_the_model() {
     let _browser = browser_guard();
     let site = TestSite::start();
     let downloads = browser_tempdir();
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         let mut settings = settings(&site, downloads.path(), BrowserProfile::Minimal);
         settings.max_output_bytes = 4096;
@@ -1055,7 +1063,7 @@ fn capacity_and_lifetime_bounds_are_enforced() {
     let _browser = browser_guard();
     let site = TestSite::start();
     let downloads = browser_tempdir();
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         let mut settings = settings(&site, downloads.path(), BrowserProfile::Minimal);
         settings.max_sessions = 1;
@@ -1089,7 +1097,7 @@ fn capacity_and_lifetime_bounds_are_enforced() {
 
 #[test]
 fn a_cancelled_task_does_not_start_a_browser() {
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = runtime();
     let controller = runtime.block_on(async {
         let settings = BrowserOptions {
             enabled: true,
