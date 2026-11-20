@@ -25,6 +25,7 @@ check: format-check lint test docs
 # timing that the integration suite needs. Keep CI deterministic; run the full
 # `make check` locally before a release.
 check-ci: format-check lint test-fixtures
+	cargo fetch --locked
 	RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --workspace --all-features --lib --locked
 	python3 -m unittest discover -s tests/smoke -v
 
