@@ -1,5 +1,6 @@
 //! Shared adapter state: the control plane, caller bindings, and socket tickets.
 
+use crate::host::HostManager;
 use crate::socket::SocketLimits;
 use common::{ApiError, SocketTicket};
 use gateway_core::{Caller, Gateway as CoreGateway};
@@ -14,6 +15,11 @@ pub(crate) struct AppState {
     /// Control-plane owner. Every Worker, task, and event decision comes from
     /// here; the adapter holds no second policy layer.
     pub(crate) core: CoreGateway,
+    /// Gateway-owned local host lifecycle. `None` leaves this Gateway
+    /// control-plane only.
+    pub(crate) local_host: Option<Arc<HostManager>>,
+    /// Stable local host identity, when local management is enabled.
+    pub(crate) local_host_id: Option<String>,
     /// Caller token bindings. Tokens are secrets and are never logged.
     pub(crate) callers: BTreeMap<String, Caller>,
     /// Bounded short-lived one-use socket ticket set.

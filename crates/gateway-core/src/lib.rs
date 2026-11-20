@@ -23,6 +23,6 @@ pub mod vault;
 
 pub use caller::Caller;
 pub use config::{CoreConfig, HostConfig, StoreConfig, VaultConfig, WorkerConfig};
-pub use gateway::{ArtifactContent, ArtifactStream, Gateway};
+pub use gateway::{ArtifactContent, ArtifactStream, Gateway, LocalHost};
 pub use registry::Clock;
 pub use stream::EventStream;

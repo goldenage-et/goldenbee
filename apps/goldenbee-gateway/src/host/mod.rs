@@ -1,19 +1,25 @@
-//! Host-local lifecycle operations over the shared instance/installer crates.
+//! Gateway-owned local host lifecycle.
 //!
-//! The composer owns privileged host actions. It resolves a verified package
-//! digest inside its own cache, validates every host-local path against a
-//! configured root, and passes the authorized configuration selection to the
-//! shared Worker runtime through `instance`. It never accepts an arbitrary
-//! executable or an unbounded filesystem path.
+//! This module replaces the former `gb-composer` process. The Gateway resolves
+//! verified packages in its own cache, validates every local path and grant
+//! against host policy, and uses the shared `instance` crate for provisioning,
+//! process lifecycle, upgrade, and rollback. There is no host credential and no
+//! second HTTP service.
 
-use crate::config::{Config, HostCaller};
+mod packages;
+pub(crate) mod routes;
+
+use crate::config::LocalHostConfig;
 use common::{
-    ApiError, HostCompatibility, HostDescriptor, HostFinding, HostInstanceView, HostLimits,
-    HostOperationOutcome, HostProfileSelection, HostProvisionRequest, HostRecoverySummary,
-    HostRollbackRequest, HostTrustView, HostUpgradeRequest, HostUpgradeSummary, HostWorkPolicy,
-    HOST_OPERATION_INSPECT, HOST_OPERATION_PROVISION, HOST_OPERATION_ROLLBACK,
-    HOST_OPERATION_UPGRADE, HOST_PROTOCOL_VERSION,
+    ApiError, HostCompatibility, HostDescriptor, HostFinding, HostInspection, HostInstanceView,
+    HostLimits, HostOperationOutcome, HostProfileSelection, HostProvisionRequest,
+    HostRecoverySummary, HostRollbackRequest, HostTrustView, HostUpgradeRequest,
+    HostUpgradeSummary, HostWorkPolicy, InstanceLogs, PackageInstallOutcome, PackageInstallRequest,
+    PackageList, HOST_OPERATION_INSPECT, HOST_OPERATION_PROVISION, HOST_OPERATION_RESTART,
+    HOST_OPERATION_ROLLBACK, HOST_OPERATION_START, HOST_OPERATION_STOP, HOST_OPERATION_UPGRADE,
+    HOST_PROTOCOL_VERSION,
 };
+use gateway_core::LocalHost;
 use install::{Installer, TrustPolicy};
 use instance::upgrade::{self, UpgradeRequest, WorkPolicy};
 use instance::{CreateRequest, Inspection, InstanceError, InstanceLimits};
@@ -24,8 +30,6 @@ use std::sync::Mutex;
 
 const OPERATIONS_FILE: &str = "operations.json";
 
-/// Immutable record of one lifecycle operation, retained host-side so a lost
-/// acknowledgment or repeated command returns the original outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OperationRecord {
     operation_id: String,
@@ -105,33 +109,76 @@ impl Store {
     }
 }
 
-/// One host composer bound to immutable host policy.
-pub struct Composer {
-    config: Config,
-    store: Mutex<Store>,
+/// One Gateway-owned local host bound to immutable policy.
+///
+/// Cloning shares the same operation journal; callers use clones to move local
+/// lifecycle work onto Tokio's blocking pool.
+#[derive(Clone)]
+pub struct HostManager {
+    config: LocalHostConfig,
+    base_dir: Option<PathBuf>,
+    store: std::sync::Arc<Mutex<Store>>,
 }
 
-impl Composer {
-    /// Prepare the composer and load its durable operation journal.
-    pub fn new(config: Config) -> Result<Self, ApiError> {
-        let root = config.instances_root();
+impl HostManager {
+    /// Prepare the local host and load its durable operation journal.
+    pub fn new(config: LocalHostConfig, base_dir: Option<&Path>) -> Result<Self, ApiError> {
+        if !config.enabled() {
+            return Err(ApiError::new(
+                "host.not_configured",
+                "local host management is not configured",
+            ));
+        }
+        let base_dir = base_dir.map(Path::to_path_buf);
+        let root = config.instances_root(base_dir.as_deref()).ok_or_else(|| {
+            ApiError::new("host.config_invalid", "instances_root is not configured")
+        })?;
+        let packages = config.packages_root(base_dir.as_deref()).ok_or_else(|| {
+            ApiError::new("host.config_invalid", "packages_root is not configured")
+        })?;
         std::fs::create_dir_all(&root).map_err(|_| {
             ApiError::new(
                 "host.storage_unavailable",
                 "host instance root could not be created",
             )
         })?;
+        std::fs::create_dir_all(&packages).map_err(|_| {
+            ApiError::new(
+                "host.storage_unavailable",
+                "host package cache could not be created",
+            )
+        })?;
         let store = Store::open(&root)?;
         Ok(Self {
             config,
-            store: Mutex::new(store),
+            base_dir,
+            store: std::sync::Arc::new(Mutex::new(store)),
         })
     }
 
-    /// Composer identity and supported operations.
+    /// Stable local host identity.
+    pub fn host_id(&self) -> &str {
+        &self.config.host_id
+    }
+
+    /// Configured package cache root.
+    pub fn packages_root(&self) -> PathBuf {
+        self.config
+            .packages_root(self.base_dir.as_deref())
+            .unwrap_or_default()
+    }
+
+    /// Configured instance root.
+    pub fn instances_root(&self) -> PathBuf {
+        self.config
+            .instances_root(self.base_dir.as_deref())
+            .unwrap_or_default()
+    }
+
+    /// Host descriptor used by compatibility routes and diagnostics.
     pub fn descriptor(&self) -> HostDescriptor {
         HostDescriptor {
-            host: self.config.id.clone(),
+            host: self.config.host_id.clone(),
             protocol: HOST_PROTOCOL_VERSION.into(),
             adapter_version: env!("CARGO_PKG_VERSION").into(),
             supported: self.config.operations.clone(),
@@ -140,112 +187,48 @@ impl Composer {
         }
     }
 
-    /// Authenticate one Gateway credential.
-    pub fn authenticate(&self, token: Option<&str>) -> Result<HostCaller, ApiError> {
-        let Some(token) = token else {
-            return Err(ApiError::new(
-                "host.unauthorized",
-                "a host composer credential is required",
-            ));
-        };
-        let caller = self
-            .config
-            .callers
-            .iter()
-            .find(|caller| caller.token == token)
-            .cloned();
-        let Some(caller) = caller else {
-            return Err(ApiError::new(
-                "host.unauthorized",
-                "the host composer credential is not recognized",
-            ));
-        };
-        Ok(caller)
+    /// Optional local instance allow-list.
+    pub fn allowed_instances(&self) -> Option<Vec<String>> {
+        self.config.allowed_instances.clone()
     }
 
-    fn authorize(
-        &self,
-        caller: &HostCaller,
-        operation: &str,
-        instance: &str,
-    ) -> Result<(), ApiError> {
-        if !self
-            .config
-            .operations
-            .iter()
-            .any(|supported| supported == operation)
-        {
-            return Err(ApiError::new(
-                "host.unsupported",
-                format!("host '{}' does not support '{operation}'", self.config.id),
-            ));
-        }
-        let allowed_scope = if operation == HOST_OPERATION_INSPECT {
-            caller
-                .scopes
-                .iter()
-                .any(|scope| matches!(scope.as_str(), "instance:read" | "instance:admin" | "*"))
-        } else {
-            caller
-                .scopes
-                .iter()
-                .any(|scope| matches!(scope.as_str(), "instance:admin" | "*"))
-        };
-        if !allowed_scope {
-            return Err(ApiError::new(
-                "host.scope_denied",
-                "the host composer credential lacks the required instance scope",
-            ));
-        }
-        if let Some(instances) = &caller.instances {
-            if !instances.iter().any(|allowed| allowed == instance) {
-                return Err(ApiError::new(
-                    "host.scope_denied",
-                    format!(
-                        "host credential for '{}' may not administer instance '{instance}'",
-                        caller.gateway
-                    ),
-                ));
-            }
-        }
-        Ok(())
+    /// Optional local operation allow-list.
+    pub fn allowed_operations(&self) -> Option<Vec<String>> {
+        Some(self.config.operations.clone())
     }
 
     /// Provision one verified instance and activate its authorized profile.
-    pub fn provision(
+    pub fn provision_instance(
         &self,
-        caller: &HostCaller,
-        request: &HostProvisionRequest,
+        request: HostProvisionRequest,
     ) -> Result<HostOperationOutcome, ApiError> {
-        self.authorize(caller, HOST_OPERATION_PROVISION, &request.instance)?;
+        self.ensure_operation(HOST_OPERATION_PROVISION)?;
+        self.ensure_instance(&request.instance)?;
         self.execute(
             &request.operation_id,
             HOST_OPERATION_PROVISION,
             &request.digest(),
             &request.instance,
-            || self.provision_inner(request),
+            || self.provision_inner(&request),
         )
     }
 
     /// Inspect one instance without privileged installation access.
-    pub fn inspect(
-        &self,
-        caller: &HostCaller,
-        instance: &str,
-    ) -> Result<HostInstanceView, ApiError> {
-        self.authorize(caller, HOST_OPERATION_INSPECT, instance)?;
+    pub fn inspect_instance(&self, instance: &str) -> Result<HostInstanceView, ApiError> {
+        self.ensure_operation(HOST_OPERATION_INSPECT)?;
+        self.ensure_instance(instance)?;
         self.view(instance)
     }
 
-    /// Managed upgrade with the local verification, permission, drain,
-    /// backup, activation, and readiness semantics.
-    pub fn upgrade(
+    /// Managed upgrade with local verification, permissions, drain, backup,
+    /// activation, and readiness semantics.
+    pub fn upgrade_instance(
         &self,
-        caller: &HostCaller,
         instance: &str,
         request: &HostUpgradeRequest,
     ) -> Result<HostOperationOutcome, ApiError> {
-        self.authorize(caller, HOST_OPERATION_UPGRADE, instance)?;
+        self.ensure_operation(HOST_OPERATION_UPGRADE)?;
+        self.ensure_instance(instance)?;
         self.execute(
             &request.operation_id,
             HOST_OPERATION_UPGRADE,
@@ -256,13 +239,13 @@ impl Composer {
     }
 
     /// Managed rollback from a recoverable activation journal.
-    pub fn rollback(
+    pub fn rollback_instance(
         &self,
-        caller: &HostCaller,
         instance: &str,
         request: &HostRollbackRequest,
     ) -> Result<HostOperationOutcome, ApiError> {
-        self.authorize(caller, HOST_OPERATION_ROLLBACK, instance)?;
+        self.ensure_operation(HOST_OPERATION_ROLLBACK)?;
+        self.ensure_instance(instance)?;
         self.execute(
             &request.operation_id,
             HOST_OPERATION_ROLLBACK,
@@ -272,31 +255,183 @@ impl Composer {
         )
     }
 
-    /// One recorded operation, for explicit reconciliation.
-    pub fn operation(
-        &self,
-        caller: &HostCaller,
-        operation: &str,
-    ) -> Result<HostOperationOutcome, ApiError> {
-        let store = self.lock();
-        let Some(record) = store.document.operations.get(operation) else {
-            return Err(ApiError::new(
-                "host.operation_not_found",
-                "the host has no recorded lifecycle operation",
-            ));
-        };
-        self.authorize(caller, &record.kind, &record.instance)?;
-        if let Some(outcome) = &record.outcome {
-            let mut outcome = outcome.clone();
-            outcome.replayed = true;
-            return Ok(outcome);
+    /// Start one stopped instance. A running instance converges to its view.
+    pub fn start_instance(&self, instance: &str) -> Result<HostInstanceView, ApiError> {
+        self.ensure_operation(HOST_OPERATION_START)?;
+        self.ensure_instance(instance)?;
+        let root = self.instances_root();
+        let inspection = instance::inspect(&root, instance).map_err(host_error)?;
+        if inspection.process_health != "running" {
+            match instance::start_with_env(&root, instance, None, &self.process_env()) {
+                Ok(_) => {}
+                Err(error) if error.code == "instance.already_running" => {}
+                Err(error) => return Err(host_error(error)),
+            }
         }
-        Err(record.error.clone().unwrap_or_else(|| {
-            ApiError::new(
-                "host.operation_unknown",
-                "the host did not record a terminal outcome for this operation",
-            )
-        }))
+        self.view(instance)
+    }
+
+    /// Stop one running instance.
+    pub fn stop_instance(&self, instance: &str) -> Result<HostInstanceView, ApiError> {
+        self.ensure_operation(HOST_OPERATION_STOP)?;
+        self.ensure_instance(instance)?;
+        instance::stop(&self.instances_root(), instance).map_err(host_error)?;
+        self.view(instance)
+    }
+
+    /// Restart one instance, preserving its previous listener when possible.
+    pub fn restart_instance(&self, instance: &str) -> Result<HostInstanceView, ApiError> {
+        self.ensure_operation(HOST_OPERATION_RESTART)?;
+        self.ensure_instance(instance)?;
+        let root = self.instances_root();
+        let inspection = instance::inspect(&root, instance).map_err(host_error)?;
+        let previous = inspection.addr.clone();
+        if inspection.process_health == "running" {
+            instance::stop(&root, instance).map_err(host_error)?;
+        }
+        let mut started = match previous.as_deref() {
+            Some(addr) => {
+                instance::start_with_env(&root, instance, Some(addr), &self.process_env())
+            }
+            None => instance::start_with_env(&root, instance, None, &self.process_env()),
+        };
+        if started.is_err() && previous.is_some() {
+            started = instance::start_with_env(&root, instance, None, &self.process_env());
+        }
+        started.map_err(host_error)?;
+        self.view(instance)
+    }
+
+    /// Bounded tail of one instance process log.
+    pub fn instance_logs(&self, instance: &str, tail: usize) -> Result<InstanceLogs, ApiError> {
+        self.ensure_operation(HOST_OPERATION_INSPECT)?;
+        self.ensure_instance(instance)?;
+        instance::inspect(&self.instances_root(), instance).map_err(host_error)?;
+        let path = self.instances_root().join(instance).join("process.log");
+        let text = std::fs::read_to_string(&path).map_err(|_| {
+            ApiError::new("host.logs_unavailable", "the instance log is not readable")
+        })?;
+        let lines: Vec<&str> = text.lines().collect();
+        let tail = tail.clamp(1, 1000);
+        let start = lines.len().saturating_sub(tail);
+        Ok(InstanceLogs {
+            instance: instance.into(),
+            lines: lines[start..]
+                .iter()
+                .map(|line| (*line).to_string())
+                .collect(),
+            truncated: start > 0,
+        })
+    }
+
+    /// Every valid instance in the local root.
+    pub fn list_instances(&self) -> Result<Vec<HostInstanceView>, ApiError> {
+        let root = self.instances_root();
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => {
+                return Err(ApiError::new(
+                    "host.storage_unavailable",
+                    "host instance root is unreadable",
+                ))
+            }
+        };
+        let mut instances = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|_| {
+                ApiError::new(
+                    "host.storage_unavailable",
+                    "host instance root is unreadable",
+                )
+            })?;
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(".staging-") {
+                continue;
+            }
+            instances.push(self.view(&name)?);
+        }
+        instances.sort_by(|left, right| left.instance.cmp(&right.instance));
+        Ok(instances)
+    }
+
+    /// Install one verified package from a local folder or URL archive.
+    pub async fn install_package(
+        &self,
+        request: PackageInstallRequest,
+    ) -> Result<PackageInstallOutcome, ApiError> {
+        packages::install(self, request).await
+    }
+
+    /// List verified packages in the local cache.
+    pub fn list_packages(&self) -> Result<PackageList, ApiError> {
+        packages::list(self)
+    }
+
+    /// Load the local trust policy, if configured.
+    pub(crate) fn trust_policy(&self) -> Result<TrustPolicy, ApiError> {
+        let path = self
+            .config
+            .trust_policy(self.base_dir.as_deref())
+            .ok_or_else(|| {
+                ApiError::new(
+                    "host.trust_policy_unavailable",
+                    "this Gateway has no configured trust policy",
+                )
+            })?;
+        TrustPolicy::load(&path).map_err(install_error)
+    }
+
+    /// Resolve a folder source under the configured package source roots.
+    pub(crate) fn package_source(&self, path: &str) -> Result<PathBuf, ApiError> {
+        if self.config.allowed_package_sources.is_empty() {
+            return Err(ApiError::new(
+                "host.package_source_forbidden",
+                "this Gateway does not accept folder package sources",
+            ));
+        }
+        self.contained(
+            path,
+            &self.config.allowed_package_sources,
+            "host.package_source_forbidden",
+        )
+    }
+
+    fn ensure_operation(&self, operation: &str) -> Result<(), ApiError> {
+        if self
+            .config
+            .operations
+            .iter()
+            .any(|supported| supported == operation)
+        {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                "host.unsupported",
+                format!(
+                    "host '{}' does not support '{operation}'",
+                    self.config.host_id
+                ),
+            ))
+        }
+    }
+
+    fn ensure_instance(&self, instance: &str) -> Result<(), ApiError> {
+        if let Some(instances) = &self.config.allowed_instances {
+            if !instances.iter().any(|allowed| allowed == instance) {
+                return Err(ApiError::new(
+                    "host.scope_denied",
+                    format!(
+                        "host '{}' may not administer instance '{instance}'",
+                        self.config.host_id
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn execute(
@@ -334,7 +469,7 @@ impl Composer {
             Ok(mut outcome) => {
                 outcome.operation_id = operation_id.into();
                 outcome.kind = kind.into();
-                outcome.host = self.config.id.clone();
+                outcome.host = self.config.host_id.clone();
                 outcome.instance = instance.into();
                 store.document.operations.insert(
                     operation_id.to_string(),
@@ -417,7 +552,7 @@ impl Composer {
             .clone()
             .filter(|token| !token.trim().is_empty());
 
-        let root = self.config.instances_root();
+        let root = self.instances_root();
         let mut create = CreateRequest::new(&root, &request.instance, release.directory);
         create.grants = request.grants.clone();
         create.workspace = workspace;
@@ -430,21 +565,24 @@ impl Composer {
         create.secret_refs = request.secret_refs.clone();
         create.config = config;
         create.token = token;
-        instance::create(create).map_err(composer_error)?;
+        instance::create(create).map_err(host_error)?;
 
         if let Some(profile) = &request.profile {
             self.activate_profile(&request.instance, profile)?;
         }
 
-        let inspection = instance::inspect(&root, &request.instance).map_err(composer_error)?;
+        let inspection = instance::inspect(&root, &request.instance).map_err(host_error)?;
         if inspection.process_health != "running" {
-            instance::start_with_env(
+            match instance::start_with_env(
                 &root,
                 &request.instance,
                 request.addr.as_deref(),
                 &self.process_env(),
-            )
-            .map_err(composer_error)?;
+            ) {
+                Ok(_) => {}
+                Err(error) if error.code == "instance.already_running" => {}
+                Err(error) => return Err(host_error(error)),
+            }
         }
         let view = self.view(&request.instance)?;
         Ok(HostOperationOutcome {
@@ -472,14 +610,13 @@ impl Composer {
             HostWorkPolicy::Pin => WorkPolicy::Pin,
             HostWorkPolicy::Migrate => WorkPolicy::Migrate,
         };
-        let mut upgrade =
-            UpgradeRequest::new(self.config.instances_root(), instance, release.directory);
+        let mut upgrade = UpgradeRequest::new(self.instances_root(), instance, release.directory);
         upgrade.authorized_permissions = request.authorized_permissions.clone();
         upgrade.work_policy = policy;
         upgrade.verify_input = request.verify_input.clone();
         upgrade.addr = request.addr.clone();
         upgrade.env = self.process_env();
-        let outcome = upgrade::apply(&upgrade).map_err(composer_error)?;
+        let outcome = upgrade::apply(&upgrade).map_err(host_error)?;
         let report = outcome.report;
         Ok(HostOperationOutcome {
             operation_id: String::new(),
@@ -515,8 +652,8 @@ impl Composer {
 
     fn rollback_inner(&self, instance: &str) -> Result<HostOperationOutcome, ApiError> {
         let outcome =
-            upgrade::recover_with_env(&self.config.instances_root(), instance, &self.process_env())
-                .map_err(composer_error)?;
+            upgrade::recover_with_env(&self.instances_root(), instance, &self.process_env())
+                .map_err(host_error)?;
         let quarantine = outcome.quarantine.is_some();
         Ok(HostOperationOutcome {
             operation_id: String::new(),
@@ -576,8 +713,8 @@ impl Composer {
             }
             args.push("--activate".into());
         }
-        let outcome = instance::profile(&self.config.instances_root(), instance, &args)
-            .map_err(composer_error)?;
+        let outcome =
+            instance::profile(&self.instances_root(), instance, &args).map_err(host_error)?;
         if outcome.status != 0 {
             eprintln!(
                 "host.profile_failed instance={instance} status={} stderr={}",
@@ -593,11 +730,11 @@ impl Composer {
     }
 
     fn view(&self, instance: &str) -> Result<HostInstanceView, ApiError> {
-        let root = self.config.instances_root();
-        let inspection = instance::inspect(&root, instance).map_err(composer_error)?;
+        let root = self.instances_root();
+        let inspection = instance::inspect(&root, instance).map_err(host_error)?;
         let compatibility = self.compatibility(&inspection);
         Ok(HostInstanceView {
-            host: self.config.id.clone(),
+            host: self.config.host_id.clone(),
             instance: inspection.instance,
             package: inspection.package,
             version: inspection.version,
@@ -685,7 +822,7 @@ impl Composer {
                 "release must be a sha256 digest of a verified local package",
             ));
         }
-        let installed = Installer::new(self.config.packages_root(), TrustPolicy::default())
+        let installed = Installer::new(self.packages_root(), TrustPolicy::default())
             .installed()
             .map_err(|_| {
                 ApiError::new(
@@ -776,7 +913,7 @@ impl Composer {
             )
         })?;
         for root in roots {
-            let root = self.config.root(root);
+            let root = self.config.root(root, self.base_dir.as_deref());
             if let Ok(root) = std::fs::canonicalize(&root) {
                 if candidate.starts_with(&root) {
                     return Ok(candidate);
@@ -823,9 +960,6 @@ impl Composer {
         }
     }
 
-    /// Narrow control environment for the Worker process. The shared
-    /// delegation secret authenticates Gateway control exchanges; provider
-    /// secrets remain references in instance configuration.
     fn process_env(&self) -> Vec<(String, String)> {
         match std::env::var("GOLDENBEE_DELEGATION_SECRET") {
             Ok(secret) if !secret.is_empty() => {
@@ -840,7 +974,80 @@ impl Composer {
     }
 }
 
-fn composer_error(error: InstanceError) -> ApiError {
+#[async_trait::async_trait]
+impl LocalHost for HostManager {
+    fn id(&self) -> &str {
+        self.host_id()
+    }
+
+    fn descriptor(&self) -> HostDescriptor {
+        HostManager::descriptor(self)
+    }
+
+    fn allowed_instances(&self) -> Option<Vec<String>> {
+        HostManager::allowed_instances(self)
+    }
+
+    fn allowed_operations(&self) -> Option<Vec<String>> {
+        HostManager::allowed_operations(self)
+    }
+
+    async fn provision(
+        &self,
+        request: HostProvisionRequest,
+    ) -> Result<HostOperationOutcome, ApiError> {
+        let host = self.clone();
+        blocking(move || host.provision_instance(request)).await
+    }
+
+    async fn inspect(&self, instance: &str) -> Result<HostInspection, ApiError> {
+        let host = self.clone();
+        let instance = instance.to_string();
+        blocking(move || {
+            Ok(HostInspection {
+                host: host.config.host_id.clone(),
+                view: host.inspect_instance(&instance)?,
+                worker: None,
+            })
+        })
+        .await
+    }
+
+    async fn upgrade(
+        &self,
+        instance: &str,
+        request: HostUpgradeRequest,
+    ) -> Result<HostOperationOutcome, ApiError> {
+        let host = self.clone();
+        let instance = instance.to_string();
+        blocking(move || host.upgrade_instance(&instance, &request)).await
+    }
+
+    async fn rollback(
+        &self,
+        instance: &str,
+        request: HostRollbackRequest,
+    ) -> Result<HostOperationOutcome, ApiError> {
+        let host = self.clone();
+        let instance = instance.to_string();
+        blocking(move || host.rollback_instance(&instance, &request)).await
+    }
+}
+
+async fn blocking<T, F>(run: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ApiError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(run).await.map_err(|_| {
+        ApiError::new(
+            "host.operation_failed",
+            "the local host operation task did not complete",
+        )
+    })?
+}
+
+fn host_error(error: InstanceError) -> ApiError {
     match error.code.as_str() {
         "upgrade.quarantined" => ApiError::new(
             "upgrade.quarantined",
@@ -855,4 +1062,8 @@ fn composer_error(error: InstanceError) -> ApiError {
         ),
         _ => ApiError::new(error.code, error.message),
     }
+}
+
+pub(crate) fn install_error(error: install::InstallError) -> ApiError {
+    ApiError::new(error.code, error.message)
 }

@@ -780,7 +780,7 @@
         "host": { "type": "string" },
         "protocol": { "type": "string" },
         "adapter_version": { "type": "string" },
-        "supported": { "type": "array", "items": { "type": "string", "enum": ["provision", "inspect", "upgrade", "rollback"] } },
+        "supported": { "type": "array", "items": { "type": "string", "enum": ["provision", "inspect", "upgrade", "rollback", "start", "stop", "restart"] } },
         "reachable": { "type": "boolean" },
         "error": { "type": "string" }
       },
@@ -838,7 +838,7 @@
       "required": ["operation_id", "kind", "host", "instance", "status"],
       "properties": {
         "operation_id": { "type": "string" },
-        "kind": { "type": "string", "enum": ["provision", "inspect", "upgrade", "rollback"] },
+        "kind": { "type": "string", "enum": ["provision", "inspect", "upgrade", "rollback", "start", "stop", "restart"] },
         "host": { "type": "string" },
         "instance": { "type": "string" },
         "status": { "type": "string", "enum": ["succeeded", "recovered", "quarantined"] },
@@ -847,6 +847,77 @@
         "upgrade": { "$ref": "#/definitions/hostUpgradeSummary" },
         "recovery": { "$ref": "#/definitions/hostRecoverySummary" },
         "replayed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "packageSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": { "const": "folder" },
+            "path": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "url"],
+          "properties": {
+            "kind": { "const": "url" },
+            "url": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "packageInstallRequest": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": { "$ref": "#/definitions/packageSource" },
+        "package": { "type": "string" },
+        "expected_digest": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "packageSummary": {
+      "type": "object",
+      "required": ["package", "version", "artifact_digest", "signer", "target"],
+      "properties": {
+        "package": { "type": "string" },
+        "version": { "type": "string" },
+        "artifact_digest": { "type": "string" },
+        "signer": { "type": "string" },
+        "target": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "packageInstallOutcome": {
+      "type": "object",
+      "required": ["package", "installed_now"],
+      "properties": {
+        "package": { "$ref": "#/definitions/packageSummary" },
+        "installed_now": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "packageList": {
+      "type": "object",
+      "required": ["packages"],
+      "properties": {
+        "packages": { "type": "array", "items": { "$ref": "#/definitions/packageSummary" } }
+      },
+      "additionalProperties": false
+    },
+    "instanceLogs": {
+      "type": "object",
+      "required": ["instance", "lines"],
+      "properties": {
+        "instance": { "type": "string" },
+        "lines": { "type": "array", "items": { "type": "string" } },
+        "truncated": { "type": "boolean" }
       },
       "additionalProperties": false
     }
@@ -877,6 +948,11 @@
     { "$ref": "#/definitions/hostUpgradeRequest" },
     { "$ref": "#/definitions/hostRollbackRequest" },
     { "$ref": "#/definitions/hostOperationOutcome" },
+    { "$ref": "#/definitions/packageInstallRequest" },
+    { "$ref": "#/definitions/packageInstallOutcome" },
+    { "$ref": "#/definitions/packageList" },
+    { "$ref": "#/definitions/instanceLogs" },
+    { "type": "array", "items": { "$ref": "#/definitions/hostInstanceView" } },
     { "$ref": "#/definitions/socketTicket" },
     { "$ref": "#/definitions/socketClientFrame" },
     { "$ref": "#/definitions/socketServerFrame" },

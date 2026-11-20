@@ -246,6 +246,44 @@ gb-client worker audit [--worker <id>] [--json]
   the id is terminal and a replacement uses a new id.
 - Host process start, stop, install, and upgrade are not CLI commands here.
 
+## Packages and local instances
+
+The Gateway owns its local package cache and Worker processes. These commands
+target the Gateway selected by the active profile; no host name or host
+credential is involved.
+
+```sh
+gb-client package install --source /srv/goldenbee/releases/general-0.1.0
+gb-client package install --source https://example.invalid/general.tar.gz --package general
+gb-client package list
+
+gb-client instance deploy \
+  --source /srv/goldenbee/releases/general-0.1.0 \
+  --package general \
+  --instance general-a \
+  --grant task:submit --grant task:read
+gb-client instance list
+gb-client instance inspect general-a
+gb-client instance logs general-a --tail 200
+gb-client instance stop general-a
+gb-client instance start general-a
+gb-client instance restart general-a
+gb-client instance upgrade general-a --operation upgrade-1 --release sha256:<digest>
+gb-client instance rollback general-a --operation rollback-1
+```
+
+`package install` accepts a folder readable by the Gateway or a gzip tar
+archive URL. A folder must resolve under the Gateway's
+`allowed_package_sources`. The Gateway verifies the release signature,
+compatibility, permissions, and smoke probe before publishing the digest.
+
+`instance deploy` installs the package if needed, provisions one instance,
+starts it, and registers the Worker. Worker identity defaults to the instance
+name. The operation id defaults to a digest-derived value so a repeated deploy
+converges. `--profile`, `--profile-create`, `--config`, `--workspace`,
+`--read-only`, `--control-token`, and `--secret-ref` are available for operator
+configuration.
+
 ## Team management
 
 ```sh

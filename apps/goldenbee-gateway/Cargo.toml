@@ -25,6 +25,13 @@ axum = { version = "0.8", features = ["ws"] }
 uuid = { workspace = true }
 reqwest.workspace = true
 url = "2.5"
+instance = { path = "../../crates/instance" }
+install = { path = "../../crates/install" }
+async-trait.workspace = true
+flate2 = "1.0"
+tar = "0.4"
+tempfile = { workspace = true }
+toml = "0.8"
 
 [dev-dependencies]
 sdk = { path = "../../crates/sdk" }

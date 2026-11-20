@@ -1,9 +1,9 @@
-//! Ticket 44 public behavior: authorized fleet lifecycle through Gateway host
-//! composers, with standalone local management and no Gateway filesystem access.
+//! Ticket 44 public behavior: authorized fleet lifecycle through Gateway-owned
+//! local hosts, with standalone local management and no caller filesystem access.
 //!
-//! A real `gb-composer` process owns host-local provision/upgrade/rollback.
-//! A real Gateway process orchestrates through scoped composer credentials.
-//! Product access travels through the SDK and the independent CLI.
+//! Each child Gateway owns its local provision/upgrade/rollback. A root Gateway
+//! orchestrates through scoped host credentials that are ordinary Gateway caller
+//! tokens. Product access travels through the SDK and the independent CLI.
 
 use base64::Engine;
 use common::{bytes_digest, ReleaseMetadata};
@@ -204,19 +204,6 @@ fn spawn_announced(mut command: Command) -> (Process, String) {
     (Process { child }, base)
 }
 
-fn spawn_host(config: &Path, port: u16) -> (Process, String) {
-    let mut command = Command::new(binary("gb-composer"));
-    command.args([
-        "serve",
-        "--config",
-        config.to_str().expect("host config"),
-        "--addr",
-        &format!("127.0.0.1:{port}"),
-    ]);
-    command.env("GOLDENBEE_DELEGATION_SECRET", DELEGATION_SECRET);
-    spawn_announced(command)
-}
-
 fn spawn_gateway(config: &Path) -> (Process, String) {
     let mut command = Command::new(binary("gb-gateway"));
     command.args([
@@ -305,7 +292,7 @@ fn gateway_config(directory: &Path, registry: &Path, hosts: Value) -> PathBuf {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn host_config(
+fn host_gateway_config(
     directory: &Path,
     host: &str,
     token: &str,
@@ -320,7 +307,11 @@ fn host_config(
     std::fs::write(
         &path,
         serde_json::to_vec_pretty(&json!({
-            "id": host,
+            "listen": "127.0.0.1:0",
+            "data_dir": directory.join(format!("{host}-state")),
+            "registry": directory.join(format!("{host}-registry.json")),
+            "delegation_secret": DELEGATION_SECRET,
+            "host_id": host,
             "instances_root": instances_root,
             "packages_root": packages_root,
             "allowed_config_roots": [configs],
@@ -332,16 +323,17 @@ fn host_config(
             "allowed_profile_grants": ["task:submit", "task:read", "profile:read"],
             "allowed_secret_prefixes": ["secret://"],
             "operations": operations,
+            "allowed_instances": instances,
             "callers": [{
                 "token": token,
-                "gateway": "goldenbee",
-                "scopes": ["instance:admin"],
-                "instances": instances
+                "id": host,
+                "namespace": "fleet",
+                "scopes": ["instance:admin"]
             }]
         }))
         .unwrap(),
     )
-    .expect("host config");
+    .expect("host gateway config");
     path
 }
 
@@ -414,7 +406,7 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
         &["exec:command"],
     );
 
-    let host_a_config = host_config(
+    let host_a_config = host_gateway_config(
         state.path(),
         "host-a",
         HOST_A_TOKEN,
@@ -422,10 +414,18 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
         cache.path(),
         configs.path(),
         workspaces.path(),
-        &["provision", "inspect", "upgrade", "rollback"],
+        &[
+            "provision",
+            "inspect",
+            "upgrade",
+            "rollback",
+            "start",
+            "stop",
+            "restart",
+        ],
         &["fleet-a"],
     );
-    let host_b_config = host_config(
+    let host_b_config = host_gateway_config(
         state.path(),
         "host-b",
         HOST_B_TOKEN,
@@ -436,8 +436,32 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
         &["provision", "inspect", "upgrade"],
         &["fleet-b"],
     );
-    let (host_a, host_a_base) = spawn_host(&host_a_config, free_port());
-    let (_host_b, host_b_base) = spawn_host(&host_b_config, free_port());
+    let (host_a, host_a_base) = spawn_gateway(&host_a_config);
+    let (_host_b, host_b_base) = spawn_gateway(&host_b_config);
+    wait_for(
+        || {
+            api(
+                "GET",
+                &format!("{host_a_base}/v1/health"),
+                ADMIN_TOKEN,
+                None,
+            )
+            .0 == 200
+        },
+        "host-a gateway",
+    );
+    wait_for(
+        || {
+            api(
+                "GET",
+                &format!("{host_b_base}/v1/health"),
+                ADMIN_TOKEN,
+                None,
+            )
+            .0 == 200
+        },
+        "host-b gateway",
+    );
     let gateway_file = gateway_config(
         state.path(),
         &state.path().join("registry.json"),
@@ -679,12 +703,12 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
     );
     assert_eq!(cross_status, 403, "{cross}");
     assert_eq!(cross["code"], "host.scope_denied");
-    // Host credentials are scoped to one composer; the same token is refused by
-    // another host even if a caller learns it.
+    // Host credentials are ordinary Gateway caller tokens; the same token is
+    // refused by another Gateway even if a caller learns it.
     let (foreign_status, foreign) =
         api("GET", &format!("{host_b_base}/v1/host"), HOST_A_TOKEN, None);
     assert_eq!(foreign_status, 401, "{foreign}");
-    assert_eq!(foreign["code"], "host.unauthorized");
+    assert_eq!(foreign["code"], "auth.unauthenticated");
 
     // A caller without the fleet administration scope is refused.
     let (denied_status, denied) = api(
@@ -713,8 +737,8 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
     assert_eq!(missing_status, 400, "{missing}");
     assert_eq!(missing["code"], "host.release_unavailable");
 
-    // A configuration reference cannot escape the composer's authorized root,
-    // and a caller cannot smuggle a host path through the Gateway.
+    // A configuration reference cannot escape the host's authorized root, and
+    // a caller cannot smuggle a host path through the Gateway.
     let outside_config = state.path().join("outside-worker.toml");
     std::fs::write(
         &outside_config,
@@ -808,7 +832,7 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
     );
 
     // Simulate an activation interrupted after the journal was written. The
-    // host composer restores the previous binary record and data snapshot.
+    // local host restores the previous binary record and data snapshot.
     let instance_dir = instances.path().join("fleet-a");
     let record: Value =
         serde_json::from_slice(&std::fs::read(instance_dir.join("instance.json")).expect("record"))
@@ -866,7 +890,7 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
     assert_eq!(rolled_back["view"]["lifecycle"], "running");
 
     // Host loss is explicit, not a false success, and local management remains
-    // independent while Gateways and composers are stopped.
+    // independent while Gateways are stopped.
     drop(host_a);
     let (lost_status, lost) = api(
         "GET",
@@ -899,9 +923,9 @@ fn authorized_fleet_lifecycle_uses_sdk_and_cli_without_gateway_filesystem_access
     let standalone = submit(&worker_base, WORKER_A_TOKEN, None, "standalone-2");
     assert_eq!(standalone["state"], "succeeded");
 
-    // Restarting the same host composer and Gateway reconciles the recorded
+    // Restarting the same host Gateway and root Gateway reconciles the recorded
     // operation instead of creating a second instance or a second approval.
-    let (host_a, host_a_base) = spawn_host(&host_a_config, free_port());
+    let (host_a, host_a_base) = spawn_gateway(&host_a_config);
     let mut hosts: Value = json!([
         {
             "id": "host-a",

@@ -22,6 +22,7 @@ mod auth;
 mod control;
 mod fleet;
 mod health;
+mod host;
 mod http;
 mod profiles;
 mod providers;

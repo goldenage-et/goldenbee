@@ -2096,16 +2096,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
-name = "goldenbee-cli"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "uuid",
-]
-
-[[package]]
 name = "goldenbee-client-cli"
 version = "0.1.0"
 dependencies = [
@@ -2123,29 +2113,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "goldenbee-composer"
-version = "0.1.0"
-dependencies = [
- "axum",
- "common",
- "install",
- "instance",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "goldenbee-gateway"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "common",
+ "flate2",
  "futures",
  "gateway-core",
+ "install",
+ "instance",
  "load-harness",
  "provider-crypto",
  "reqwest 0.12.28",
@@ -2153,9 +2132,11 @@ dependencies = [
  "serde",
  "serde_json",
  "socket2",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "url",
  "uuid",
 ]

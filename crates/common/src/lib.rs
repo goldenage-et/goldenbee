@@ -61,7 +61,9 @@ pub use host::{
     HostCompatibility, HostDescriptor, HostFinding, HostInspection, HostInstanceView, HostLimits,
     HostOperationOutcome, HostProfileSelection, HostProvisionRequest, HostRecoverySummary,
     HostRollbackRequest, HostTrustView, HostUpgradeRequest, HostUpgradeSummary, HostWorkPolicy,
-    HOST_OPERATIONS, HOST_OPERATION_INSPECT, HOST_OPERATION_PROVISION, HOST_OPERATION_ROLLBACK,
+    InstanceLogs, PackageInstallOutcome, PackageInstallRequest, PackageList, PackageSource,
+    PackageSummary, HOST_OPERATIONS, HOST_OPERATION_INSPECT, HOST_OPERATION_PROVISION,
+    HOST_OPERATION_RESTART, HOST_OPERATION_ROLLBACK, HOST_OPERATION_START, HOST_OPERATION_STOP,
     HOST_OPERATION_UPGRADE, HOST_PROTOCOL_VERSION,
 };
 pub use identity::{scopes, Principal};

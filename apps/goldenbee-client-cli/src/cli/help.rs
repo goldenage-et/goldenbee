@@ -27,6 +27,15 @@ pub(crate) fn help() {
          model discover <provider> [--json]\n  \
          health\n  \
          workers [--capability <id>] [--protocol <version>] [--locality local|remote] [--health healthy|unreachable|any] [--json]\n  \
+         package install --source <folder|url> [--package <name>] [--digest <sha256:...>] [--json]\n  \
+         package list [--json]\n  \
+         instance deploy --source <folder|url> --instance <id> [--package <name>] [--digest <sha256:...>] [--worker <id>] [--operation <id>] [--grant <scope>]... [--profile <name>] [--profile-create] [--start] [--json]\n  \
+         instance list [--json]\n  \
+         instance inspect <instance> [--json]\n  \
+         instance start|stop|restart <instance> [--json]\n  \
+         instance logs <instance> [--tail <n>] [--json]\n  \
+         instance upgrade <instance> --operation <id> --release <digest> [--authorize <permission>]... [--work-policy drain|pin|migrate] [--verify-input <text>] [--json]\n  \
+         instance rollback <instance> --operation <id> [--json]\n  \
          worker list [--all] [--json]\n  \
          worker show <id> [--json]\n  \
          worker add <id> <endpoint> [--instance <id>] [--package <name>] [--capability <id>]... [--control-token-stdin] [--no-preflight] [--json]\n  \

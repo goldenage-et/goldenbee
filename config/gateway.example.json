@@ -18,25 +18,62 @@
       "token": "replace-with-a-caller-token",
       "id": "local-operator",
       "namespace": "local",
-      "scopes": ["task:submit", "task:read", "task:cancel", "artifact:read"],
-      "workers": ["general-a"]
+      "scopes": [
+        "task:submit",
+        "task:read",
+        "task:cancel",
+        "artifact:read"
+      ],
+      "workers": [
+        "general-a"
+      ]
     },
     {
       "token": "replace-with-an-admin-token",
       "id": "local-admin",
       "namespace": "local",
-      "scopes": ["admin", "task:read"]
+      "scopes": [
+        "admin",
+        "task:read"
+      ]
     }
   ],
-  "workers": [
-    {
-      "id": "general-a",
-      "endpoint": "http://127.0.0.1:8081",
-      "instance": "worker-replace-with-observed-instance",
-      "package": "general",
-      "capabilities": ["general", "echo"],
-      "control_token": "replace-with-the-worker-control-token",
-      "preflight": true
-    }
-  ]
+  "host_id": "local",
+  "instances_root": "/var/lib/goldenbee/instances",
+  "packages_root": "/var/lib/goldenbee/packages",
+  "trust_policy": "/etc/goldenbee/trust.json",
+  "allowed_package_sources": [
+    "/srv/goldenbee/releases"
+  ],
+  "operations": [
+    "provision",
+    "inspect",
+    "upgrade",
+    "rollback",
+    "start",
+    "stop",
+    "restart"
+  ],
+  "allowed_grants": [
+    "task:submit",
+    "task:read",
+    "task:cancel",
+    "session:write",
+    "profile:read",
+    "profile:write"
+  ],
+  "allowed_profile_grants": [
+    "task:submit",
+    "task:read"
+  ],
+  "allowed_config_roots": [
+    "/etc/goldenbee/workers"
+  ],
+  "allowed_workspace_roots": [
+    "/srv/goldenbee/workspaces"
+  ],
+  "allowed_secret_prefixes": [
+    "secret://"
+  ],
+  "allow_remote_listener": false
 }

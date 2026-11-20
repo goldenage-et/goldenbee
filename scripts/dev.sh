@@ -116,7 +116,6 @@ ensure_binaries() {
   (cd "$ROOT" && cargo run --locked -p goldenbee-gateway --bin gb-gateway -- --version >/dev/null)
   (cd "$ROOT" && cargo run --locked -p general --bin general -- --version >/dev/null)
   (cd "$ROOT" && cargo run --locked -p goldenbee-client-cli -- --version >/dev/null)
-  (cd "$ROOT" && cargo run --locked -p goldenbee-cli -- --version >/dev/null)
   install_binary "$ROOT/target/debug/gb-gateway" "$BIN_DIR/gb-gateway"
   install_binary "$ROOT/target/debug/general" "$BIN_DIR/general"
   install_binary "$ROOT/target/debug/gb-client" "$BIN_DIR/gb-client"

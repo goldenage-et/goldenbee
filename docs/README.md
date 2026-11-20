@@ -8,7 +8,7 @@ pages are references, not required reading before a local run.
 | Page | Read it for |
 | --- | --- |
 | [Architecture](architecture.md) | What Worker, Gateway, Client, SDK, runtime, adapter, registry, installer, and instance manager own; trust boundaries; failure behavior; limits |
-| [Deployment and usage](deployment.md) | Setup from zero; standalone Worker; local stack; Gateway + CLI; verified install; registry; host composers; Postgres replicas; systemd; use cases |
+| [Deployment and usage](deployment.md) | Setup from zero; standalone Worker; local stack; Gateway + Client; verified install; registry; local host lifecycle; Postgres replicas; systemd; use cases |
 | [Repository layout](layout.md) | Accepted directory ownership and migration status |
 | [Glossary](../GLOSSARY.md) | Exact product vocabulary |
 
@@ -18,8 +18,8 @@ pages are references, not required reading before a local run.
 | --- | --- |
 | [Develop Goldenbee](dev.md) | Workspace checks, native ADK source requirements, layout rules |
 | [ADK compatibility](adk.md) | Pinned ADK-Rust version and recorded compatibility evidence |
-| [Operator CLI](goldenbee-cli.md) | Install Gateway, composer, and Client executables; dispatch component commands |
-| [Client CLI](gb-client.md) | Gateway profiles, chat, Worker administration, teams, profiles, tasks, fleet commands |
+| [Install Goldenbee](goldenbee-cli.md) | Install the Gateway and Client directly from a release; generated config; upgrade and migration |
+| [Client CLI](gb-client.md) | Gateway profiles, chat, Worker administration, teams, profiles, tasks, package and instance commands |
 
 ## Protocols and configuration
 
@@ -38,7 +38,7 @@ pages are references, not required reading before a local run.
 | [Instance lifecycle](instance.md) | `gb-instance` create/start/stop/inspect/upgrade/backup/restore |
 | [Registry client](registry.md) | Client commands, immutable versions, scopes, optional external server |
 | [Trust and revocation](trust.md) | Signed advisories, offline decisions, quarantine |
-| [Host composers](goldenbee-composer.md) | Scoped host policy, provision/inspect/upgrade/rollback, reconciliation |
+| [Local host lifecycle](goldenbee-composer.md) | Gateway-owned package cache, provision/inspect/start/stop/restart/upgrade/rollback, Gateway-to-Gateway |
 | [Operations](operations.md) | Boot, systemd, drain, restart, upgrade, backup, recovery, Postgres HA |
 | [Release](release.md) | Artifact assembly, compatibility, deployment modes, release limits |
 | [Release notes](release-notes.md) | Current release candidate evidence and unknown behavior |
@@ -59,8 +59,8 @@ pages are references, not required reading before a local run.
   token or secret.
 - A signature proves provenance, not isolation. Sandboxing and explicit grants
   remain required.
-- Do not describe the host composer as a task proxy or supervisor, or the JSON
-  Gateway stores as multi-replica safe.
+- Do not describe the Gateway-owned local host as a task proxy or supervisor, or
+  the JSON Gateway stores as multi-replica safe.
 - Provider credentials are Worker-owned today. `secret://` and `vault:`
   references are recognized but have no merged central provider; `env:` is the
   working source.

@@ -22,13 +22,22 @@ pub const HOST_OPERATION_INSPECT: &str = "inspect";
 pub const HOST_OPERATION_UPGRADE: &str = "upgrade";
 /// Supported lifecycle operation: roll back a recoverable activation.
 pub const HOST_OPERATION_ROLLBACK: &str = "rollback";
+/// Supported lifecycle operation: start a stopped instance.
+pub const HOST_OPERATION_START: &str = "start";
+/// Supported lifecycle operation: stop a running instance.
+pub const HOST_OPERATION_STOP: &str = "stop";
+/// Supported lifecycle operation: restart a running or stopped instance.
+pub const HOST_OPERATION_RESTART: &str = "restart";
 
 /// Every operation a conforming adapter may advertise.
-pub const HOST_OPERATIONS: [&str; 4] = [
+pub const HOST_OPERATIONS: [&str; 7] = [
     HOST_OPERATION_PROVISION,
     HOST_OPERATION_INSPECT,
     HOST_OPERATION_UPGRADE,
     HOST_OPERATION_ROLLBACK,
+    HOST_OPERATION_START,
+    HOST_OPERATION_STOP,
+    HOST_OPERATION_RESTART,
 ];
 
 /// Resource ceilings selected for one instance.
@@ -421,3 +430,77 @@ pub struct HostInspection {
 
 /// Error returned by a host composer for one refused operation.
 pub type HostError = ApiError;
+
+/// One package source the Gateway may install on its own host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PackageSource {
+    /// A release directory already readable by the Gateway host.
+    Folder {
+        /// Host-local path. The Gateway validates it against its own roots.
+        path: String,
+    },
+    /// A signed release archive downloaded by the Gateway host.
+    Url {
+        /// HTTPS base URL or archive URL.
+        url: String,
+    },
+}
+
+/// Caller request to install a verified package into the local cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageInstallRequest {
+    /// Folder or URL source.
+    pub source: PackageSource,
+    /// Package name. Required when the source contains more than one package.
+    #[serde(default)]
+    pub package: Option<String>,
+    /// Expected immutable manifest digest.
+    #[serde(default)]
+    pub expected_digest: Option<String>,
+}
+
+/// One verified package in the local cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageSummary {
+    /// Package name.
+    pub package: String,
+    /// Package version.
+    pub version: String,
+    /// Immutable manifest digest.
+    pub artifact_digest: String,
+    /// Trusted signer identity.
+    pub signer: String,
+    /// Target triple.
+    pub target: String,
+}
+
+/// Result of one package installation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageInstallOutcome {
+    /// Installed package.
+    pub package: PackageSummary,
+    /// Whether this call changed the cache.
+    pub installed_now: bool,
+}
+
+/// Verified package cache listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageList {
+    /// Verified packages.
+    #[serde(default)]
+    pub packages: Vec<PackageSummary>,
+}
+
+/// Bounded local instance log tail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceLogs {
+    /// Instance identity.
+    pub instance: String,
+    /// Log lines, oldest first.
+    #[serde(default)]
+    pub lines: Vec<String>,
+    /// Whether older lines were omitted.
+    #[serde(default)]
+    pub truncated: bool,
+}

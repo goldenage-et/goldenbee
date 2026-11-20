@@ -33,18 +33,14 @@ jobs:
       - name: Build operator executables
         run: |
           cargo build --release --locked \
-            -p goldenbee-cli \
             -p goldenbee-gateway \
-            -p goldenbee-composer \
             -p goldenbee-client-cli
 
       - name: Stage release assets
         shell: bash
         run: |
           mkdir -p dist
-          cp target/release/gb dist/gb-x86_64-unknown-linux-gnu
           cp target/release/gb-gateway dist/gb-gateway-x86_64-unknown-linux-gnu
-          cp target/release/gb-composer dist/gb-composer-x86_64-unknown-linux-gnu
           cp target/release/gb-client dist/gb-client-x86_64-unknown-linux-gnu
           cp install.sh dist/install.sh
           (cd dist && sha256sum gb-* install.sh > SHA256SUMS)
@@ -53,9 +49,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/gb-x86_64-unknown-linux-gnu
             dist/gb-gateway-x86_64-unknown-linux-gnu
-            dist/gb-composer-x86_64-unknown-linux-gnu
             dist/gb-client-x86_64-unknown-linux-gnu
             dist/install.sh
             dist/SHA256SUMS

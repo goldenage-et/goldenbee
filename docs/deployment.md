@@ -5,9 +5,9 @@ Worker, a Gateway + CLI stack, verified installation, optional instance and
 fleet tools, systemd, and the Postgres-backed Gateway. For component ownership
 and boundaries, read [Architecture](architecture.md) first.
 
-Commands assume the release executables (`gb`, `gb-gateway`, `gb-client`, `general`,
-`coding`, `knowledge`, `gb-install`, `gb-instance`, `gb-composer`) are on
-`PATH`. From a source checkout, use
+Commands assume the release executables (`gb-gateway`, `gb-client`, `general`,
+`coding`, `knowledge`, `gb-install`, `gb-instance`) are on `PATH`. From a source
+checkout, use
 `target/debug/<name>` or `cargo run --locked -p <package> -- ...`. The release
 target is Linux `x86_64-unknown-linux-gnu`.
 
@@ -41,38 +41,30 @@ signature proves provenance; it does not replace isolation or grants.
 | Use the CLI through Gateway | Gateway + one Worker + `gb-client gw add` |
 | Install a signed release on a host | `gb-install` then `gb-instance` |
 | Distribute releases privately | external `gb-registry` from infrastructure plus `gb-install publish` |
-| Manage Workers on several hosts | one `gb-composer` per host |
+| Manage Workers on several hosts | one `gb-gateway` per host, or a root Gateway with `hosts` |
 | Serve multiple Gateway replicas | Postgres shared store + load balancer |
 | Use the control plane from a backend | depend on `gateway-core` directly |
 
 ## Single-command operator install
 
-Install the bootstrap from GitHub:
+Install the Gateway directly from GitHub:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh
 ```
 
-Then install the operator executables and generate matching local
-Gateway/composer configuration:
+Install the Client too, or install only the Client:
 
 ```sh
-gb i gateway
-gb i composer
-gb i client-cli
-# or both server components
-gb i all
-
-gb gw up
-gb gw status
-gb cmp serve
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh -s -- all
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh -s -- client
 ```
 
-`gb i` downloads target-specific assets from the GitHub release matching the
-`gb` version and verifies `SHA256SUMS`. `--from <dir>` keeps local installation
-available. `gb i` is not `gb-install`; it installs the Gateway, composer, and
-independent Client executables, not signed Worker packages. See
-[Operator CLI](goldenbee-cli.md) for paths, source lookup, and dispatch rules.
+The script downloads target-specific assets, verifies `SHA256SUMS`, and writes
+`gateway.json` and `trust.json` on first Gateway install. There is no separate
+composer executable. `install.sh` is not `gb-install`; it installs the Gateway
+and Client applications, not signed Worker packages. See
+[Install Goldenbee](goldenbee-cli.md) for paths and environment overrides.
 
 ## Local development from zero
 
@@ -166,7 +158,7 @@ status. Redirected stdin or stdout falls back to a line-oriented session. See
 
 ## Standalone Worker
 
-A Worker does not require Gateway, SDK, registry, or host composer.
+A Worker does not require Gateway, SDK, registry, or a Gateway-managed host.
 
 From the source checkout:
 
@@ -356,63 +348,54 @@ Stopping the registry does not affect installed Workers. Plain HTTP is accepted
 only on loopback. See [Private registry](registry.md) and
 [Trust and revocation](trust.md).
 
-## Managed fleet with host composers
+## Managed Workers on the Gateway host
 
-Run one `gb-composer` on each host that Gateway may manage. The adapter owns
-that host's scoped credential, verified package cache, instance root, allowed
-configuration/workspace roots, and host-local policy. Gateway never receives
-those paths or credentials.
-
-```sh
-cp config/goldenbee-composer.example.json /etc/goldenbee/goldenbee-composer.json
-# Replace the placeholder token and host paths.
-gb-composer serve --config /etc/goldenbee/goldenbee-composer.json
-```
-
-Register the adapter in Gateway's operator configuration:
-
-```json
-{
-  "hosts": [
-    {
-      "id": "host-a",
-      "endpoint": "http://127.0.0.1:9090",
-      "token": "<host-scoped token>",
-      "instances": ["general-a"],
-      "operations": ["provision", "inspect", "upgrade", "rollback"]
-    }
-  ]
-}
-```
-
-Use the CLI fleet commands with a token that carries `instance:admin`; each
-operation id is idempotent:
+Run one `gb-gateway` on each host. The Gateway owns that host's verified package
+cache, instance root, allowed configuration/workspace roots, and host-local
+policy. Client requests never carry host filesystem paths.
 
 ```sh
-gb-client fleet hosts --json
-gb-client fleet provision host-a \
-  --operation provision-general-a-1 \
+export GOLDENBEE_DELEGATION_SECRET='shared with each Worker process'
+gb-gateway serve --config /etc/goldenbee/gateway.json
+```
+
+Install a signed package and deploy an instance with a caller token that carries
+`instance:admin`:
+
+```sh
+gb-client package install --source /srv/goldenbee/releases/general-0.1.0
+gb-client instance deploy \
+  --source /srv/goldenbee/releases/general-0.1.0 \
+  --package general \
   --instance general-a --worker general-a \
-  --release sha256:<manifest-digest> \
   --grant task:submit --grant task:read --json
-gb-client fleet inspect host-a general-a --json
-gb-client fleet upgrade host-a general-a \
+gb-client instance list --json
+gb-client instance logs general-a
+gb-client instance stop general-a
+gb-client instance start general-a
+gb-client instance restart general-a
+gb-client instance upgrade general-a \
   --operation upgrade-general-a-1 \
   --release sha256:<manifest-digest> --json
-gb-client fleet rollback host-a general-a \
+gb-client instance rollback general-a \
   --operation rollback-general-a-1 --json
 ```
 
-Expected result: `fleet hosts` shows the adapter and supported operations;
-`fleet inspect` returns digest, lifecycle, process health, and compatibility;
-repeating an operation id returns the recorded outcome with `replayed: true`.
-Reusing an id with different content returns `host.operation_conflict`.
+Expected result: `package install` reports the package, version, digest, signer,
+and target; `instance deploy` returns digest, lifecycle, process health,
+compatibility, and the registered Worker; repeating a lifecycle operation id
+returns the recorded outcome with `replayed: true`.
 
-The adapter accepts only package digests from its verified cache. A request
-cannot name a host path or executable. Task, health, and stream traffic still
-flows directly from Gateway to the Worker. **The host composer is not a task
-proxy and not a process supervisor.** systemd or the container runtime owns
-restart and boot. See [Host composers](goldenbee-composer.md).
+The Gateway accepts only packages that pass its trust policy and smoke checks. A
+folder source must resolve under `allowed_package_sources`; a URL source is
+downloaded and verified before publication. **The Gateway is not a task proxy or
+a process supervisor for an external Worker.** When it owns the instance it
+starts and stops the process, but systemd or the container runtime still owns
+boot and crash restart policy.
+
+A control-plane-only Gateway can proxy lifecycle operations to another Gateway
+through `hosts`; the remote Gateway must accept the configured caller token with
+`instance:admin`. See [Local host lifecycle](goldenbee-composer.md).
 
 ## systemd
 
@@ -527,10 +510,11 @@ the roster and routing projection, not child execution state. See
 
 ### Managed private fleet
 
-Run one host composer per host, one Gateway, and an optional private registry.
-Operators install verified packages, provision instances, and upgrade by digest.
-Workers continue running if Gateway, registry, or an adapter is unavailable;
-existing tasks are not automatically moved to another Worker.
+Run one Gateway per host, or a root Gateway with remote `hosts`, plus an optional
+private registry. Operators install verified packages, provision instances, and
+upgrade by digest. Workers continue running if Gateway, registry, or a remote
+Gateway is unavailable; existing tasks are not automatically moved to another
+Worker.
 
 ### Business backend using gateway-core
 
@@ -543,8 +527,9 @@ login, payments, entitlements, and tenant policy remain in that backend.
 
 Run multiple Gateway replicas with PostgreSQL and a load balancer, then verify
 cross-replica registration, submission, streaming, and recovery within the
-documented tested scope. Keep host composers and Workers independent. Do not call
-this generally safe without the Postgres store and the operational work above.
+documented tested scope. Keep remote Gateway hosts and Workers independent. Do
+not call this generally safe without the Postgres store and the operational work
+above.
 
 ## Decision table
 
@@ -555,7 +540,7 @@ this generally safe without the Postgres store and the operational work above.
 | CLI + Gateway on one host | Gateway + Worker + CLI | Direct Worker calls from a product Client |
 | Install signed packages | `gb-install`, then `gb-instance` | Running an unverified binary |
 | Distribute packages privately | registry | Making the registry an execution dependency |
-| Manage instances on many hosts | host composer per host | Turning the adapter into a task proxy |
+| Manage instances on many hosts | one Gateway per host, or root Gateway + `hosts` | Turning the Gateway into a task proxy for a remote host |
 | Serve more than one Gateway replica | Postgres shared store + load balancer | Sharing JSON files between writers |
 | Use the control plane from a backend | `gateway-core` directly | Reimplementing Gateway routing |
 
@@ -577,7 +562,7 @@ provider is available.
 | `route.worker.not_found` | Worker not approved by this Gateway | `gb-client worker list --all`, `gb-client workers` |
 | `route.worker_unavailable` | Approved Worker is unreachable or identity-mismatched | Worker health, endpoint, instance/package |
 | `worker.endpoint_unavailable` | Registration or probe could not verify the live endpoint | `gb-client worker probe <id>`, listener, firewall |
-| `host.unreachable` | Gateway cannot reach a host composer | Composer process, endpoint, host token |
+| `host.unreachable` | Gateway cannot reach a remote Gateway host | Remote Gateway process, endpoint, caller token |
 | `install.smoke_failed` | Candidate failed constrained startup checks | Sandbox prerequisites, binary probe, trust policy |
 | `lifecycle.draining` | Worker is closing admission | Retry after restart or drain completion |
 | `provider.credential_unavailable` | Provider credential reference is not usable | `env:` variable on the Worker host |
@@ -591,7 +576,7 @@ provider is available.
 - A single Gateway process is not high availability. Multiple replicas require
   Postgres and the documented operational work.
 - A Worker crash does not automatically move its task to another Worker.
-- `gb-composer` is a lifecycle adapter, not a task proxy or supervisor.
+- A Gateway-owned local host manages its own Worker processes; it is not a task proxy for a remote host.
 - The registry is a distribution service, not an invocation hop.
 - Provider credentials remain Worker-owned. `secret://` and `vault:` are
   recognized references but have no merged provider behind them; use `env:` for
@@ -606,7 +591,7 @@ provider is available.
 - [Operations](operations.md)
 - [Install](install.md)
 - [Instance lifecycle](instance.md)
-- [Host composers](goldenbee-composer.md)
+- [Local host lifecycle](goldenbee-composer.md)
 - [Private registry](registry.md)
 - [Trust and revocation](trust.md)
 - [Worker configuration](worker-config.md)

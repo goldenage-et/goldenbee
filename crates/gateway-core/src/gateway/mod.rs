@@ -14,6 +14,7 @@ mod control;
 mod diagnostics;
 mod discovery;
 mod lifecycle;
+mod local;
 mod profiles;
 mod providers;
 mod stream;
@@ -26,6 +27,7 @@ mod tests;
 mod worker_client;
 mod workers;
 
+pub use self::local::LocalHost;
 use crate::config::{CoreConfig, HostConfig, StoreConfig, WorkerConfig};
 use crate::lifecycle::Lifecycle;
 use crate::registry::{Approval, Clock, Registry};
@@ -51,6 +53,7 @@ struct State {
     lifecycle_client: reqwest::Client,
     stream_slots: Arc<tokio::sync::Semaphore>,
     hosts: Vec<HostConfig>,
+    local_host: Option<Arc<dyn LocalHost>>,
     lifecycle: Lifecycle,
     vault: Option<Arc<crate::vault::Vault>>,
 }
@@ -64,11 +67,28 @@ impl Gateway {
     /// Resolve configuration, then verify each approved Worker that has no
     /// persisted registry record.
     pub async fn prepare(config: CoreConfig) -> Result<Self, ApiError> {
-        Self::prepare_with_clock(config, Arc::new(common::now_ms)).await
+        Self::prepare_with_local_host(config, None).await
+    }
+
+    /// Prepare with an optional in-process local host adapter.
+    pub async fn prepare_with_local_host(
+        config: CoreConfig,
+        local_host: Option<Arc<dyn LocalHost>>,
+    ) -> Result<Self, ApiError> {
+        Self::prepare_with_clock_and_local_host(config, Arc::new(common::now_ms), local_host).await
     }
 
     /// Prepare with an injected Gateway-side clock for deterministic tests.
     pub async fn prepare_with_clock(config: CoreConfig, clock: Clock) -> Result<Self, ApiError> {
+        Self::prepare_with_clock_and_local_host(config, clock, None).await
+    }
+
+    /// Prepare with an injected clock and an optional local host.
+    pub async fn prepare_with_clock_and_local_host(
+        config: CoreConfig,
+        clock: Clock,
+        local_host: Option<Arc<dyn LocalHost>>,
+    ) -> Result<Self, ApiError> {
         config.validate()?;
         let secret = config.resolve_secret()?;
         let lease_ttl_ms = config.lease_ttl_ms();
@@ -167,6 +187,7 @@ impl Gateway {
                 lifecycle_client,
                 stream_slots: Arc::new(tokio::sync::Semaphore::new(config.max_streams.max(1))),
                 hosts: config.hosts.clone(),
+                local_host,
                 lifecycle,
                 vault,
             }),

@@ -12,8 +12,8 @@ release.
 - Reusable `gateway-core` control plane library.
 - Thin `goldenbee-gateway` HTTP adapter (`gb-gateway` executable).
 - `gb-client` product Client over the Rust `sdk`.
-- Local operator tools: `gb`, `gb-install`, `gb-instance`,
-  `gb-composer`.
+- Local operator tools: `gb-install`, `gb-instance`, and the Gateway-owned local
+  host lifecycle.
 - No required business server, no mandatory UI, and no second ADK execution
   engine. `common` and `sdk` stay free of native ADK execution.
 

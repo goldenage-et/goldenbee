@@ -13,7 +13,11 @@ use crate::commands::fleet::{
     FleetCommand, FleetProvisionOptions, FleetUpgradeOptions, WorkPolicy,
 };
 use crate::commands::gateway::GatewayCommand;
+use crate::commands::instance::{
+    DeployOptions, InstanceCommand, UpgradeOptions, WorkPolicy as InstanceWorkPolicy,
+};
 use crate::commands::model::ModelCommand;
+use crate::commands::package::PackageCommand;
 use crate::commands::profile::{ProfileAction, ProfileCommand, ProfileRevisionOptions};
 use crate::commands::provider::{
     PairOptions, ProviderAddOptions, ProviderCommand, ProviderUpdateOptions,
@@ -68,6 +72,10 @@ pub enum Command {
     Artifact(ArtifactCommand),
     /// Host fleet operations.
     Fleet(FleetCommand),
+    /// Package cache installation and inspection.
+    Package(PackageCommand),
+    /// Gateway-owned local instance lifecycle.
+    Instance(InstanceCommand),
     /// Approval decisions.
     Approval(ApprovalCommand),
     /// Human control leases.
@@ -99,6 +107,8 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
         "submit" | "task" | "cancel" | "events" | "watch" => Command::Task(parse_task(name, rest)?),
         "artifact" | "artifacts" => Command::Artifact(parse_artifact(rest)?),
         "fleet" => Command::Fleet(parse_fleet(rest)?),
+        "package" | "packages" => Command::Package(parse_package(rest)?),
+        "instance" | "instances" => Command::Instance(parse_instance(rest)?),
         "approvals" | "approve" | "reject" | "revoke" => {
             Command::Approval(parse_approval(name, rest)?)
         }
@@ -812,6 +822,146 @@ fn parse_fleet(rest: Vec<String>) -> Result<FleetCommand, String> {
         _ => {
             return Err(
                 "gb-client: fleet expects hosts, host, provision, inspect, upgrade, or rollback"
+                    .to_string(),
+            )
+        }
+    })
+}
+
+fn parse_package(rest: Vec<String>) -> Result<PackageCommand, String> {
+    let raw = split(rest, &["source", "package", "digest"], &[])?;
+    Ok(match raw.positional(0).unwrap_or("") {
+        "install" => PackageCommand::Install {
+            source: raw.require(
+                "source",
+                "gb-client: package install requires --source <folder|url>",
+            )?,
+            package: raw.get("package"),
+            digest: raw.get("digest"),
+        },
+        "list" => PackageCommand::List,
+        _ => return Err("gb-client: package expects install or list".into()),
+    })
+}
+
+fn parse_instance(rest: Vec<String>) -> Result<InstanceCommand, String> {
+    let raw = split(
+        rest,
+        &[
+            "source",
+            "package",
+            "digest",
+            "instance",
+            "worker",
+            "operation",
+            "config",
+            "workspace",
+            "grant",
+            "secret-ref",
+            "profile",
+            "profile-instruction",
+            "profile-member",
+            "profile-capability",
+            "profile-grant",
+            "addr",
+            "control-token",
+            "release",
+            "authorize",
+            "work-policy",
+            "verify-input",
+            "tail",
+        ],
+        &["read-only", "profile-create", "start"],
+    )?;
+    Ok(match raw.positional(0).unwrap_or("") {
+        "deploy" => InstanceCommand::Deploy(DeployOptions {
+            source: raw.require(
+                "source",
+                "gb-client: instance deploy requires --source and --instance",
+            )?,
+            package: raw.get("package"),
+            digest: raw.get("digest"),
+            instance: raw.require(
+                "instance",
+                "gb-client: instance deploy requires --source and --instance",
+            )?,
+            worker: raw.get("worker"),
+            operation: raw.get("operation"),
+            config: raw.get("config"),
+            workspace: raw.get("workspace"),
+            read_only: raw.has("read-only"),
+            grants: raw.all("grant"),
+            secret_refs: raw.all("secret-ref"),
+            profile: raw.get("profile"),
+            profile_create: raw.has("profile-create"),
+            profile_instruction: raw.get("profile-instruction"),
+            profile_members: raw.all("profile-member"),
+            profile_capabilities: raw.all("profile-capability"),
+            profile_grants: raw.all("profile-grant"),
+            addr: raw.get("addr"),
+            control_token: raw.get("control-token"),
+        }),
+        "list" => InstanceCommand::List,
+        "inspect" => InstanceCommand::Inspect {
+            instance: raw.require_positional(1, "gb-client: instance inspect requires <instance>")?,
+        },
+        "start" => InstanceCommand::Start {
+            instance: raw.require_positional(1, "gb-client: instance start requires <instance>")?,
+        },
+        "stop" => InstanceCommand::Stop {
+            instance: raw.require_positional(1, "gb-client: instance stop requires <instance>")?,
+        },
+        "restart" => InstanceCommand::Restart {
+            instance: raw.require_positional(1, "gb-client: instance restart requires <instance>")?,
+        },
+        "logs" => InstanceCommand::Logs {
+            instance: raw.require_positional(1, "gb-client: instance logs requires <instance>")?,
+            tail: raw.uint("tail", "--tail")?.unwrap_or(200) as usize,
+        },
+        "upgrade" => {
+            let instance = raw.require_positional(
+                1,
+                "gb-client: instance upgrade requires <instance> --operation --release",
+            )?;
+            let work_policy = match raw.get("work-policy").as_deref() {
+                None | Some("drain") => InstanceWorkPolicy::Drain,
+                Some("pin") => InstanceWorkPolicy::Pin,
+                Some("migrate") => InstanceWorkPolicy::Migrate,
+                Some(_) => {
+                    return Err("gb-client: --work-policy must be drain, pin, or migrate".into())
+                }
+            };
+            InstanceCommand::Upgrade {
+                instance,
+                options: UpgradeOptions {
+                    operation: raw.require(
+                        "operation",
+                        "gb-client: instance upgrade requires --operation and --release",
+                    )?,
+                    release: raw.require(
+                        "release",
+                        "gb-client: instance upgrade requires --operation and --release",
+                    )?,
+                    authorize: raw.all("authorize"),
+                    work_policy,
+                    verify_input: raw.get("verify-input"),
+                    addr: raw.get("addr"),
+                },
+            }
+        }
+        "rollback" => InstanceCommand::Rollback {
+            instance: raw.require_positional(
+                1,
+                "gb-client: instance rollback requires <instance> --operation",
+            )?,
+            operation: raw.require(
+                "operation",
+                "gb-client: instance rollback requires --operation",
+            )?,
+        },
+        _ => {
+            return Err(
+                "gb-client: instance expects deploy, list, inspect, start, stop, restart, logs, upgrade, or rollback"
                     .to_string(),
             )
         }

@@ -563,14 +563,33 @@ distinct fields.
 
 ## Fleet lifecycle adapters
 
-Authorized fleet lifecycle uses configured host composers, not direct Gateway
-filesystem access. The caller needs `instance:admin`; the Gateway also checks
-the configured host, instance allow-list, and operation allow-list before it
-uses the host-scoped adapter credential.
+Authorized lifecycle uses the Gateway-owned local host or a configured remote
+Gateway host, never caller filesystem access. The caller needs `instance:admin`
+for mutations and `instance:read` or `instance:admin` for inspection. The
+Gateway also checks the host, instance allow-list, and operation allow-list.
+
+The Gateway also owns its local package cache and Worker processes. These
+routes do not name a host:
 
 | Route | Purpose |
 | --- | --- |
-| `GET /v1/hosts` | Configured adapters with live supported operations |
+| `POST /v1/packages/install` | Install one verified package from a folder or URL |
+| `GET /v1/packages` | List verified packages |
+| `POST /v1/instances` | Provision and register one verified instance |
+| `GET /v1/instances` | List local instances |
+| `GET /v1/instances/{instance}` | Digest, identity, lifecycle, health, compatibility |
+| `POST /v1/instances/{instance}/start` | Start a stopped instance |
+| `POST /v1/instances/{instance}/stop` | Stop a running instance |
+| `POST /v1/instances/{instance}/restart` | Stop, start, and re-register |
+| `POST /v1/instances/{instance}/upgrade` | Managed verified upgrade |
+| `POST /v1/instances/{instance}/rollback` | Recover a compatible interrupted activation |
+| `GET /v1/instances/{instance}/logs` | Bounded process log tail |
+
+The host-qualified compatibility routes remain:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /v1/hosts` | Local Gateway host plus configured remote hosts |
 | `GET /v1/hosts/{host}` | One adapter descriptor |
 | `POST /v1/hosts/{host}/instances` | Provision and register one verified instance |
 | `GET /v1/hosts/{host}/instances/{instance}` | Digest, identity, lifecycle, health, compatibility |
@@ -580,12 +599,12 @@ uses the host-scoped adapter credential.
 Provision requests select a verified `release_digest`, an `instance`, a
 Gateway `worker` identity, and an optional profile activation separately. They
 never carry a host endpoint, host credential, or executable path. A host-local
-`config` or `workspace` string is resolved by the adapter against its own
-permitted roots; the Gateway does not read it. See
-[goldenbee-composer.md](goldenbee-composer.md) for host policy and reconciliation.
+`config` or `workspace` string is resolved by the Gateway-owned host against
+its own permitted roots. See [goldenbee-composer.md](goldenbee-composer.md) for
+local host policy and reconciliation.
 
-Host loss returns `503 host.unreachable`. An operation the adapter does not
-implement returns `host.unsupported`, and an unknown release digest returns
+Host loss returns `503 host.unreachable`. An operation the local host or remote
+Gateway does not implement returns `host.unsupported`, and an unknown release digest returns
 `host.release_unavailable`. Repeated operation ids return the recorded outcome
 with `replayed: true`; a different payload under the same id returns
 `host.operation_conflict`.

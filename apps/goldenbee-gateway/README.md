@@ -2,10 +2,11 @@
 
 `goldenbee-gateway` is the standalone HTTP adapter over the `gateway-core`
 library. It owns listener startup, caller bearer-token authentication, Axum
-routing and middleware, JSON and Server-Sent Event serialization, and operator
-configuration loading. Worker approvals, registration, leases, routing,
-idempotency, delegation, discovery, administration, audit, and stream forwarding
-come from `gateway-core`.
+routing and middleware, JSON and Server-Sent Event serialization, operator
+configuration loading, the verified package cache, and local Worker lifecycle.
+Worker approvals, registration, leases, routing, idempotency, delegation,
+discovery, administration, audit, and stream forwarding come from
+`gateway-core`.
 
 The package is `goldenbee-gateway`; the executable is `gb-gateway`.
 
@@ -22,6 +23,7 @@ src/
   auth.rs      caller bearer authentication
   http.rs      JSON results, failures, bearer parsing
   health.rs    public liveness
+  host/        verified package cache and local instance lifecycle
   workers/     discovery, control, and administration
   tasks/       task proxy and Server-Sent Event routes
 ```
@@ -52,7 +54,7 @@ export GOLDENBEE_DELEGATION_SECRET='shared with each Worker process'
 cargo run -p goldenbee-gateway -- serve --config config/gateway.example.json
 ```
 
-The built binary is still named `gateway`.
+The built binary is named `gb-gateway`.
 
 `--config` is required. `--addr` overrides the configured listener. Prefer
 `GOLDENBEE_DELEGATION_SECRET`; the operator file may carry
@@ -76,6 +78,13 @@ stored only as SHA-256 hashes.
 | Path | Authentication | Behavior |
 | --- | --- | --- |
 | `/v1/health` | Public | Liveness plus approved and reachable Worker counts. |
+| `POST /v1/packages/install` | `instance:admin` | Install a verified package from a folder or URL. |
+| `GET /v1/packages` | `instance:read` | List verified packages. |
+| `POST /v1/instances` | `instance:admin` | Provision and register a local instance. |
+| `GET /v1/instances` | `instance:read` | List local instances. |
+| `GET /v1/instances/{instance}` | `instance:read` | Inspect one local instance. |
+| `POST /v1/instances/{instance}/start`, `/stop`, `/restart` | `instance:admin` | Control the local process. |
+| `GET /v1/instances/{instance}/logs` | `instance:read` | Read a bounded process log tail. |
 | `GET /v1/workers` | `task:read` | Discovery filtered by allow-list, capability, protocol, locality, and health. |
 | `POST /v1/workers/register` | Worker `control_token` | Verified registration of endpoint, incarnation, package, protocol, and capabilities. |
 | `POST /v1/workers/{id}/lease` | Worker `control_token` | Gateway-clock lease renewal and incarnation reconciliation. |

@@ -6,7 +6,9 @@ pub(crate) mod diagnose;
 pub(crate) mod fleet;
 pub(crate) mod gateway;
 pub(crate) mod health;
+pub(crate) mod instance;
 pub(crate) mod model;
+pub(crate) mod package;
 pub(crate) mod profile;
 pub(crate) mod provider;
 pub(crate) mod task;
@@ -31,6 +33,8 @@ pub(crate) async fn dispatch(command: Command, json: bool, client: &Client) -> E
         Command::Task(command) => task::task_command(command, json, client).await,
         Command::Artifact(command) => artifact::artifact_command(command, json, client).await,
         Command::Fleet(command) => fleet::fleet_command(command, json, client).await,
+        Command::Package(command) => package::package_command(command, json, client).await,
+        Command::Instance(command) => instance::instance_command(command, json, client).await,
         Command::Approval(command) => approval::approval_command(command, json, client).await,
         Command::Control(command) => control::control_command(command, json, client).await,
         Command::Diagnose(command) => diagnose::diagnose_command(command, json, client).await,

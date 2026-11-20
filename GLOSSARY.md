@@ -33,9 +33,9 @@ _Avoid_: A prompt collection, a Runtime Profile.
 An authenticated distribution service for immutable Worker Package releases. It is optional and never participates in task invocation or Worker execution.
 _Avoid_: Gateway, Worker runtime, Client SDK.
 
-**Host composer**:
-A host-local deployment process that resolves a verified package digest and performs authorized Worker Instance provisioning, inspection, upgrade, and rollback for Gateway fleet management. It owns host credentials and filesystem policy; the Gateway never receives either.
-_Avoid_: Gateway host supervisor, a universal privileged install endpoint.
+**Gateway local host**:
+The Gateway's own package cache and Worker Instance lifecycle: verified package installation, provisioning, inspection, start, stop, restart, upgrade, and rollback. It owns host filesystem policy; callers never receive those paths or a separate host credential.
+_Avoid_: A separate composer process, a universal privileged install endpoint, a task proxy for a remote host.
 
 **Worker Instance**:
 An installation of a Worker Package with its own identity, state, permissions, resource limits, and Runtime Profiles.

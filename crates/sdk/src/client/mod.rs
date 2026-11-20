@@ -6,6 +6,7 @@ mod artifacts;
 mod control;
 mod diagnostics;
 mod fleet;
+mod host;
 mod profiles;
 mod providers;
 mod retry;

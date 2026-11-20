@@ -105,6 +105,8 @@ pub mod scopes {
     pub const TEAM_WRITE: &str = "team:write";
     /// Manage instances and releases.
     pub const INSTANCE_ADMIN: &str = "instance:admin";
+    /// Read local instances, packages, and logs.
+    pub const INSTANCE_READ: &str = "instance:read";
     /// Read operational evidence and metrics.
     pub const OPERATE: &str = "operate";
     /// Manage the Gateway provider catalog and write-only provider credentials.

@@ -4,12 +4,13 @@
 //! live here. Route ownership lives in the route modules.
 
 use crate::config::Config;
+use crate::host::HostManager;
 use crate::router;
 use crate::socket::SocketLimits;
 use crate::state::{AppState, SharedState, TicketStore};
 use axum::Router;
 use common::{ApiError, GatewayHealth};
-use gateway_core::{Caller, Gateway as CoreGateway};
+use gateway_core::{Caller, Gateway as CoreGateway, LocalHost};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -27,10 +28,25 @@ impl Gateway {
             .map(|caller| (caller.token.clone(), caller.caller()))
             .collect();
         let socket = SocketLimits::from(config.socket);
-        let core = CoreGateway::prepare(config.core).await?;
+        let base_dir = config.core.base_dir.clone();
+        let local_host = if config.local.enabled() {
+            Some(Arc::new(HostManager::new(
+                config.local.clone(),
+                base_dir.as_deref(),
+            )?))
+        } else {
+            None
+        };
+        let local_host_id = local_host.as_ref().map(|host| host.host_id().to_string());
+        let local: Option<Arc<dyn LocalHost>> = local_host
+            .as_ref()
+            .map(|host| host.clone() as Arc<dyn LocalHost>);
+        let core = CoreGateway::prepare_with_local_host(config.core, local).await?;
         Ok(Self {
             state: Arc::new(AppState {
                 core,
+                local_host,
+                local_host_id,
                 callers,
                 tickets: std::sync::Mutex::new(TicketStore::new(common::SOCKET_MAX_TICKETS)),
                 socket,

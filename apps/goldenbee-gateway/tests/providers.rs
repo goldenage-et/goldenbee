@@ -36,6 +36,7 @@ async fn start_gateway(directory: &std::path::Path, env_name: &str) -> String {
             },
         ],
         socket: SocketConfig::default(),
+        local: Default::default(),
         core: CoreConfig {
             data_dir: directory.join("gateway").display().to_string(),
             registry: None,
@@ -596,6 +597,7 @@ async fn missing_master_key_fails_gateway_startup() {
             workers: None,
         }],
         socket: SocketConfig::default(),
+        local: Default::default(),
         core: CoreConfig {
             data_dir: directory.path().join("gateway").display().to_string(),
             vault: Some(VaultConfig {

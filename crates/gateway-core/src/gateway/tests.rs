@@ -87,6 +87,7 @@ async fn state_with(endpoint: &str) -> (State, tempfile::TempDir) {
         lifecycle_client: reqwest::Client::new(),
         stream_slots: Arc::new(tokio::sync::Semaphore::new(256)),
         hosts: Vec::new(),
+        local_host: None,
         lifecycle: crate::lifecycle::Lifecycle::open(directory.path())
             .expect("lifecycle store opens"),
         vault: None,

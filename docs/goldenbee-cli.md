@@ -1,172 +1,137 @@
-# Operator CLI
+# Install Goldenbee
 
-`gb` is the Goldenbee operator bootstrap. It installs the Gateway and composer
-executables from a release directory and dispatches their existing command
-surfaces. It is not a Client and does not include `gb-client`.
+Goldenbee ships two applications:
+
+| Executable | Role |
+| --- | --- |
+| `gb-gateway` | Control plane, registry, routing, package cache, and local Worker lifecycle |
+| `gb-client` | Operator Client that talks to a Gateway over HTTP |
+
+There is no separate composer binary and no `gb` bootstrap executable. The
+Gateway owns local installation and process lifecycle directly.
 
 ## Bootstrap
 
-Install the bootstrap from GitHub:
+Install the Gateway from GitHub:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh
 ```
 
-The script supports Linux `x86_64`, downloads `gb` from the latest GitHub
-release, verifies `SHA256SUMS`, and installs to `~/.local/bin`.
+Install only the Client:
 
-Then install components:
-
-```text
-gb i gateway
-gb i composer
-gb i client-cli
-gb i all
+```sh
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh -s -- client
 ```
 
-## Commands
+Install both:
 
-```text
-gb i gateway
-gb i composer
-gb i client-cli
-gb i all
-
-gb gw <gateway args...>
-gb cmp <composer args...>
+```sh
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh -s -- all
 ```
 
-Long aliases:
+The script supports Linux `x86_64`, downloads the selected release assets,
+verifies `SHA256SUMS`, and installs to `~/.local/bin` by default.
+
+## Installed layout
 
 ```text
-gb install ...
-gb gateway ...
-gb composer ...
-```
-
-`gb i all` installs the Gateway and composer. `gb i client-cli` installs the
-independent Client executable but adds no `gb client` command.
-
-## Install
-
-The default installed layout is:
-
-```text
-~/.local/bin/gb
 ~/.local/bin/gb-gateway
-~/.local/bin/gb-composer
 ~/.local/bin/gb-client
 
 ~/.config/goldenbee/gateway.json
-~/.config/goldenbee/composer.json
-~/.config/goldenbee/local-token
+~/.config/goldenbee/trust.json
 
 ~/.local/share/goldenbee/gateway/
 ~/.local/share/goldenbee/instances/
 ~/.local/share/goldenbee/packages/
+~/.local/share/goldenbee/releases/
 ~/.local/share/goldenbee/workspaces/
 ```
 
-The installer writes configuration and `local-token` with mode `0600`.
-Existing binaries and configuration are kept unless `--force` is supplied.
-`--no-config` installs only the executable.
+`install.sh` writes `gateway.json` and `trust.json` with mode `0600` when they
+do not exist. It never overwrites an existing configuration. Set
+`GOLDENBEE_NO_CONFIG=1` to install only the executable.
 
-`gb i` downloads release assets from GitHub by default. It installs the
-Gateway, composer, and Client from the release tag matching the running `gb`
-version. Downloads are verified against `SHA256SUMS` before installation.
+The generated trust policy has no trusted signers and no approved runtimes,
+ADKs, or permissions. Edit `trust.json` before installing a Worker package.
 
-Local sources remain available:
-
-1. `--from <dir>` uses that directory only.
-2. `GOLDENBEE_RELEASE_DIR` uses a local release directory.
-3. `target/debug` or `target/release` keeps the development workflow.
-4. Otherwise `gb` downloads from GitHub.
-
-Local lookup accepts both unsuffixed development binaries and target-suffixed
-release assets.
-
-The local sibling executable names are:
+## Environment
 
 ```text
-gb-gateway
-gb-composer
-gb-client
+GOLDENBEE_VERSION=vX.Y.Z|latest
+GOLDENBEE_BIN_DIR="$HOME/.local/bin"
+GOLDENBEE_CONFIG_DIR="$HOME/.config/goldenbee"
+GOLDENBEE_DATA_DIR="$HOME/.local/share/goldenbee"
+GOLDENBEE_REPO=owner/name
+GOLDENBEE_RELEASE_BASE=https://github.com/owner/name/releases
+GOLDENBEE_NO_CONFIG=1
 ```
 
-Remote assets are target-suffixed:
-
-```text
-gb-gateway-x86_64-unknown-linux-gnu
-gb-composer-x86_64-unknown-linux-gnu
-gb-client-x86_64-unknown-linux-gnu
-```
-
-`gb i` installs operator executables; it does not install signed Worker
-packages. Use `gb-install` and `gb-instance` for that path.
-
-### Options
-
-```text
---from <dir>
---release <vX.Y.Z|latest>
---repo <owner/name>
---release-base <url>
---bin-dir <dir>
---config-dir <dir>
---data-dir <dir>
---force
---no-config
-```
-
-Environment overrides:
-
-```text
-GOLDENBEE_BIN_DIR
-GOLDENBEE_CONFIG_DIR
-GOLDENBEE_DATA_DIR
-GOLDENBEE_VERSION
-GOLDENBEE_REPO
-GOLDENBEE_RELEASE_BASE
-GOLDENBEE_GITHUB_TOKEN
-```
-
-Checksum verification detects corrupted or mismatched downloads. It is not a
-signed-package trust root; signed Worker package installation remains the
-`gb-install` path.
-
-## Dispatch
-
-`gb gw` resolves the installed `gb-gateway` and replaces the `gb` process with
-it. Lifecycle commands receive the generated Gateway configuration when
-`--config` is omitted:
+## Run
 
 ```sh
-gb gw up
-gb gw status
-gb gw down
-gb gw pair
-gb gw serve
+export GOLDENBEE_DELEGATION_SECRET='shared with each Worker process'
+gb-gateway serve --config ~/.config/goldenbee/gateway.json
 ```
 
-`gb cmp` resolves `gb-composer` and injects the generated composer
-configuration for `serve`:
+The Gateway exposes Client routes and its own local host lifecycle routes on the
+same listener. `gb-client` connects with a caller token from `gateway.json`.
+
+## Manage a Worker
 
 ```sh
-gb cmp serve
-gb cmp serve --config /custom/composer.json
+gb-client package install --source /srv/goldenbee/releases/general-0.1.0
+gb-client instance deploy \
+  --source /srv/goldenbee/releases/general-0.1.0 \
+  --package general \
+  --instance general-a \
+  --grant task:submit --grant task:read \
+  --start
+gb-client instance list
+gb-client instance logs general-a
+gb-client instance stop general-a
+gb-client instance start general-a
 ```
 
-Other arguments pass through unchanged, including `gb gw provider ...`.
+For a remote Gateway, connect Client flags to its URL and caller token:
 
-## Generated local configuration
+```sh
+gb-client --gateway https://gateway.example:8443 --token "$TOKEN" instance list
+```
 
-The Gateway config uses one local caller with `scopes = ["*"]` and a local host
-entry for the composer. The composer config uses the same bearer token and local
-instance/package roots. This is development policy, not a production user
-model. Production deployments can replace both files and keep their own scoped
-credentials.
+Use an HTTPS URL or a private network path. Caller tokens are bearer secrets.
 
-`gb` does not run a background reconciler, install systemd units, or manage
-running processes after start. Gateway `up/status/down` and composer process
-supervision remain the responsibility of their executables or the host
-supervisor.
+## Route summary
+
+```text
+POST /v1/packages/install
+GET  /v1/packages
+
+POST /v1/instances
+GET  /v1/instances
+GET  /v1/instances/{instance}
+POST /v1/instances/{instance}/start
+POST /v1/instances/{instance}/stop
+POST /v1/instances/{instance}/restart
+POST /v1/instances/{instance}/upgrade
+POST /v1/instances/{instance}/rollback
+GET  /v1/instances/{instance}/logs
+```
+
+The older `/v1/hosts/{host}/...` routes remain as a compatibility alias and let
+one Gateway proxy lifecycle operations to another Gateway.
+
+## Remove a previous composer install
+
+`gb-composer`, `composer.json`, and the old `gb` bootstrap are no longer
+installed. Move the old composer policy fields into `gateway.json`:
+
+- `id` becomes `host_id`
+- `instances_root` and `packages_root` stay top-level
+- `operations`, grants, roots, and listener policy stay top-level
+- remove `callers`; Gateway caller tokens authorize the local host
+- add `trust_policy` and `allowed_package_sources`
+
+Then run `gb-gateway serve --config gateway.json` and remove the old
+`gb-composer` service.

@@ -2,14 +2,14 @@
 //!
 //! The Gateway validates the caller scope, the configured host, and the
 //! instance allow-list, then forwards the operation to exactly one host
-//! adapter with that host's scoped credential. Lease, registration, and
-//! inspection projections remain Gateway-owned. The Gateway never resolves a
-//! host path, reads Worker assets, or performs privileged installation.
+//! adapter. A Gateway-owned host runs in-process; a remote Gateway or adapter
+//! is reached over its scoped HTTP contract. Lease, registration, and
+//! inspection projections remain Gateway-owned.
 
 use crate::caller::Caller;
 use crate::config::HostConfig;
 use crate::lifecycle::Record;
-use crate::registry::NewApproval;
+use crate::registry::{ApprovalPatch, NewApproval};
 use common::{
     scopes, AdminWorkerSummary, ApiError, Capacity, HostDescriptor, HostInspection,
     HostOperationOutcome, HostProvisionRequest, HostRollbackRequest, HostUpgradeRequest,
@@ -19,16 +19,52 @@ use common::{
 
 use super::support::normalize;
 use super::worker_client::probe;
-use super::Gateway;
+use super::{Gateway, LocalHost};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+enum Target {
+    Local(Arc<dyn LocalHost>),
+    Remote(HostConfig),
+}
+
+impl Target {
+    fn id(&self) -> &str {
+        match self {
+            Self::Local(host) => host.id(),
+            Self::Remote(host) => &host.id,
+        }
+    }
+
+    fn instances(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Local(host) => host.allowed_instances(),
+            Self::Remote(host) => host.instances.clone(),
+        }
+    }
+
+    fn operations(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Local(host) => host.allowed_operations(),
+            Self::Remote(host) => host.operations.clone(),
+        }
+    }
+}
 
 impl Gateway {
     /// Configured host composers with their live supported operations.
     pub async fn hosts(&self, caller: &Caller) -> Result<Vec<HostDescriptor>, ApiError> {
-        caller.principal.require(scopes::INSTANCE_ADMIN)?;
+        caller
+            .principal
+            .require_any(&[scopes::INSTANCE_ADMIN, scopes::INSTANCE_READ])?;
         let mut hosts = Vec::new();
+        if let Some(local) = &self.state.local_host {
+            hosts.push(self.local_descriptor(local.as_ref()));
+        }
         for host in &self.state.hosts {
-            let descriptor = match self.host_descriptor(host).await {
+            let target = Target::Remote(host.clone());
+            let descriptor = match self.target_descriptor(&target).await {
                 Ok(descriptor) => descriptor,
                 Err(error) => HostDescriptor {
                     host: host.id.clone(),
@@ -44,11 +80,13 @@ impl Gateway {
         Ok(hosts)
     }
 
-    /// One configured host composer descriptor.
+    /// One configured host descriptor.
     pub async fn host(&self, caller: &Caller, host: &str) -> Result<HostDescriptor, ApiError> {
-        caller.principal.require(scopes::INSTANCE_ADMIN)?;
-        let host = self.host_config(host)?;
-        self.host_descriptor(&host).await
+        caller
+            .principal
+            .require_any(&[scopes::INSTANCE_ADMIN, scopes::INSTANCE_READ])?;
+        let target = self.target(host)?;
+        self.target_descriptor(&target).await
     }
 
     /// Provision one verified instance, activate its profile, then register the
@@ -60,8 +98,8 @@ impl Gateway {
         request: HostProvisionRequest,
     ) -> Result<HostOperationOutcome, ApiError> {
         self.require_instance_admin(caller, "host.provision", &request.instance)?;
-        let host =
-            self.authorized_host(caller, host, &request.instance, HOST_OPERATION_PROVISION)?;
+        let target =
+            self.authorized_target(caller, host, &request.instance, HOST_OPERATION_PROVISION)?;
         validate_operation(&request.operation_id, &request.worker, &request.instance)?;
         let digest = request.digest();
         if let Some(record) =
@@ -69,7 +107,7 @@ impl Gateway {
         {
             return Ok(record);
         }
-        self.require_supported(&host, HOST_OPERATION_PROVISION)
+        self.require_supported(&target, HOST_OPERATION_PROVISION)
             .await?;
 
         let token = request
@@ -80,7 +118,7 @@ impl Gateway {
         let mut adapter_request = request.clone();
         adapter_request.control_token = Some(token.clone());
         self.record_in_flight(
-            &host,
+            target.id(),
             &request.operation_id,
             HOST_OPERATION_PROVISION,
             &digest,
@@ -89,11 +127,11 @@ impl Gateway {
         )?;
 
         let outcome: HostOperationOutcome = self
-            .adapter_post(&host, "/v1/instances", &adapter_request)
+            .provision_target(&target, &adapter_request)
             .await
             .map_err(|error| {
                 self.operation_failed(
-                    &host,
+                    target.id(),
                     &request.operation_id,
                     &digest,
                     &request.instance,
@@ -142,7 +180,7 @@ impl Gateway {
         let mut outcome = outcome;
         outcome.worker = Some(worker);
         self.complete(
-            &host,
+            target.id(),
             &request.operation_id,
             &digest,
             &request.instance,
@@ -158,14 +196,12 @@ impl Gateway {
         host: &str,
         instance: &str,
     ) -> Result<HostInspection, ApiError> {
-        self.require_instance_admin(caller, "host.inspect", instance)?;
-        let host = self.authorized_host(caller, host, instance, HOST_OPERATION_INSPECT)?;
-        let inspection: HostInspection = self
-            .adapter_get(&host, &format!("/v1/instances/{instance}"))
-            .await?;
+        self.require_instance_read(caller, "host.inspect", instance)?;
+        let target = self.authorized_target(caller, host, instance, HOST_OPERATION_INSPECT)?;
+        let inspection: HostInspection = self.inspect_target(&target, instance).await?;
         let worker = self.worker_for_instance(instance);
         Ok(HostInspection {
-            host: host.id,
+            host: target.id().to_string(),
             view: inspection.view,
             worker,
         })
@@ -181,13 +217,13 @@ impl Gateway {
         request: HostUpgradeRequest,
     ) -> Result<HostOperationOutcome, ApiError> {
         self.require_instance_admin(caller, "host.upgrade", instance)?;
-        let host = self.authorized_host(caller, host, instance, HOST_OPERATION_UPGRADE)?;
+        let target = self.authorized_target(caller, host, instance, HOST_OPERATION_UPGRADE)?;
         validate_operation(&request.operation_id, "", instance)?;
         let digest = request.digest();
         if let Some(record) = self.lifecycle_replay(&request.operation_id, &digest, instance)? {
             return Ok(record);
         }
-        self.require_supported(&host, HOST_OPERATION_UPGRADE)
+        self.require_supported(&target, HOST_OPERATION_UPGRADE)
             .await?;
         let worker = self.worker_for_instance(instance).ok_or_else(|| {
             ApiError::new(
@@ -196,7 +232,7 @@ impl Gateway {
             )
         })?;
         self.record_in_flight(
-            &host,
+            target.id(),
             &request.operation_id,
             HOST_OPERATION_UPGRADE,
             &digest,
@@ -204,18 +240,14 @@ impl Gateway {
             &worker.id,
         )?;
         let result = self
-            .adapter_post(
-                &host,
-                &format!("/v1/instances/{instance}/upgrade"),
-                &request,
-            )
+            .upgrade_target(&target, instance, request.clone())
             .await;
         let outcome: HostOperationOutcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
                 let _ = self.reconcile_worker(&worker.id, instance, None).await;
                 return Err(self.operation_failed(
-                    &host,
+                    target.id(),
                     &request.operation_id,
                     &digest,
                     instance,
@@ -231,7 +263,7 @@ impl Gateway {
         let mut outcome = outcome;
         outcome.worker = Some(worker);
         self.complete(
-            &host,
+            target.id(),
             &request.operation_id,
             &digest,
             instance,
@@ -249,13 +281,13 @@ impl Gateway {
         request: HostRollbackRequest,
     ) -> Result<HostOperationOutcome, ApiError> {
         self.require_instance_admin(caller, "host.rollback", instance)?;
-        let host = self.authorized_host(caller, host, instance, HOST_OPERATION_ROLLBACK)?;
+        let target = self.authorized_target(caller, host, instance, HOST_OPERATION_ROLLBACK)?;
         validate_operation(&request.operation_id, "", instance)?;
         let digest = request.digest();
         if let Some(record) = self.lifecycle_replay(&request.operation_id, &digest, instance)? {
             return Ok(record);
         }
-        self.require_supported(&host, HOST_OPERATION_ROLLBACK)
+        self.require_supported(&target, HOST_OPERATION_ROLLBACK)
             .await?;
         let worker = self.worker_for_instance(instance).ok_or_else(|| {
             ApiError::new(
@@ -264,7 +296,7 @@ impl Gateway {
             )
         })?;
         self.record_in_flight(
-            &host,
+            target.id(),
             &request.operation_id,
             HOST_OPERATION_ROLLBACK,
             &digest,
@@ -272,18 +304,14 @@ impl Gateway {
             &worker.id,
         )?;
         let result = self
-            .adapter_post(
-                &host,
-                &format!("/v1/instances/{instance}/rollback"),
-                &request,
-            )
+            .rollback_target(&target, instance, request.clone())
             .await;
         let outcome: HostOperationOutcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
                 let _ = self.reconcile_worker(&worker.id, instance, None).await;
                 return Err(self.operation_failed(
-                    &host,
+                    target.id(),
                     &request.operation_id,
                     &digest,
                     instance,
@@ -299,7 +327,7 @@ impl Gateway {
         let mut outcome = outcome;
         outcome.worker = Some(worker);
         self.complete(
-            &host,
+            target.id(),
             &request.operation_id,
             &digest,
             instance,
@@ -338,7 +366,7 @@ impl Gateway {
 
     fn record_in_flight(
         &self,
-        host: &HostConfig,
+        host: &str,
         operation: &str,
         kind: &str,
         digest: &str,
@@ -348,7 +376,7 @@ impl Gateway {
         self.state.lifecycle.put(Record {
             operation_id: operation.into(),
             kind: kind.into(),
-            host: host.id.clone(),
+            host: host.into(),
             instance: instance.into(),
             worker: worker.into(),
             digest: digest.into(),
@@ -361,7 +389,7 @@ impl Gateway {
 
     fn operation_failed(
         &self,
-        host: &HostConfig,
+        host: &str,
         operation: &str,
         digest: &str,
         instance: &str,
@@ -378,7 +406,7 @@ impl Gateway {
         let _ = self.state.lifecycle.put(Record {
             operation_id: operation.into(),
             kind,
-            host: host.id.clone(),
+            host: host.into(),
             instance: instance.into(),
             worker: worker.into(),
             digest: digest.into(),
@@ -392,7 +420,7 @@ impl Gateway {
 
     fn complete(
         &self,
-        host: &HostConfig,
+        host: &str,
         operation: &str,
         digest: &str,
         instance: &str,
@@ -402,7 +430,7 @@ impl Gateway {
         self.state.lifecycle.put(Record {
             operation_id: operation.into(),
             kind: outcome.kind.clone(),
-            host: host.id.clone(),
+            host: host.into(),
             instance: instance.into(),
             worker: worker.into(),
             digest: digest.into(),
@@ -450,6 +478,35 @@ impl Gateway {
         let endpoint = endpoint
             .map(normalize)
             .unwrap_or_else(|| approval.endpoint.clone());
+        if endpoint != normalize(&approval.endpoint) {
+            let now = self.state.registry.now();
+            let _ = self.state.registry.mark_unreachable(
+                worker,
+                now,
+                "host lifecycle moved the Worker endpoint",
+            );
+            let current = self.state.registry.approval_record(worker).ok_or_else(|| {
+                ApiError::new(
+                    "worker.not_found",
+                    "the provisioned instance is not bound to an approved Worker",
+                )
+            })?;
+            self.state.registry.update(
+                worker,
+                ApprovalPatch {
+                    revision: current.revision,
+                    endpoint: Some(endpoint.clone()),
+                    request_digest: Some(common::canonical_digest(&serde_json::json!({
+                        "kind": "host.endpoint",
+                        "worker": worker,
+                        "endpoint": endpoint,
+                    }))),
+                    ..ApprovalPatch::default()
+                },
+                "host.lifecycle",
+                now,
+            )?;
+        }
         let verified = probe(&self.state.client, &self.state.secret, &endpoint).await?;
         if verified.instance != instance {
             let _ = self.state.registry.mark_unreachable(
@@ -509,6 +566,65 @@ impl Gateway {
             })
     }
 
+    fn require_instance_read(
+        &self,
+        caller: &Caller,
+        action: &str,
+        instance: &str,
+    ) -> Result<(), ApiError> {
+        caller
+            .principal
+            .require_any(&[scopes::INSTANCE_READ, scopes::INSTANCE_ADMIN])
+            .inspect_err(|_| {
+                self.state.registry.audit(
+                    self.state.registry.now(),
+                    action,
+                    instance,
+                    &caller.principal.id,
+                    "denied",
+                    "caller lacks an instance read scope",
+                );
+            })
+    }
+
+    /// Reconcile the Worker bound to one local instance after start or restart.
+    pub async fn reconcile_instance_worker(
+        &self,
+        instance: &str,
+        endpoint: Option<&str>,
+    ) -> Result<Option<AdminWorkerSummary>, ApiError> {
+        let Some(worker) = self.worker_for_instance(instance) else {
+            return Ok(None);
+        };
+        self.reconcile_worker_when_ready(&worker.id, instance, endpoint)
+            .await
+            .map(Some)
+    }
+
+    /// The Worker registration bound to one local instance, if any.
+    pub fn instance_worker(&self, instance: &str) -> Option<AdminWorkerSummary> {
+        self.worker_for_instance(instance)
+    }
+
+    /// Mark the Worker bound to one local instance unreachable after stop.
+    pub fn mark_instance_unreachable(&self, instance: &str, reason: &str) {
+        if let Some(worker) = self.worker_for_instance(instance) {
+            let _ =
+                self.state
+                    .registry
+                    .mark_unreachable(&worker.id, self.state.registry.now(), reason);
+        }
+    }
+
+    fn target(&self, host: &str) -> Result<Target, ApiError> {
+        if let Some(local) = &self.state.local_host {
+            if local.id() == host {
+                return Ok(Target::Local(local.clone()));
+            }
+        }
+        self.host_config(host).map(Target::Remote)
+    }
+
     fn host_config(&self, host: &str) -> Result<HostConfig, ApiError> {
         self.state
             .hosts
@@ -523,15 +639,15 @@ impl Gateway {
             })
     }
 
-    fn authorized_host(
+    fn authorized_target(
         &self,
         caller: &Caller,
         host: &str,
         instance: &str,
         operation: &str,
-    ) -> Result<HostConfig, ApiError> {
-        let host = self.host_config(host)?;
-        if let Some(instances) = &host.instances {
+    ) -> Result<Target, ApiError> {
+        let target = self.target(host)?;
+        if let Some(instances) = target.instances() {
             if !instances.iter().any(|allowed| allowed == instance) {
                 self.state.registry.audit(
                     self.state.registry.now(),
@@ -545,24 +661,24 @@ impl Gateway {
                     "host.scope_denied",
                     format!(
                         "host '{}' may not administer instance '{instance}'",
-                        host.id
+                        target.id()
                     ),
                 ));
             }
         }
-        if let Some(operations) = &host.operations {
+        if let Some(operations) = target.operations() {
             if !operations.iter().any(|allowed| allowed == operation) {
                 return Err(ApiError::new(
                     "host.unsupported",
-                    format!("host '{}' does not support '{operation}'", host.id),
+                    format!("host '{}' does not support '{operation}'", target.id()),
                 ));
             }
         }
-        Ok(host)
+        Ok(target)
     }
 
-    async fn require_supported(&self, host: &HostConfig, operation: &str) -> Result<(), ApiError> {
-        let descriptor = self.host_descriptor(host).await?;
+    async fn require_supported(&self, target: &Target, operation: &str) -> Result<(), ApiError> {
+        let descriptor = self.target_descriptor(target).await?;
         if descriptor
             .supported
             .iter()
@@ -572,15 +688,86 @@ impl Gateway {
         } else {
             Err(ApiError::new(
                 "host.unsupported",
-                format!("host '{}' does not support '{operation}'", host.id),
+                format!("host '{}' does not support '{operation}'", target.id()),
             ))
         }
     }
 
-    async fn host_descriptor(&self, host: &HostConfig) -> Result<HostDescriptor, ApiError> {
-        let mut descriptor: HostDescriptor = self.adapter_get(host, "/v1/host").await?;
+    fn local_descriptor(&self, host: &dyn LocalHost) -> HostDescriptor {
+        let mut descriptor = host.descriptor();
         descriptor.reachable = true;
-        Ok(descriptor)
+        descriptor.error = None;
+        descriptor
+    }
+
+    async fn target_descriptor(&self, target: &Target) -> Result<HostDescriptor, ApiError> {
+        match target {
+            Target::Local(host) => Ok(self.local_descriptor(host.as_ref())),
+            Target::Remote(host) => {
+                let mut descriptor: HostDescriptor = self.adapter_get(host, "/v1/host").await?;
+                descriptor.reachable = true;
+                Ok(descriptor)
+            }
+        }
+    }
+
+    async fn provision_target(
+        &self,
+        target: &Target,
+        request: &HostProvisionRequest,
+    ) -> Result<HostOperationOutcome, ApiError> {
+        match target {
+            Target::Local(host) => host.provision(request.clone()).await,
+            Target::Remote(host) => self.adapter_post(host, "/v1/instances", request).await,
+        }
+    }
+
+    async fn inspect_target(
+        &self,
+        target: &Target,
+        instance: &str,
+    ) -> Result<HostInspection, ApiError> {
+        match target {
+            Target::Local(host) => host.inspect(instance).await,
+            Target::Remote(host) => {
+                self.adapter_get(host, &format!("/v1/instances/{instance}"))
+                    .await
+            }
+        }
+    }
+
+    async fn upgrade_target(
+        &self,
+        target: &Target,
+        instance: &str,
+        request: HostUpgradeRequest,
+    ) -> Result<HostOperationOutcome, ApiError> {
+        match target {
+            Target::Local(host) => host.upgrade(instance, request).await,
+            Target::Remote(host) => {
+                self.adapter_post(host, &format!("/v1/instances/{instance}/upgrade"), &request)
+                    .await
+            }
+        }
+    }
+
+    async fn rollback_target(
+        &self,
+        target: &Target,
+        instance: &str,
+        request: HostRollbackRequest,
+    ) -> Result<HostOperationOutcome, ApiError> {
+        match target {
+            Target::Local(host) => host.rollback(instance, request).await,
+            Target::Remote(host) => {
+                self.adapter_post(
+                    host,
+                    &format!("/v1/instances/{instance}/rollback"),
+                    &request,
+                )
+                .await
+            }
+        }
     }
 
     async fn adapter_get<T: serde::de::DeserializeOwned>(

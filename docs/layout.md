@@ -39,9 +39,7 @@ goldenbee/
 |   |-- knowledge/     # Ingestion and retrieval capabilities
 |   `-- research/      # Example future package, after capabilities are specified
 |-- apps/
-|   |-- goldenbee-cli/     # Operator bootstrap and component dispatcher
-|   |-- goldenbee-gateway/ # Standalone HTTP adapter over gateway-core
-|   |-- goldenbee-composer/ # Host-local lifecycle composer
+|   |-- goldenbee-gateway/ # Standalone HTTP adapter and local host lifecycle
 |   |-- goldenbee-client-cli/ # First Client application
 |   |-- web/           # Later: independent Client application
 |   `-- desktop/       # Optional future Client application
@@ -88,10 +86,8 @@ The package and application names show where independently implemented products 
 | `crates/install` | Release verification, immutable cache, constrained smoke acceptance | User profiles, instance lifecycle, or registry transport |
 | `crates/instance` | On-host instance layout, atomic creation, local start/stop/inspect, profile proxying | Launcher implementation, Gateway management, or production supervision |
 | `crates/gateway-core` | Worker approvals and leases, caller-scoped routing, dispatch identity and idempotency, delegation issuance, discovery, administration, audit, and event forwarding | Axum routers, caller bearer-token authentication, listeners, business users, payments, or Worker runtime |
-| `apps/goldenbee-gateway` | Standalone HTTP listener, caller authentication, JSON/SSE serialization, operator configuration | Routing, registry, lease, idempotency, or Worker event semantics |
-| `apps/goldenbee-composer` | One host's scoped lifecycle credential check, verified package cache resolution, instance provisioning/upgrade/rollback, host-local policy | Gateway caller identity, registry, routing, Client presentation, or another package format |
+| `apps/goldenbee-gateway` | Standalone HTTP listener, caller authentication, JSON/SSE serialization, operator configuration, verified package cache, local instance lifecycle | Remote-host policy that does not belong to this Gateway, routing internals, or Worker runtime |
 | `crates/registry` | Private release storage, bearer scopes, immutable version index, content-addressed upload/download | Trust decisions, installation acceptance, Worker execution, or Gateway routing |
-| `apps/goldenbee-cli` | Operator bootstrap, component installation, default local config, transparent gateway/composer dispatch | Client commands, Gateway routing, Worker execution |
 | `apps/goldenbee-client-cli` | CLI interaction and output | Authoritative execution state |
 | `apps/web`, `apps/desktop` | Their own interaction and presentation | A mandatory shared UI or Worker engine |
 | `crates/sdk` | Reusable Rust client connection behavior | Native ADK execution or UI |

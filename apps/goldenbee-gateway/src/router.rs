@@ -4,6 +4,7 @@
 //! router. Public health stays open, and Worker control handlers authenticate
 //! their own control token.
 
+use crate::host::routes as host;
 use crate::state::SharedState;
 use crate::{auth, control, fleet, health, profiles, providers, socket, tasks, teams, workers};
 use axum::middleware;
@@ -20,6 +21,7 @@ pub(crate) fn router(state: SharedState) -> Router {
         .merge(profiles::routes())
         .merge(control::routes())
         .merge(fleet::routes())
+        .merge(host::routes())
         .merge(providers::admin_routes())
         .merge(socket::caller_routes())
         .layer(middleware::from_fn_with_state(

@@ -16,10 +16,10 @@ The project is pre-1.0 and under active development. Native ADK Runner execution
 
 - [Documentation index](docs/README.md) — start here for the full map.
 - [Architecture](docs/architecture.md) — Worker, Gateway, Client, SDK, operator tools, trust boundaries, failure behavior, and limits.
-- [Deployment and usage](docs/deployment.md) — local development, standalone Worker, Gateway + CLI, verified install, registry, host composers, Postgres replicas, systemd, and use cases.
+- [Deployment and usage](docs/deployment.md) — local development, standalone Worker, Gateway + Client, verified install, registry, local host lifecycle, Postgres replicas, systemd, and use cases.
 - [Operations](docs/operations.md) — boot, drain, restart, upgrade, backup, recovery, and shared Gateway store details.
 
-Detailed protocol and configuration references are linked from the index: [Gateway](docs/gateway-api.md), [Worker](docs/worker-api.md), [Worker configuration](docs/worker-config.md), [Operator CLI](docs/goldenbee-cli.md), [Client CLI](docs/gb-client.md), [Install](docs/install.md), [Instances](docs/instance.md), [Registry](docs/registry.md), [Host composers](docs/goldenbee-composer.md), and [Trust](docs/trust.md).
+Detailed protocol and configuration references are linked from the index: [Gateway](docs/gateway-api.md), [Worker](docs/worker-api.md), [Worker configuration](docs/worker-config.md), [Install Goldenbee](docs/goldenbee-cli.md), [Client CLI](docs/gb-client.md), [Install](docs/install.md), [Instances](docs/instance.md), [Registry](docs/registry.md), [Local host lifecycle](docs/goldenbee-composer.md), and [Trust](docs/trust.md).
 
 ## Build and check
 
@@ -34,25 +34,22 @@ cargo run --locked -p goldenbee-client-cli -- --version
 
 Rust dependencies are pinned by `Cargo.lock`. Offline builds require their sources to be cached. Validation commands describe the checks to run; they do not assert that another agent's in-progress migration already passes.
 
-`gb` is the operator bootstrap. Install it from GitHub:
+Install the Gateway directly from GitHub:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh
 ```
 
-Then install components from the matching GitHub release:
+Install the Client too:
 
 ```sh
-gb i gateway
-gb i composer
-gb i client-cli
-gb gw up
-gb cmp serve
+curl -fsSL https://raw.githubusercontent.com/goldenage-et/goldenbee/main/install.sh | sh -s -- all
 ```
 
-`gb i` downloads and verifies release assets. `--from <dir>` keeps local
-installation available. It is not the signed Worker-package installer. See
-[Operator CLI](docs/goldenbee-cli.md).
+The script verifies release checksums and writes a local `gateway.json` and
+`trust.json` on first install. The Gateway owns local Worker package installation
+and process lifecycle; there is no separate composer process. See
+[Install Goldenbee](docs/goldenbee-cli.md).
 
 ## Run the General Worker
 
@@ -187,16 +184,15 @@ Gateway replicas require the Postgres store (`store.kind = "postgres"`); the
 JSON stores are single-writer. Read
 [Operations](docs/operations.md#shared-gateway-store) for the shared-store
 configuration, migration, backup, rollback, boot, drain, upgrade, recovery,
-journald, and container guidance. Host process start, stop, install, and
-upgrade remain outside the Gateway control plane.
+journald, and container guidance. Host package install, start, stop, and
+upgrade are Gateway-owned when local host roots are configured.
 
 ## Target structure
 
 | Location | Responsibility |
 | --- | --- |
 | `workers/*` | Independently built Worker Packages, such as General, Coding, and Knowledge Workers |
-| `apps/goldenbee-cli` | Operator bootstrap: installs and dispatches Gateway, composer, and Client executables |
-| `apps/goldenbee-gateway` | Thin standalone HTTP adapter over the Gateway control plane |
+| `apps/goldenbee-gateway` | Standalone HTTP adapter, local package cache, and Worker instance lifecycle |
 | `crates/gateway-core` | Reusable Worker registry, routing, dispatch, administration, and event forwarding |
 | `apps/goldenbee-client-cli` | First user-facing Client application |
 | `apps/web`, `apps/desktop` | Later independent Clients, not parts of one mandatory UI |

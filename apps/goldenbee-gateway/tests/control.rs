@@ -155,6 +155,7 @@ async fn sdk_control_semantics_survive_gateway_routing_without_local_lease_state
                 workers: None,
             },
         ],
+        local: Default::default(),
         core: CoreConfig {
             data_dir: data.path().display().to_string(),
             workers: vec![WorkerConfig {

@@ -34,7 +34,7 @@ CLI / web / desktop / other Clients
                 |
         JSON file stores (one writer)  or  PostgreSQL (multiple replicas)
 
-optional lifecycle:     gb-composer --> gb-instance --> Worker process
+optional lifecycle:     gb-gateway (local host) --> gb-instance --> Worker process
 optional distribution:  gb-registry (infrastructure) / local OCI layout --> gb-install
 ```
 
@@ -85,7 +85,7 @@ owns:
 - dispatch identity and idempotency;
 - team rosters and profile routing;
 - retained and live event forwarding;
-- operator-visible lifecycle operations for configured host composers.
+- operator-visible lifecycle operations for its own local host and configured remote Gateway hosts.
 
 Gateway does **not** execute agents, own Worker sessions or assets, run model
 calls, hold provider credentials by default, or supervise host processes.
@@ -101,10 +101,10 @@ The executable is named `gb-gateway`. A business backend may use `gateway-core`
 directly with an already-authenticated principal; that removes a network hop but
 does not add users, payments, tenant policy, or high availability.
 
-`apps/goldenbee-cli` is a separate operator bootstrap. It installs `gb-gateway`,
-`gb-composer`, and the independent `gb-client` from one release directory and
-dispatches to their existing command surfaces; it does not add Gateway behavior
-or Client commands.
+`gb-gateway` also owns the optional local host lifecycle. It installs verified
+packages, provisions instances, and starts, stops, restarts, upgrades, and rolls
+back Workers in its own roots. There is no composer executable and no host
+credential. The independent `gb-client` remains a separate application.
 
 ### Client and SDK
 
@@ -128,14 +128,14 @@ Worker.
 
 | Tool | Owns | Does not own |
 | --- | --- | --- |
-| `gb` | Operator bootstrap, executable installation, default local config, Gateway/composer dispatch | Client commands, Gateway routing, Worker execution |
 | `gb-install` | Verified OCI release cache, signature and advisory checks, constrained smoke acceptance | Instance lifecycle, Gateway policy, Worker execution |
 | `gb-instance` | On-host instance layout, profiles proxy, start/stop/inspect, upgrade, backup, restore, quarantine | Fleet orchestration, production supervision, Gateway routing |
 | `gb-registry` (infrastructure) | Authenticated release distribution, immutable versions, content-addressed storage | Trust decisions, installation acceptance, task invocation |
-| `gb-composer` | One host's scoped lifecycle credential, verified package cache, instance provisioning/upgrade/rollback, allowed roots | Task routing, model calls, Worker execution, caller identity |
+| `gb-gateway` local host | Verified package cache, instance provisioning, start/stop/restart, upgrade/rollback, allowed roots | Task routing for an external host, model calls, Worker execution, caller identity |
 
-`gb-composer` reuses `crates/instance`; the external `gb-registry` reuses
-`crates/registry`. They are adapters, not duplicate managers.
+The Gateway local host reuses `crates/instance` and `crates/install`; the
+external `gb-registry` reuses `crates/registry`. They are adapters, not duplicate
+managers.
 
 ## Planes and request flow
 
@@ -145,7 +145,7 @@ Worker.
 | Control | Gateway | No new routing or administration; Worker registration retries |
 | Execution | Worker | That Worker's tasks become unreachable or `recovering` |
 | Distribution | Registry | Installed Workers are unaffected |
-| Lifecycle | `gb-composer` | Running Workers are unaffected; new lifecycle operations fail |
+| Lifecycle | `gb-gateway` local host | Running Workers are unaffected; new lifecycle operations fail |
 | Host supervision | systemd or container runtime | Process restart policy is outside Goldenbee |
 
 A normal task follows this path:
@@ -174,7 +174,7 @@ the signed, frozen roster and narrowed authority. See
 operator or local native client --> Worker
 ```
 
-No Gateway, SDK, registry, or host composer is required. This is the native
+No Gateway, SDK, registry, or Gateway-managed host is required. This is the native
 development and offline-execution path.
 
 ### Single-host development stack
@@ -191,25 +191,27 @@ All processes use loopback listeners, generated development tokens, and
 ```text
 Gateway ----------------> Worker (tasks, streams, health)
    |
-   +--> gb-composer --> gb-instance --> Worker process
+   +--> local host --> gb-instance --> Worker process
 ```
 
-The adapter performs verified provisioning, inspection, upgrade, and rollback.
-Gateway still talks to the Worker directly for task traffic. The adapter is not
-a task proxy and not a runtime supervisor.
+The Gateway performs verified package installation, provisioning, inspection,
+start/stop/restart, upgrade, and rollback. It still talks to the Worker directly
+for task traffic. It is not a task proxy for an external host and not the crash
+restart supervisor.
 
 ### Distributed fleet
 
 ```text
-                        +-- gb-composer A --> Worker A
+                        +-- remote Gateway A --> Worker A
 Gateway ----------------+
-   |                    +-- gb-composer B --> Worker B
+   |                    +-- remote Gateway B --> Worker B
    |
    +---------------------- direct task traffic --> Workers
 ```
 
-Each host runs one adapter. Gateway selects from its operator configuration;
-callers cannot supply a host endpoint, credential, executable, or release path.
+Each host runs one Gateway. A root Gateway selects from its operator
+configuration; callers cannot supply a host endpoint, credential, executable, or
+release path.
 
 ### Multiple Gateway replicas
 
@@ -230,9 +232,9 @@ backups, network policy, and TLS. See
 
 - Gateway does not receive host root credentials, Worker asset directories, or
   provider secret values.
-- A host composer credential is scoped to a Gateway identity and, optionally, an
-  instance allow-list. It is not a caller task token. Gateway does not forward
-  caller task tokens to the adapter.
+- A remote host credential is an ordinary Gateway caller token scoped to that
+  Gateway and, optionally, an instance allow-list. It is not a caller task token.
+  Gateway does not forward caller task tokens to the remote host.
 - Caller tokens and Worker control tokens are different authorities. A Gateway
   caller token does not authenticate a Worker route, and a Client cannot turn a
   Gateway profile into direct Worker administration.
@@ -269,7 +271,7 @@ central vault design as future work, not current behavior. See
 | Gateway stops | Existing tasks on Workers keep running. New routing, discovery, and administration are unavailable until a Gateway returns. Workers retry registration. |
 | Worker stops | Its tasks are unreachable or `recovering`; the Gateway does not silently move them to an unrelated Worker. |
 | Registry stops | Installed Workers and all local execution continue. Installation from the registry is unavailable. |
-| Host composer stops | Running Workers continue. New provision/inspect/upgrade/rollback calls return `host.unreachable`. |
+| Remote Gateway host stops | Running Workers continue. New provision/inspect/upgrade/rollback calls return `host.unreachable`. |
 | Second writer opens a JSON Gateway store | Startup fails with `storage.single_writer`; state is not shared or merged. |
 | Postgres is unreachable | A replica cannot serve store operations reliably and is not a healthy read/write member. There is no silent file fallback. |
 | Provider credential is missing | Admission fails with `provider.credential_unavailable`; no secret value appears in diagnostics. |
@@ -315,7 +317,7 @@ central vault design as future work, not current behavior. See
 - [CLI](gb-client.md)
 - [Install](install.md)
 - [Instance lifecycle](instance.md)
-- [Host composers](goldenbee-composer.md)
+- [Local host lifecycle](goldenbee-composer.md)
 - [Private registry](registry.md)
 - [Trust and revocation](trust.md)
 - [Operations](operations.md)

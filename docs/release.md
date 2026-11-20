@@ -23,12 +23,10 @@ artifact is advertised.
 | `echo`, `graph` | Development packages | Not assembled by this release command |
 | `gb-gateway` | Executable | `goldenbee-gateway` adapter over `gateway-core` |
 | `gateway-core` | Library source in `source.tar` | Registry, routing, dispatch, streaming, administration, audit |
-| `gb` | Operator executable | `goldenbee-cli` bootstrap and dispatcher |
 | `gb-client` | Client executable | Product Client over `sdk` |
 | `sdk` | Library source in `source.tar` | ADK-free Rust Gateway client |
 | `gb-install` | Operator executable | Verified local release cache and release assembly |
 | `gb-instance` | Operator executable | Instance layout, start/stop/inspect, upgrade, backup |
-| `gb-composer` | Operator executable | Host-local Worker instance composer |
 | `sdk-client` | Example source in `source.tar` | SDK usage example; not a product Client |
 
 Worker Packages are distributed as signed OCI image layouts. The layout manifest
@@ -37,20 +35,19 @@ digest is the immutable release identity; see
 release directory and are bound by the release manifest and signed
 `SHA256SUMS`.
 
-GitHub releases publish target-suffixed operator assets and a separate
-`SHA256SUMS` for the `gb` bootstrap path:
+GitHub releases publish target-suffixed application assets and a separate
+`SHA256SUMS`:
 
 ```text
-gb-x86_64-unknown-linux-gnu
 gb-gateway-x86_64-unknown-linux-gnu
-gb-composer-x86_64-unknown-linux-gnu
 gb-client-x86_64-unknown-linux-gnu
 install.sh
 SHA256SUMS
 ```
 
-The bootstrap is `install.sh` at the repository root. `gb i` downloads these
-assets and verifies `SHA256SUMS`; `--from` remains available for local installs.
+The bootstrap is `install.sh` at the repository root. It downloads the selected
+application assets, verifies `SHA256SUMS`, and writes a first-run Gateway
+configuration. There is no `gb` bootstrap executable and no composer asset.
 
 ## Reproducible assembly
 
@@ -67,8 +64,8 @@ tools/release.sh --bin-dir /path/to/tested/binaries \
 
 The script:
 
-1. reads prebuilt `general`, `coding`, `knowledge`, `gb`, `gb-gateway`, `gb-client`,
-   `gb-install`, `gb-instance`, and `gb-composer`;
+1. reads prebuilt `general`, `coding`, `knowledge`, `gb-gateway`, `gb-client`,
+   `gb-install`, and `gb-instance`;
 2. records a self-contained Git bundle, its commit's archive digest, the dirty
    flag, and the supplied build evidence;
 3. probes each Worker Package so signed capabilities, permissions, features,
