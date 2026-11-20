@@ -37,7 +37,7 @@ load-harness = { path = "../../tests/load-harness" }
 install = { path = "../../crates/install" }
 instance = { path = "../../crates/instance" }
 sdk = { path = "../../crates/sdk" }
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64.workspace = true
 
