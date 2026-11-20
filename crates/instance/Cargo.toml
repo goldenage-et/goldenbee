@@ -17,11 +17,11 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest.workspace = true
 uuid = { workspace = true }
-toml = "0.8"
+toml = "1.2"
 
 [dev-dependencies]
 base64.workspace = true
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

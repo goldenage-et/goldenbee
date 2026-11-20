@@ -31,7 +31,7 @@ async-trait.workspace = true
 flate2 = "1.0"
 tar = "0.4"
 tempfile = { workspace = true }
-toml = "0.8"
+toml = "1.2"
 
 [dev-dependencies]
 sdk = { path = "../../crates/sdk" }
@@ -39,7 +39,7 @@ provider-crypto = { path = "../../crates/provider-crypto" }
 base64.workspace = true
 tempfile = { workspace = true }
 load-harness = { path = "../../tests/load-harness" }
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 socket2 = "0.6"
 
 [lints]
