@@ -69,11 +69,11 @@ run_external() {
 run compile \
     test --no-run \
     -p goldenbee-gateway -p general -p runtime -p install -p instance \
-    -p knowledge -p echo -p coding -p graph -p goldenbee-client-cli -p goldenbee-cli --all-features
-run_external goldenbee-composer \
-    cargo run -q -p goldenbee-composer -- --help
-run_external goldenbee-cli \
-    cargo run -q -p goldenbee-cli -- --help
+    -p knowledge -p echo -p coding -p graph -p goldenbee-client-cli --all-features
+run_external gb-gateway \
+    cargo run -q -p goldenbee-gateway -- --help
+run_external gb-client \
+    cargo run -q -p goldenbee-client-cli -- --help
 
 run gateway-security \
     test -p goldenbee-gateway --test security -- --test-threads=1 --nocapture

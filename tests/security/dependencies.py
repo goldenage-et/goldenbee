@@ -66,10 +66,8 @@ def main() -> int:
         "common",
         "sdk",
         "goldenbee-client-cli",
-        "goldenbee-cli",
         "sdk-client",
         "gateway-core",
-        "goldenbee-gateway",
         "registry",
     ):
         dependencies = dependency_names(document, consumer)
@@ -97,12 +95,21 @@ def main() -> int:
 
     core = dependency_names(document, "gateway-core")
     require(
-        core.isdisjoint({"axum", "goldenbee-client-cli", "goldenbee-cli", "sdk", "goldenbee-gateway"}),
+        core.isdisjoint({"axum", "goldenbee-client-cli", "sdk", "goldenbee-gateway"}),
         "gateway-core links an adapter, CLI, SDK, or server edge",
     )
+    adapter = dependency_names(document, "goldenbee-gateway")
     require(
-        "gateway-core" in dependency_names(document, "goldenbee-gateway"),
+        "gateway-core" in adapter,
         "goldenbee-gateway does not depend on gateway-core",
+    )
+    require(
+        {"install", "instance"} <= adapter,
+        "goldenbee-gateway does not own local package and instance lifecycle",
+    )
+    require(
+        adapter.isdisjoint({"general", "knowledge", "coding", "echo", "graph"}),
+        "goldenbee-gateway links a concrete Worker package",
     )
     require(
         "gateway-core" not in dependency_names(document, "goldenbee-client-cli"),

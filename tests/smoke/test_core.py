@@ -99,9 +99,7 @@ class CommandSurfaceTests(unittest.TestCase):
             "echo": "run",
             "graph": "run",
             "knowledge": "run",
-            "gb": "install",
             "gb-gateway": "serve",
-            "gb-composer": "serve",
             "gb-client": "submit",
             "gb-install": "inspect",
             "gb-instance": "create",
@@ -133,9 +131,7 @@ class CommandSurfaceTests(unittest.TestCase):
             "echo": ((), ("task", "submit"), ("--unknown",), ("--help", "extra")),
             "graph": ((), ("task", "submit"), ("--unknown",), ("--help", "extra")),
             "knowledge": ((), ("task", "submit"), ("--unknown",), ("--help", "extra")),
-            "gb": (("bogus",), ("--unknown",)),
             "gb-gateway": ((), ("task", "submit"), ("--unknown",), ("--help", "extra")),
-            "gb-composer": ((), ("task", "submit"), ("--unknown",), ("--help", "extra")),
             "gb-client": (("task", "submit"), ("--unknown",), ("--help", "extra")),
             "gb-install": (("task", "submit"), ("--unknown",), ("--help", "extra")),
             "gb-instance": (("task", "submit"), ("--unknown",), ("--help", "extra")),
@@ -161,7 +157,7 @@ class CommandSurfaceTests(unittest.TestCase):
 class DependencyBoundaryTests(unittest.TestCase):
     def test_contracts_and_clients_do_not_link_execution(self):
         metadata, _ = workspace()
-        for consumer in ("common", "sdk", "goldenbee-client-cli", "goldenbee-cli", "sdk-client", "gateway-core", "goldenbee-gateway", "registry"):
+        for consumer in ("common", "sdk", "goldenbee-client-cli", "sdk-client", "gateway-core", "registry"):
             with self.subTest(consumer=consumer):
                 dependencies = dependency_names(metadata, consumer)
                 self.assertFalse(
@@ -193,16 +189,20 @@ class DependencyBoundaryTests(unittest.TestCase):
                     f"{consumer} must not link the Gateway control plane or adapter",
                 )
 
-    def test_gateway_adapters_do_not_link_worker_runtime(self):
+    def test_gateway_core_stays_execution_free_and_adapter_owns_local_host(self):
         metadata, _ = workspace()
-        for consumer in ("gateway-core", "goldenbee-gateway"):
-            with self.subTest(consumer=consumer):
-                dependencies = dependency_names(metadata, consumer)
-                self.assertTrue(dependencies.isdisjoint({"runtime", "general", "knowledge", "install"}))
-                self.assertFalse(
-                    {name for name in dependencies if name == "adk" or name.startswith("adk-")},
-                    f"{consumer} must not link native ADK execution",
-                )
+        core = dependency_names(metadata, "gateway-core")
+        self.assertTrue(core.isdisjoint({"runtime", "general", "knowledge", "install"}))
+        self.assertFalse(
+            {name for name in core if name == "adk" or name.startswith("adk-")},
+            "gateway-core must not link native ADK execution",
+        )
+        adapter = dependency_names(metadata, "goldenbee-gateway")
+        self.assertTrue({"install", "instance"} <= adapter)
+        self.assertTrue(
+            adapter.isdisjoint({"general", "knowledge", "coding", "echo", "graph"}),
+            "goldenbee-gateway must not link a concrete Worker package",
+        )
         # sdk is only a test-only consumer of the adapter's public HTTP API.
         package = next(
             package for package in metadata["packages"]
