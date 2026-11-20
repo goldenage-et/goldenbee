@@ -11,10 +11,6 @@ permissions:
 env:
   RUST_MIN_STACK: "16777216"
   RUST_TEST_THREADS: "1"
-  # The hosted runner's WebDriver dependency creates a current-thread runtime
-  # that overflows its default stack. The real-browser suite is exercised on
-  # developer hosts; non-driver browser policy tests still run here.
-  GOLDENBEE_SKIP_BROWSER_TESTS: "1"
 
 concurrency:
   group: check-${{ github.ref }}
@@ -32,5 +28,5 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev pkg-config
-      - name: Check workspace and backlog
-        run: make check
+      - name: Check deterministic surface
+        run: make check-ci

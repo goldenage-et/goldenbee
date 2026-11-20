@@ -1,5 +1,5 @@
 .NOTPARALLEL:
-.PHONY: setup check build format format-check lint test test-fixtures docs dev dev-status dev-stop start stop worker\:general worker\:general\:build worker\:general\:dev worker\:general\:run worker\:general\:stop
+.PHONY: setup check check-ci build format format-check lint test test-fixtures docs dev dev-status dev-stop start stop worker\:general worker\:general\:build worker\:general\:dev worker\:general\:run worker\:general\:stop
 
 # `make start gateway`, `make start gb-client`, `make start worker general`
 START_ARGS := $(filter-out start,$(MAKECMDGOALS))
@@ -20,6 +20,13 @@ WORKER_ADDR ?= 127.0.0.1:8080
 WORKER_AGENT ?= general
 
 check: format-check lint test docs
+
+# Hosted runners cannot reliably provide the ports, processes, browsers, and
+# timing that the integration suite needs. Keep CI deterministic; run the full
+# `make check` locally before a release.
+check-ci: format-check lint test-fixtures
+	RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --workspace --all-features --lib --locked
+	python3 -m unittest discover -s tests/smoke -v
 
 build:
 	cargo build --workspace --locked
