@@ -84,7 +84,7 @@ impl Llm for DeterministicModel {
                 .unwrap_or_default()
                 .parse::<u64>()
             {
-                tokio::time::sleep(std::time::Duration::from_millis(milliseconds.min(30_000)))
+                tokio::time::sleep(std::time::Duration::from_millis(milliseconds.min(600_000)))
                     .await;
             }
         }

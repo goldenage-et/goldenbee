@@ -526,7 +526,7 @@ fn pinned_work_blocks_and_drain_preserves_queued_history() {
 
     // Keep the pinned task active long enough for the upgrade plan and apply
     // calls on a slow CI host; the test cancels it explicitly below.
-    let (status, active) = running.submit("delay:3600000 first", "queue-active");
+    let (status, active) = running.submit("delay:600000 first", "queue-active");
     assert!(status == 200 || status == 201, "{active}");
     let (status, queued) = running.submit("delay:50 second", "queue-waiting");
     assert!(status == 200 || status == 201, "{queued}");
