@@ -38,8 +38,11 @@ const workers = [
   },
 ]
 
-function harness(result: ConnectionResult) {
+function harness(result: ConnectionResult, seededToken?: string) {
   const session = memoryStorage()
+  if (seededToken) {
+    session.setItem("goldenbee.caller-token", seededToken)
+  }
   const tokenStore = createTokenStore({ sessionStorage: session })
   const calls: Array<{ baseUrl: string; token: string }> = []
   const store = createConnectionStore({
@@ -96,6 +99,43 @@ describe("connection store", () => {
 
     expect(tokenStore.readPersistence()).toBe("session")
     expect(session.getItem("goldenbee.caller-token")).toBe("token-a")
+  })
+
+  it("auto-connects from a remembered current-tab token after reload", async () => {
+    const { store, calls } = harness(
+      { status: "connected", health, workers },
+      "token-a",
+    )
+
+    expect(store.getState()).toMatchObject({
+      status: "idle",
+      token: "token-a",
+      rememberToken: true,
+      tokenPersisted: true,
+    })
+
+    await store.getState().autoConnect()
+
+    expect(calls).toEqual([
+      { baseUrl: "http://127.0.0.1:8080", token: "token-a" },
+    ])
+    expect(store.getState()).toMatchObject({
+      status: "connected",
+      tokenPersisted: true,
+    })
+  })
+
+  it("does not auto-connect without a remembered token", async () => {
+    const { store, calls } = harness({
+      status: "connected",
+      health,
+      workers,
+    })
+
+    await store.getState().autoConnect()
+
+    expect(calls).toEqual([])
+    expect(store.getState().status).toBe("idle")
   })
 
   it("reports an unauthorized caller and does not persist the token", async () => {

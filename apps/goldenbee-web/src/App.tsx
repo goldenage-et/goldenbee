@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { useAppRoute } from "@/app/router"
 import { CommandCenterShell } from "@/components/shell/command-center-shell"
@@ -97,6 +97,10 @@ export function App({
   const [profileFactory] = useState<ProfileClientFactory>(
     () => createProfileClient ?? createProfileGatewayClient,
   )
+
+  useEffect(() => {
+    void store.getState().autoConnect()
+  }, [store])
 
   const controller = useWorkspaceController({
     workspace,

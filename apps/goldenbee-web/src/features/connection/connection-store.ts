@@ -48,6 +48,8 @@ export interface ConnectionState {
   error: ConnectionErrorView | null
   tokenPersisted: boolean
   connect(input: ConnectionInput): Promise<void>
+  /** Reconnect once from a remembered current-tab token. */
+  autoConnect(): Promise<void>
   disconnect(): void
 }
 
@@ -99,7 +101,7 @@ export function createConnectionStore(deps: ConnectionDeps): ConnectionStore {
   const initialToken = deps.tokenStore.read() ?? ""
   let generation = 0
 
-  return createStore<ConnectionState>((set) => ({
+  return createStore<ConnectionState>((set, get) => ({
     status: "idle",
     gatewayUrl: deps.initialUrl ?? deps.defaultUrl ?? defaultGatewayUrl(),
     token: initialToken,
@@ -223,6 +225,22 @@ export function createConnectionStore(deps: ConnectionDeps): ConnectionStore {
           })
           return
       }
+    },
+
+    async autoConnect() {
+      const state = get()
+      if (
+        state.status !== "idle" ||
+        !state.token ||
+        !state.rememberToken
+      ) {
+        return
+      }
+      await state.connect({
+        gatewayUrl: state.gatewayUrl,
+        token: state.token,
+        rememberToken: true,
+      })
     },
 
     disconnect() {
