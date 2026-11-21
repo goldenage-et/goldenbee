@@ -1,7 +1,7 @@
 import { useState } from "react"
-import { Link } from "react-router-dom"
 import { ServerIcon, ServerPlusIcon } from "lucide-react"
 
+import { routeHref } from "@/app/router"
 import {
   Alert,
   AlertDescription,
@@ -31,7 +31,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { HostInstanceView, HostOperationOutcome } from "@goldenbee/sdk"
+import type {
+  GatewayClient,
+  HostInstanceView,
+  HostOperationOutcome,
+} from "@goldenbee/sdk"
 
 import { DeployInstanceDialog } from "./deploy-instance-dialog"
 import { HostErrorNotice, HostLoading } from "./host-notice"
@@ -118,12 +122,15 @@ function InstanceTable({ instances }: { instances: HostInstanceView[] }) {
               <CompatibilityBadge view={view} />
             </TableCell>
             <TableCell className="text-right">
-              <Link
+              <a
                 className="text-sm underline underline-offset-4 hover:text-foreground"
-                to={`/instances/${encodeURIComponent(view.instance)}`}
+                href={routeHref({
+                  name: "instance",
+                  instance: view.instance,
+                })}
               >
                 Inspect
-              </Link>
+              </a>
             </TableCell>
           </TableRow>
         ))}
@@ -139,9 +146,9 @@ function provisionTitle(outcome: HostOperationOutcome): string {
   return outcome.replayed ? "Deployment already recorded" : "Instance deployed"
 }
 
-export function InstancesPage() {
-  const instances = useInstances()
-  const packages = usePackages()
+export function InstancesPage({ client }: { client: GatewayClient }) {
+  const instances = useInstances(client)
+  const packages = usePackages(client)
   const [deployOperationId, setDeployOperationId] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<HostOperationOutcome | null>(null)
 
@@ -219,6 +226,7 @@ export function InstancesPage() {
       {deployOperationId ? (
         <DeployInstanceDialog
           key={deployOperationId}
+          client={client}
           operationId={deployOperationId}
           packages={installedPackages}
           onClose={() => setDeployOperationId(null)}

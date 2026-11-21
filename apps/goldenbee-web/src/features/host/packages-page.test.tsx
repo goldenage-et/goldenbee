@@ -1,10 +1,8 @@
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { MemoryRouter } from "react-router-dom"
 import { describe, expect, it, vi } from "vitest"
 
-import { GatewayClientProvider } from "@/features/connection/gateway-client-provider"
 import { PackagesPage } from "@/features/host/packages-page"
 import { fakeGatewayClient } from "@/test/fake-gateway-client"
 import {
@@ -40,11 +38,7 @@ function renderPackages(client: GatewayClient) {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <GatewayClientProvider client={client}>
-        <MemoryRouter>
-          <PackagesPage />
-        </MemoryRouter>
-      </GatewayClientProvider>
+      <PackagesPage client={client} />
     </QueryClientProvider>,
   )
 }

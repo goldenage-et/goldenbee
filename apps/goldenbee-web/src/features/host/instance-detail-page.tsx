@@ -1,5 +1,4 @@
 import { useState } from "react"
-import { Link, useParams } from "react-router-dom"
 import {
   ArrowLeftIcon,
   CirclePlayIcon,
@@ -9,6 +8,7 @@ import {
   UploadIcon,
 } from "lucide-react"
 
+import { routeHref } from "@/app/router"
 import {
   Alert,
   AlertDescription,
@@ -41,6 +41,7 @@ import { Field, FieldError, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import type {
+  GatewayClient,
   HostInstanceView,
   HostOperationOutcome,
   HostRollbackRequest,
@@ -237,22 +238,26 @@ function ControlDialog({
   )
 }
 
-export function InstanceDetailPage() {
-  const params = useParams<{ instance: string }>()
-  const name = params.instance ?? ""
-  const instance = useInstance(name)
+export function InstanceDetailPage({
+  client,
+  instance: name,
+}: {
+  client: GatewayClient
+  instance: string
+}) {
+  const instance = useInstance(client, name)
   const [tail, setTail] = useState(200)
-  const logs = useInstanceLogs(name, tail)
+  const logs = useInstanceLogs(client, name, tail)
   const [control, setControl] = useState<ControlKind | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [upgrade, setUpgrade] = useState<{ operationId: string } | null>(null)
   const [rollback, setRollback] = useState<{ operationId: string } | null>(null)
 
-  const start = useStartInstance()
-  const stop = useStopInstance()
-  const restart = useRestartInstance()
-  const upgradeMutation = useUpgradeInstance()
-  const rollbackMutation = useRollbackInstance()
+  const start = useStartInstance(client)
+  const stop = useStopInstance(client)
+  const restart = useRestartInstance(client)
+  const upgradeMutation = useUpgradeInstance(client)
+  const rollbackMutation = useRollbackInstance(client)
 
   const [upgradeDigest, setUpgradeDigest] = useState("")
   const [upgradePolicy, setUpgradePolicy] = useState<"drain" | "pin" | "migrate">(
@@ -367,13 +372,13 @@ export function InstanceDetailPage() {
   if (instance.isError) {
     return (
       <div className="flex flex-col gap-4">
-        <Link
-          to="/instances"
+        <a
+          href={routeHref({ name: "instances" })}
           className="flex w-fit items-center gap-1.5 text-sm underline underline-offset-4"
         >
           <ArrowLeftIcon className="size-4" aria-hidden="true" />
           Instances
-        </Link>
+        </a>
         <HostErrorNotice
           error={instance.error}
           onRetry={() => void instance.refetch()}
@@ -389,13 +394,13 @@ export function InstanceDetailPage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
-        <Link
-          to="/instances"
+        <a
+          href={routeHref({ name: "instances" })}
           className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
         >
           <ArrowLeftIcon className="size-4" aria-hidden="true" />
           Instances
-        </Link>
+        </a>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="font-heading text-2xl font-semibold tracking-tight sm:text-3xl">
             {view.instance}

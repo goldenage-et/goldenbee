@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { PackageSummary } from "@goldenbee/sdk"
+import type { GatewayClient, PackageSummary } from "@goldenbee/sdk"
 
 import { HostErrorNotice, HostLoading } from "./host-notice"
 import { InstallPackageForm } from "./install-package-form"
@@ -73,8 +73,8 @@ function PackageTable({ packages }: { packages: PackageSummary[] }) {
   )
 }
 
-export function PackagesPage() {
-  const packages = usePackages()
+export function PackagesPage({ client }: { client: GatewayClient }) {
+  const packages = usePackages(client)
 
   return (
     <div className="flex flex-col gap-6">
@@ -88,7 +88,7 @@ export function PackagesPage() {
         </p>
       </div>
 
-      <InstallPackageForm />
+      <InstallPackageForm client={client} />
 
       <Card>
         <CardHeader>

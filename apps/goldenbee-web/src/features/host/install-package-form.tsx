@@ -25,14 +25,14 @@ import {
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
-import type { PackageInstallRequest } from "@goldenbee/sdk"
+import type { GatewayClient, PackageInstallRequest } from "@goldenbee/sdk"
 
 import { HostErrorNotice } from "./host-notice"
 import { buildInstallRequest, type InstallSourceKind } from "./install-request"
 import { useInstallPackage } from "./use-host"
 
-export function InstallPackageForm() {
-  const install = useInstallPackage()
+export function InstallPackageForm({ client }: { client: GatewayClient }) {
+  const install = useInstallPackage(client)
   const [kind, setKind] = useState<InstallSourceKind>("url")
   const [url, setUrl] = useState("")
   const [path, setPath] = useState("")

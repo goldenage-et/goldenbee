@@ -1,10 +1,8 @@
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { describe, expect, it, vi } from "vitest"
 
-import { GatewayClientProvider } from "@/features/connection/gateway-client-provider"
 import { InstanceDetailPage } from "@/features/host/instance-detail-page"
 import { fakeGatewayClient } from "@/test/fake-gateway-client"
 import {
@@ -56,13 +54,7 @@ function renderDetail(client: GatewayClient) {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <GatewayClientProvider client={client}>
-        <MemoryRouter initialEntries={["/instances/general-a"]}>
-          <Routes>
-            <Route path="/instances/:instance" element={<InstanceDetailPage />} />
-          </Routes>
-        </MemoryRouter>
-      </GatewayClientProvider>
+      <InstanceDetailPage client={client} instance="general-a" />
     </QueryClientProvider>,
   )
 }

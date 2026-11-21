@@ -191,11 +191,11 @@ describe("connection screen", () => {
 
     expect(await screen.findByRole("link", { name: "Packages" })).toHaveAttribute(
       "href",
-      "/packages",
+      "#/packages",
     )
     expect(screen.getByRole("link", { name: "Instances" })).toHaveAttribute(
       "href",
-      "/instances",
+      "#/instances",
     )
   })
 })

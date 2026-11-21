@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { useGatewayClient } from "@/features/connection/use-gateway-client"
 import type {
+  GatewayClient,
   HostProvisionRequest,
   HostRollbackRequest,
   HostUpgradeRequest,
@@ -17,8 +17,7 @@ export const hostQueryKeys = {
     ["host", "instances", name, "logs", tail] as const,
 }
 
-export function usePackages() {
-  const client = useGatewayClient()
+export function usePackages(client: GatewayClient) {
   return useQuery({
     queryKey: hostQueryKeys.packages,
     queryFn: ({ signal }) => client.packages({ signal }),
@@ -26,8 +25,7 @@ export function usePackages() {
   })
 }
 
-export function useInstances() {
-  const client = useGatewayClient()
+export function useInstances(client: GatewayClient) {
   return useQuery({
     queryKey: hostQueryKeys.instances,
     queryFn: ({ signal }) => client.instances({ signal }),
@@ -35,8 +33,7 @@ export function useInstances() {
   })
 }
 
-export function useInstance(name: string) {
-  const client = useGatewayClient()
+export function useInstance(client: GatewayClient, name: string) {
   return useQuery({
     queryKey: hostQueryKeys.instance(name),
     queryFn: ({ signal }) => client.localInstance(name, { signal }),
@@ -45,8 +42,12 @@ export function useInstance(name: string) {
   })
 }
 
-export function useInstanceLogs(name: string, tail: number, enabled = true) {
-  const client = useGatewayClient()
+export function useInstanceLogs(
+  client: GatewayClient,
+  name: string,
+  tail: number,
+  enabled = true,
+) {
   return useQuery({
     queryKey: hostQueryKeys.logs(name, tail),
     queryFn: ({ signal }) => client.instanceLogs(name, tail, { signal }),
@@ -68,45 +69,38 @@ function useHostMutation<TVariables, TResult>(
   })
 }
 
-export function useInstallPackage() {
-  const client = useGatewayClient()
+export function useInstallPackage(client: GatewayClient) {
   return useHostMutation((request: PackageInstallRequest) =>
     client.installPackage(request),
   )
 }
 
-export function useProvisionInstance() {
-  const client = useGatewayClient()
+export function useProvisionInstance(client: GatewayClient) {
   return useHostMutation((request: HostProvisionRequest) =>
     client.provisionLocalInstance(request),
   )
 }
 
-export function useStartInstance() {
-  const client = useGatewayClient()
+export function useStartInstance(client: GatewayClient) {
   return useHostMutation((name: string) => client.startInstance(name))
 }
 
-export function useStopInstance() {
-  const client = useGatewayClient()
+export function useStopInstance(client: GatewayClient) {
   return useHostMutation((name: string) => client.stopInstance(name))
 }
 
-export function useRestartInstance() {
-  const client = useGatewayClient()
+export function useRestartInstance(client: GatewayClient) {
   return useHostMutation((name: string) => client.restartInstance(name))
 }
 
-export function useUpgradeInstance() {
-  const client = useGatewayClient()
+export function useUpgradeInstance(client: GatewayClient) {
   return useHostMutation(
     (input: { name: string; request: HostUpgradeRequest }) =>
       client.upgradeLocalInstance(input.name, input.request),
   )
 }
 
-export function useRollbackInstance() {
-  const client = useGatewayClient()
+export function useRollbackInstance(client: GatewayClient) {
   return useHostMutation(
     (input: { name: string; request: HostRollbackRequest }) =>
       client.rollbackLocalInstance(input.name, input.request),

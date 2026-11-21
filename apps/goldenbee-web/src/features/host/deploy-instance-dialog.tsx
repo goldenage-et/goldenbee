@@ -14,6 +14,7 @@ import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import type {
+  GatewayClient,
   HostOperationOutcome,
   HostProvisionRequest,
   PackageSummary,
@@ -24,17 +25,19 @@ import { parseGrants } from "./operation-id"
 import { useProvisionInstance } from "./use-host"
 
 export function DeployInstanceDialog({
+  client,
   operationId,
   packages,
   onClose,
   onDeployed,
 }: {
+  client: GatewayClient
   operationId: string
   packages: PackageSummary[]
   onClose: () => void
   onDeployed: (outcome: HostOperationOutcome) => void
 }) {
-  const provision = useProvisionInstance()
+  const provision = useProvisionInstance(client)
   const [instanceName, setInstanceName] = useState("")
   const [workerId, setWorkerId] = useState("")
   const [releaseDigest, setReleaseDigest] = useState("")
