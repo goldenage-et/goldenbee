@@ -38,7 +38,7 @@ fn main() -> ExitCode {
                 error.code,
                 common::redact(&error.message)
             );
-            ExitCode::from(if error.code.starts_with("cli.") { 2 } else { 1 })
+            ExitCode::from(common::exit_code(Some(&error), common::TaskState::Failed) as u8)
         }
     }
 }

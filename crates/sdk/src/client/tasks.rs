@@ -4,8 +4,9 @@ use super::transport::{get, post_empty, post_reconciling};
 use super::Client;
 use common::{
     ApiError, AuditEntry, EffectEvidence, GatewaySubmitRequest, GatewaySubmitResponse, GatewayTask,
-    StreamPage, MAX_EVENT_PAGE,
+    RunResult, StreamPage, MAX_EVENT_PAGE,
 };
+use std::time::Duration;
 
 impl Client {
     /// Submit to an explicit Worker through Gateway.
@@ -63,5 +64,21 @@ impl Client {
     /// without any Client presentation layer.
     pub async fn audit(&self, task_id: &str) -> Result<Vec<AuditEntry>, ApiError> {
         get(self, &format!("/v1/tasks/{task_id}/audit")).await
+    }
+
+    /// Wait for a routed task and project the shared one-shot result.
+    ///
+    /// This is a bounded projection of the existing task route, not a second
+    /// executor. A wait bound that expires returns the truthful non-terminal
+    /// projection with the uncertain exit class.
+    pub async fn await_run(&self, task_id: &str, timeout: Duration) -> Result<RunResult, ApiError> {
+        let started = tokio::time::Instant::now();
+        loop {
+            let routed = self.task(task_id).await?;
+            if routed.task.state.is_terminal() || started.elapsed() >= timeout {
+                return Ok(RunResult::from_task(&routed.task));
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 }

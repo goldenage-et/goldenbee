@@ -185,6 +185,13 @@ fn worker_hook_order_rejection_and_redacted_failures_are_real() {
         .as_str()
         .unwrap_or_default()
         .contains("sk-after-task-secret"));
+    let failure = worker
+        .events(task_id)
+        .into_iter()
+        .find(|event| event["kind"] == "hook.failed")
+        .expect("typed hook.failed event is recorded");
+    assert_eq!(failure["payload"]["event"], "after_task");
+    assert_eq!(failure["payload"]["kind"], "failed");
 
     let (status, submitted) = worker.submit("general", "forbidden input", "hook-rejected");
     assert!(status.is_success(), "{status} {submitted}");

@@ -47,6 +47,7 @@ pub(crate) fn build_loaded_agent(
         modalities: vec!["text".into()],
         tools: definition.tools.len() + definition.toolsets.len(),
         max_tokens: 0,
+        reasoning: definition.reasoning,
     };
     let model = resolve_model(
         &definition.name,
@@ -153,6 +154,7 @@ pub(crate) fn build_loaded_agent(
         AgentSpec {
             description: definition.description.clone().unwrap_or_default(),
             model: definition.model.clone(),
+            reasoning: definition.reasoning,
             tools: bound_tools,
             toolsets: bound_toolsets,
             mcp_servers,
@@ -183,6 +185,7 @@ pub(crate) fn build_command_agent(
             command.allowed_tools.len()
         },
         max_tokens: 0,
+        reasoning: spec.reasoning,
     };
     let model = resolve_model(&command.name, model_reference, &requirements, providers)?;
     let template = Arc::new(command.clone());

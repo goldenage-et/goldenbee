@@ -3,8 +3,8 @@
 use crate::registry::Verified;
 use common::delegation::{issue_delegation, DelegationClaims};
 use common::{
-    scopes, ApiError, CapabilityDescriptor, Limits, Principal, SubmitTaskRequest,
-    SubmitTaskResponse, TeamRoster, WorkerSummary,
+    scopes, ApiError, Limits, Principal, SubmitTaskRequest, SubmitTaskResponse, TeamRoster,
+    WorkerSummary,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -139,14 +139,9 @@ struct WorkerLiveness {
     incarnation: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct WorkerCapabilities {
-    package: String,
-    version: String,
-    protocol: String,
-    instance: String,
-    capabilities: Vec<CapabilityDescriptor>,
-}
+/// The Worker and Gateway share one capability inventory shape so a capability
+/// is not renamed or dropped between hops.
+type WorkerCapabilities = common::CapabilityInventory;
 
 pub(super) async fn probe(
     client: &reqwest::Client,

@@ -559,6 +559,7 @@ fn parse_profile(rest: Vec<String>) -> Result<ProfileCommand, String> {
             "mcp",
             "secret-ref",
             "compaction-budget",
+            "reasoning",
             "revision",
             "expected",
         ],
@@ -581,6 +582,16 @@ fn parse_profile(rest: Vec<String>) -> Result<ProfileCommand, String> {
             mcp: raw.all("mcp"),
             secret_refs: raw.all("secret-ref"),
             compaction_budget: raw.uint("compaction-budget", "--compaction-budget")?,
+            reasoning: raw
+                .get("reasoning")
+                .map(|value| {
+                    common::ReasoningLevel::parse(&value).ok_or_else(|| {
+                        format!(
+                            "gb-client: '--reasoning {value}' is not a supported reasoning level"
+                        )
+                    })
+                })
+                .transpose()?,
         })
     };
     let action = match action {
@@ -1196,6 +1207,7 @@ fn takes_value(flag: &str) -> bool {
             | "--mcp"
             | "--secret-ref"
             | "--compaction-budget"
+            | "--reasoning"
             | "--profile"
             | "--team"
             | "--team-version"
@@ -1410,6 +1422,40 @@ mod tests {
             cli.command,
             Command::Provider(ProviderCommand::List)
         ));
+    }
+
+    #[test]
+    fn profile_reasoning_flag_selects_a_declared_level() {
+        let cli = parsed(&[
+            "profile",
+            "create",
+            "research",
+            "--worker",
+            "worker-a",
+            "--instruction",
+            "Research carefully.",
+            "--reasoning",
+            "high",
+        ]);
+        let Command::Profile(command) = cli.command else {
+            panic!("expected profile");
+        };
+        let ProfileAction::Create { options, .. } = command.action else {
+            panic!("expected create");
+        };
+        assert_eq!(options.reasoning, Some(common::ReasoningLevel::High));
+        assert!(parse(vec![
+            "profile".into(),
+            "create".into(),
+            "research".into(),
+            "--worker".into(),
+            "worker-a".into(),
+            "--instruction".into(),
+            "Research.".into(),
+            "--reasoning".into(),
+            "turbo".into(),
+        ])
+        .is_err());
     }
 
     #[test]

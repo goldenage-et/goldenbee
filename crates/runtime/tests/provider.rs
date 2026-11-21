@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
-use common::{Principal, ProfileRevision, ResolvedModel, SubmitTaskRequest};
+use common::{Principal, ProfileRevision, ReasoningLevel, ResolvedModel, SubmitTaskRequest};
 use runtime::native::proof::ProofHarness;
 use runtime::{
     AgentRequirement, ProviderProfile, ProviderRegistry, ProviderRequirements, Runtime,
@@ -88,13 +88,20 @@ struct ChatStub {
     status: u16,
     body: serde_json::Value,
     count: Arc<AtomicUsize>,
+    requests: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
 
 async fn chat_handler(
     State(stub): State<Arc<ChatStub>>,
-    _body: axum::body::Bytes,
+    body: axum::body::Bytes,
 ) -> axum::response::Response {
     stub.count.fetch_add(1, Ordering::SeqCst);
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
+        stub.requests
+            .lock()
+            .expect("request recorder is not poisoned")
+            .push(value);
+    }
     let status = axum::http::StatusCode::from_u16(stub.status).expect("valid status");
     if stub.status >= 400 {
         return (status, Json(stub.body.clone())).into_response();
@@ -130,13 +137,27 @@ async fn chat_handler(
 }
 
 async fn chat_stub(status: u16, body: serde_json::Value) -> (String, Arc<AtomicUsize>) {
+    let (endpoint, count, _) = chat_stub_recorded(status, body).await;
+    (endpoint, count)
+}
+
+async fn chat_stub_recorded(
+    status: u16,
+    body: serde_json::Value,
+) -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) {
     let count = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_handler))
         .with_state(Arc::new(ChatStub {
             status,
             body,
             count: count.clone(),
+            requests: requests.clone(),
         }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -145,7 +166,7 @@ async fn chat_stub(status: u16, body: serde_json::Value) -> (String, Arc<AtomicU
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    (format!("http://{address}/v1"), count)
+    (format!("http://{address}/v1"), count, requests)
 }
 
 fn chat_completion(text: &str) -> serde_json::Value {
@@ -173,10 +194,14 @@ fn provider(adapter: &str, model: &str, endpoint: Option<String>, local: bool) -
         local,
         residency: if local { "local" } else { "remote" }.into(),
         context_window: Some(8_192),
+        max_output_tokens: None,
+        reasoning_levels: Vec::new(),
         credential: None,
         cost_rank: Some(if local { 0 } else { 5 }),
         input_cost_micros_per_million: None,
         candidate_cost_micros_per_million: None,
+        cache_read_cost_micros_per_million: None,
+        cache_write_cost_micros_per_million: None,
         data_class: Some(if local { "local" } else { "shared" }.into()),
         fallbacks: Vec::new(),
     }
@@ -254,6 +279,264 @@ async fn configured_remote_openai_adapter_drives_native_runner() {
 }
 
 #[tokio::test]
+async fn declared_reasoning_level_reaches_the_native_openai_request_and_evidence() {
+    let (endpoint, count, requests) =
+        chat_stub_recorded(200, chat_completion("reasoning: ok")).await;
+    let mut remote = provider(
+        "openai-compatible",
+        "reasoning-model",
+        Some(endpoint),
+        false,
+    );
+    remote.credential = Some("env:REASONING_KEY".into());
+    remote.reasoning_levels = vec![
+        ReasoningLevel::Low,
+        ReasoningLevel::Medium,
+        ReasoningLevel::High,
+    ];
+    remote.max_output_tokens = Some(64);
+    let registry = registry(
+        vec![("reasoning-openai", remote)],
+        true,
+        MapSecrets::with(&[("env:REASONING_KEY", "test-key")]),
+    );
+    let requirements = text().with_reasoning(Some(ReasoningLevel::High));
+    let resolved = registry
+        .resolve("reasoning-openai", 1, &requirements)
+        .expect("declared reasoning level resolves");
+    assert_eq!(resolved.record.reasoning, Some(ReasoningLevel::High));
+    assert_eq!(resolved.record.max_output_tokens, Some(64));
+
+    let harness =
+        ProofHarness::new("provider-reasoning", resolved.model).expect("native runner builds");
+    let turn = harness
+        .run_turn("user-reasoning", "session-reasoning", "hello")
+        .await
+        .expect("native runner applies reasoning");
+    assert_eq!(turn.output, "reasoning: ok");
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+
+    let body = requests
+        .lock()
+        .expect("request recorder is not poisoned")
+        .first()
+        .cloned()
+        .expect("the native adapter sent a request");
+    assert_eq!(body["reasoning_effort"], "high", "{body}");
+    assert_eq!(body["max_completion_tokens"], 64, "{body}");
+}
+
+#[tokio::test]
+async fn reasoning_level_on_an_adapter_without_the_pinned_field_is_a_typed_gap() {
+    let mut unsupported = provider(
+        "http-json",
+        "m",
+        Some("http://127.0.0.1:1/generate".into()),
+        true,
+    );
+    unsupported.reasoning_levels = vec![ReasoningLevel::High];
+    let profiles = BTreeMap::from([("local-json".to_string(), unsupported)]);
+    let error = ProviderRegistry::new(profiles, false, MapSecrets::empty())
+        .err()
+        .expect("an adapter without a reasoning field cannot claim levels");
+    assert_eq!(error.code, "provider.reasoning_unsupported");
+    assert_eq!(
+        error.details.get("adapter").map(String::as_str),
+        Some("http-json")
+    );
+
+    let (endpoint, _) = json_stub(200, serde_json::json!({"text": "unused"})).await;
+    let mut closed = provider("http-json", "m", Some(endpoint), true);
+    closed.reasoning_levels = Vec::new();
+    let registry = registry(vec![("declared-none", closed)], false, MapSecrets::empty());
+    let error = registry
+        .preflight(
+            "declared-none",
+            &text().with_reasoning(Some(ReasoningLevel::High)),
+        )
+        .expect_err("a requested level outside the catalog must fail closed");
+    assert_eq!(error.code, "provider.reasoning_unsupported");
+}
+
+#[test]
+fn fallback_that_cannot_apply_the_reasoning_level_is_rejected() {
+    let mut primary = provider(
+        "openai-compatible",
+        "primary",
+        Some("http://127.0.0.1:1/v1".into()),
+        false,
+    );
+    primary.credential = Some("env:REASONING_KEY".into());
+    primary.reasoning_levels = vec![ReasoningLevel::High];
+    primary.fallbacks = vec!["backup".into()];
+    let backup = provider(
+        "http-json",
+        "backup",
+        Some("http://127.0.0.1:1/generate".into()),
+        false,
+    );
+    let registry = registry(
+        vec![("primary", primary), ("backup", backup)],
+        true,
+        MapSecrets::with(&[("env:REASONING_KEY", "test-key")]),
+    );
+    let error = registry
+        .preflight(
+            "primary",
+            &text().with_reasoning(Some(ReasoningLevel::High)),
+        )
+        .expect_err("fallback must not silently drop reasoning");
+    assert_eq!(error.code, "provider.reasoning_unsupported");
+    assert_eq!(
+        error.details.get("provider").map(String::as_str),
+        Some("backup")
+    );
+}
+
+#[tokio::test]
+async fn per_agent_model_and_reasoning_are_validated_before_child_admission() {
+    let dir = tempfile::tempdir().expect("runtime directory");
+    let mut config = RuntimeConfig::local(dir.path());
+    config.providers.clear();
+    let mut strong = provider(
+        "openai-compatible",
+        "strong-model",
+        Some("http://127.0.0.1:1/v1".into()),
+        false,
+    );
+    strong.credential = Some("env:GOLDENBEE_TEST_CHILD_REASONING_KEY".into());
+    strong.reasoning_levels = vec![ReasoningLevel::High];
+    config.providers.insert("strong".into(), strong);
+    let mut small = provider(
+        "http-json",
+        "small-model",
+        Some("http://127.0.0.1:1/generate".into()),
+        true,
+    );
+    small.context_window = Some(1_000);
+    config.providers.insert("small".into(), small);
+    config.default_model = "strong".into();
+    config
+        .agent_providers
+        .insert("reasoning-child".into(), "strong".into());
+    config
+        .agent_reasoning
+        .insert("reasoning-child".into(), ReasoningLevel::High);
+    config
+        .agent_providers
+        .insert("small-child".into(), "small".into());
+    let capabilities = config.capabilities.clone();
+    config.capabilities = capabilities
+        .into_iter()
+        .chain([
+            common::CapabilityDescriptor {
+                id: "reasoning-child".into(),
+                kind: "agent".into(),
+                description: "reasoning child".into(),
+                permissions: Vec::new(),
+            },
+            common::CapabilityDescriptor {
+                id: "small-child".into(),
+                kind: "agent".into(),
+                description: "small-window child".into(),
+                permissions: Vec::new(),
+            },
+        ])
+        .collect();
+    std::env::set_var("GOLDENBEE_TEST_CHILD_REASONING_KEY", "test-key");
+    let runtime = Runtime::open(config.remote_approved())
+        .await
+        .expect("runtime opens");
+    let principal = Principal::new("tester", "local", &["*"]);
+
+    let admitted = runtime
+        .submit_task(
+            &principal,
+            SubmitTaskRequest {
+                namespace: Some("local".into()),
+                agent: "reasoning-child".into(),
+                session_id: "session-reasoning-child".into(),
+                input: "hello".into(),
+                idempotency_key: "child-reasoning".into(),
+                profile: Some("default".into()),
+                team: None,
+                worker: None,
+                limits: Default::default(),
+            },
+        )
+        .await
+        .expect("the declared child model admits");
+    let task = runtime
+        .task_unscoped(&admitted.task_id)
+        .await
+        .expect("task recorded");
+    let resolved = task.resolved_model.expect("model recorded");
+    assert_eq!(resolved.provider, "strong");
+    assert_eq!(resolved.reasoning, Some(ReasoningLevel::High));
+
+    let error = runtime
+        .submit_task(
+            &principal,
+            SubmitTaskRequest {
+                namespace: Some("local".into()),
+                agent: "small-child".into(),
+                session_id: "session-small-child".into(),
+                input: "hello".into(),
+                idempotency_key: "child-context".into(),
+                profile: Some("default".into()),
+                team: None,
+                worker: None,
+                limits: common::Limits {
+                    max_tokens: 2_000,
+                    ..common::Limits::default()
+                },
+            },
+        )
+        .await
+        .expect_err("a child whose window cannot hold the budget must not admit");
+    assert_eq!(error.code, "provider.context_unsupported");
+    std::env::remove_var("GOLDENBEE_TEST_CHILD_REASONING_KEY");
+}
+
+#[tokio::test]
+async fn openrouter_reasoning_is_applied_as_a_request_option() {
+    let (endpoint, count, requests) =
+        chat_stub_recorded(200, chat_completion("openrouter: ok")).await;
+    let mut remote = provider("openrouter", "openrouter-model", Some(endpoint), false);
+    remote.credential = Some("env:OPENROUTER_REASONING_KEY".into());
+    remote.reasoning_levels = vec![ReasoningLevel::High];
+    let registry = registry(
+        vec![("openrouter-reasoning", remote)],
+        true,
+        MapSecrets::with(&[("env:OPENROUTER_REASONING_KEY", "test-key")]),
+    );
+    let resolved = registry
+        .resolve(
+            "openrouter-reasoning",
+            1,
+            &text().with_reasoning(Some(ReasoningLevel::High)),
+        )
+        .expect("openrouter reasoning resolves");
+    assert_eq!(resolved.record.reasoning, Some(ReasoningLevel::High));
+
+    let harness =
+        ProofHarness::new("provider-openrouter", resolved.model).expect("native runner builds");
+    let turn = harness
+        .run_turn("user-openrouter", "session-openrouter", "hello")
+        .await
+        .expect("openrouter request runs");
+    assert_eq!(turn.output, "openrouter: ok");
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    let body = requests
+        .lock()
+        .expect("request recorder is not poisoned")
+        .first()
+        .cloned()
+        .expect("the native adapter sent a request");
+    assert_eq!(body["reasoning"]["effort"], "high", "{body}");
+}
+
+#[tokio::test]
 async fn discovered_model_alias_drives_the_native_adapter() {
     let (endpoint, count) = chat_stub(200, chat_completion("alias: ok")).await;
     let mut base = provider("openai-compatible", "model-a", Some(endpoint), false);
@@ -328,6 +611,7 @@ async fn task_records_concrete_provider_and_effective_revision() {
         limits: common::Limits::default(),
         compaction: None,
         secret_refs: Vec::new(),
+        reasoning: None,
         created_at: 0,
     };
     let profile = runtime
@@ -411,6 +695,7 @@ async fn admission_preflight_rejects_incompatible_provider_before_recording_a_ta
         limits: common::Limits::default(),
         compaction: None,
         secret_refs: Vec::new(),
+        reasoning: None,
         created_at: 0,
     };
     let profile = runtime
@@ -473,6 +758,7 @@ async fn preflight_rejects_unsupported_modality() {
                 modalities: vec!["image".into()],
                 tools: 0,
                 max_tokens: 0,
+                reasoning: None,
             },
         )
         .expect_err("image modality must fail");
@@ -496,6 +782,7 @@ async fn preflight_rejects_tool_schema_when_tool_calling_is_disabled() {
                 modalities: vec!["text".into()],
                 tools: 2,
                 max_tokens: 0,
+                reasoning: None,
             },
         )
         .expect_err("bound tools must fail");
@@ -519,6 +806,7 @@ async fn preflight_rejects_context_overflow_and_unknown_windows() {
                 modalities: vec!["text".into()],
                 tools: 0,
                 max_tokens: 2_000,
+                reasoning: None,
             },
         )
         .expect_err("context overflow must fail");
@@ -539,6 +827,7 @@ async fn preflight_rejects_context_overflow_and_unknown_windows() {
                 modalities: vec!["text".into()],
                 tools: 0,
                 max_tokens: 2_000,
+                reasoning: None,
             },
         )
         .expect_err("unknown context must fail closed");

@@ -11,6 +11,7 @@ use crate::context::{ContextBundle, ManifestInput};
 use crate::data::artifacts::NativeArtifactStore;
 use crate::data::memory::NativeMemory;
 use crate::execution::profile::ProfileAgentBuilder;
+use crate::execution::providers::FallbackDecision;
 use crate::execution::ResumeInspection;
 use crate::mcp::{McpRegistry, RemoteMcpRegistry};
 use crate::sessions::{FileSessionService, SESSION_STORE_FILE};
@@ -38,6 +39,8 @@ use tokio_util::sync::CancellationToken;
 /// One native compaction attempt observed by the harness.
 #[derive(Clone)]
 struct CompactionObservation {
+    /// `pre` before native compaction, `post` after it.
+    phase: &'static str,
     strategy: String,
     context_budget: u64,
     preserve_recent: usize,
@@ -71,13 +74,26 @@ struct ObservedTruncation {
 impl CompactionStrategy for ObservedTruncation {
     async fn compact(&self, events: Vec<Event>, budget: usize) -> adk_rust::Result<Vec<Event>> {
         let before = events.len();
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        (self.reporter)(CompactionObservation {
+            phase: "pre",
+            strategy: self.strategy.clone(),
+            context_budget: self.context_budget,
+            preserve_recent: self.preserve_recent,
+            max_retries: self.max_retries,
+            forced: self.forced,
+            attempt,
+            events_before: before,
+            events_after: before,
+        })
+        .await;
         let compacted = TruncationCompaction {
             preserve_recent: self.preserve_recent,
         }
         .compact(events, budget)
         .await?;
-        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
         (self.reporter)(CompactionObservation {
+            phase: "post",
             strategy: self.strategy.clone(),
             context_budget: self.context_budget,
             preserve_recent: self.preserve_recent,
@@ -756,8 +772,12 @@ impl crate::Executor for NativeExecutor {
         // before any output. Keep the record here and commit it through the
         // runtime before a terminal outcome so the durable projection names the
         // provider that actually ran.
-        let fallback_slot: Arc<std::sync::Mutex<Option<common::ResolvedModel>>> =
+        let fallback_slot: Arc<std::sync::Mutex<Option<FallbackDecision>>> =
             Arc::new(std::sync::Mutex::new(None));
+        // The provider that actually runs can change only through a recorded
+        // fallback. Keep the local projection in step so per-call cost uses the
+        // provider that produced the response.
+        let mut resolved_model = task.resolved_model.clone();
         let (agent, graph_thread) = match &graph {
             Some(graph) => (graph.agent.clone(), Some(task.session_id.clone())),
             None => {
@@ -786,9 +806,9 @@ impl crate::Executor for NativeExecutor {
                             Some(revision) => {
                                 let slot = fallback_slot.clone();
                                 let reporter: crate::execution::providers::FallbackReporter =
-                                    Arc::new(move |record| {
+                                    Arc::new(move |decision| {
                                         *slot.lock().expect("fallback slot is not poisoned") =
-                                            Some(record);
+                                            Some(decision);
                                     });
                                 match builder(&revision, &task.agent, Some(reporter)) {
                                     Ok(agent) => agent,
@@ -941,6 +961,43 @@ impl crate::Executor for NativeExecutor {
                 let provider = reporter_provider.clone();
                 let adapter = reporter_adapter.clone();
                 Box::pin(async move {
+                    let task = runtime.task_unscoped(&task_id).await;
+                    let compact = task.map(|task| crate::worker::CompactHookContext {
+                        task: crate::worker::TaskHookContext {
+                            task_id: task.id.clone(),
+                            namespace: task.namespace.clone(),
+                            caller: task.caller.clone(),
+                            agent: task.agent.clone(),
+                            session_id: task.session_id.clone(),
+                            profile: task.profile.clone(),
+                            profile_revision: task.profile_revision,
+                            asset_revision: task.asset_revision,
+                            input: task.input.clone(),
+                            settings: BTreeMap::new(),
+                            cancel: CancellationToken::new(),
+                        },
+                        strategy: observation.strategy.clone(),
+                        context_budget: observation.context_budget,
+                        preserve_recent: observation.preserve_recent,
+                        attempt: observation.attempt,
+                        events_before: observation.events_before,
+                    });
+                    if observation.phase == "pre" {
+                        if let Some(compact) = compact.as_ref() {
+                            runtime.pre_compact_hook(compact).await;
+                        }
+                        return;
+                    }
+                    if let Some(compact) = compact.as_ref() {
+                        runtime
+                            .post_compact_hook(
+                                compact,
+                                &crate::worker::CompactHookOutcome {
+                                    events_after: observation.events_after,
+                                },
+                            )
+                            .await;
+                    }
                     let attributes = BTreeMap::from([
                         ("strategy".into(), observation.strategy.clone()),
                         (
@@ -1099,13 +1156,29 @@ impl crate::Executor for NativeExecutor {
                 .runtime_toolsets
                 .push(RuntimeToolset::new(toolset));
         }
+        // Admitted inline images stay native multimodal parts. Admission already
+        // bounded the decoded size and media type, so a decode failure here means
+        // durable state was corrupted; fail before the native invocation.
+        let mut content = Content::new("user").with_text(task.input.clone());
+        for image in &task.input_images {
+            let data = match image.decode() {
+                Ok(data) => data,
+                Err(_) => {
+                    return ExecutionOutcome::failure(ApiError::new(
+                        "validation.run_image",
+                        "admitted inline image data could not be decoded",
+                    ))
+                }
+            };
+            content.parts.push(Part::InlineData {
+                mime_type: image.media_type.clone(),
+                data,
+                uri: image.name.clone(),
+                annotations: None,
+            });
+        }
         let mut stream = match runner
-            .run_with_config(
-                user_id,
-                session_id,
-                Content::new("user").with_text(task.input.clone()),
-                Some(run_config),
-            )
+            .run_with_config(user_id, session_id, content, Some(run_config))
             .await
         {
             Ok(stream) => stream,
@@ -1124,8 +1197,9 @@ impl crate::Executor for NativeExecutor {
                 .expect("fallback slot is not poisoned")
                 .take()
         };
-        if let Some(record) = pending_fallback {
-            runtime.record_model_fallback(&task.id, record).await;
+        if let Some(decision) = pending_fallback {
+            resolved_model = Some(decision.to.clone());
+            runtime.record_model_fallback(&task.id, decision).await;
         }
 
         let mut output = String::new();
@@ -1208,8 +1282,9 @@ impl crate::Executor for NativeExecutor {
                     .expect("fallback slot is not poisoned")
                     .take()
             };
-            if let Some(record) = pending_fallback {
-                runtime.record_model_fallback(&task.id, record).await;
+            if let Some(decision) = pending_fallback {
+                resolved_model = Some(decision.to.clone());
+                runtime.record_model_fallback(&task.id, decision).await;
             }
             if graph.is_some()
                 && (event.llm_response.interrupted
@@ -1300,13 +1375,7 @@ impl crate::Executor for NativeExecutor {
                 if !event.llm_response.partial {
                     usage.model_calls += 1;
                 }
-                usage.prompt_tokens = Some(
-                    usage.prompt_tokens.unwrap_or(0) + metadata.prompt_token_count.max(0) as u64,
-                );
-                usage.candidate_tokens = Some(
-                    usage.candidate_tokens.unwrap_or(0)
-                        + metadata.candidates_token_count.max(0) as u64,
-                );
+                crate::execution::budget::record_model_usage(&mut usage, metadata);
             } else if !event.llm_response.partial
                 && (event.llm_response.finish_reason.is_some() || !event.tool_calls().is_empty())
             {
@@ -1314,7 +1383,7 @@ impl crate::Executor for NativeExecutor {
                 // counts. Count the call; leave the token values unavailable.
                 usage.model_calls += 1;
             }
-            if let Some(model) = &task.resolved_model {
+            if let Some(model) = &resolved_model {
                 usage.estimated_cost_micros =
                     crate::execution::budget::estimated_cost_micros(&usage, model);
             }

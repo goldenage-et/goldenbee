@@ -90,6 +90,7 @@ pub(crate) fn build_profile_agent(
             .map(|spec| spec.tools.len() + spec.toolsets.len())
             .sum::<usize>(),
         max_tokens: revision.limits.max_tokens,
+        reasoning: revision.reasoning,
     };
     let model = providers
         .resolve_with_observer(&revision.model, revision.revision, &requirements, reporter)

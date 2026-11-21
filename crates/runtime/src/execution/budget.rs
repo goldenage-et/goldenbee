@@ -352,7 +352,8 @@ pub fn usage_disclosure(limits: &Limits, usage: &Usage) -> Option<Value> {
 ///
 /// Provider counts stay exactly as reported. Absent provider counts gain a
 /// separate local estimate. Cost is derived only from operator-declared pricing
-/// and never replaces provider billing.
+/// over provider-reported token counts; a call whose provider reported no usage
+/// gains no cost at all.
 pub fn finalize_usage(
     usage: &mut Usage,
     input: &str,
@@ -378,6 +379,39 @@ pub fn finalize_usage(
     }
 }
 
+/// Accumulate one native response's provider-reported usage.
+///
+/// Every optional field stays absent when the provider omitted it. Thinking
+/// tokens are recorded as evidence but never added to candidate tokens, so a
+/// provider that already counts them does not get priced twice.
+pub fn record_model_usage(usage: &mut Usage, metadata: &adk_rust::UsageMetadata) {
+    usage.prompt_tokens = Some(
+        usage
+            .prompt_tokens
+            .unwrap_or(0)
+            .saturating_add(metadata.prompt_token_count.max(0) as u64),
+    );
+    usage.candidate_tokens = Some(
+        usage
+            .candidate_tokens
+            .unwrap_or(0)
+            .saturating_add(metadata.candidates_token_count.max(0) as u64),
+    );
+    usage.cache_read_tokens = add_optional(
+        usage.cache_read_tokens,
+        metadata.cache_read_input_token_count,
+    );
+    usage.cache_write_tokens = add_optional(
+        usage.cache_write_tokens,
+        metadata.cache_creation_input_token_count,
+    );
+    usage.thinking_tokens = add_optional(usage.thinking_tokens, metadata.thinking_token_count);
+}
+
+fn add_optional(current: Option<u64>, value: Option<i32>) -> Option<u64> {
+    value.map(|value| current.unwrap_or(0).saturating_add(value.max(0) as u64))
+}
+
 /// Approximate tokens from UTF-8 text. This is an explicit local estimate.
 pub fn estimate_tokens(text: &str) -> u64 {
     (text.len() / 4).max(1) as u64
@@ -393,28 +427,47 @@ pub fn total_tokens(usage: &Usage) -> u64 {
         .saturating_add(usage.estimated_tokens.unwrap_or(0))
 }
 
-/// Estimate monetary cost from operator-declared pricing.
+/// Estimate monetary cost from operator-declared pricing and provider-reported
+/// token counts.
 ///
-/// Returns `None` when pricing is absent or no token basis exists. This never
-/// claims provider billing.
+/// Returns `None` when pricing is absent, the provider reported no prompt or
+/// candidate count, or only a local token estimate exists. Cache-read and
+/// cache-write tokens are priced separately and subtracted from the uncached
+/// input basis so a cached prompt is not billed twice. This never claims
+/// provider billing.
 pub fn estimated_cost_micros(usage: &Usage, model: &ResolvedModel) -> Option<u64> {
     let input_price = model.input_cost_micros_per_million?;
     let candidate_price = model.candidate_cost_micros_per_million?;
-    let (input_tokens, candidate_tokens) = match (usage.prompt_tokens, usage.candidate_tokens) {
-        (Some(prompt), Some(candidate)) => (prompt, candidate),
-        _ => {
-            let total = usage.estimated_tokens.unwrap_or(0);
-            if total == 0 {
-                return None;
-            }
-            // No provider split is available. Pricing the whole estimated basis
-            // at the higher declared rate is conservative.
-            return Some(scale_micros(total, input_price.max(candidate_price)));
-        }
-    };
-    let input = scale_micros(input_tokens, input_price);
+    let prompt_tokens = usage.prompt_tokens?;
+    let candidate_tokens = usage.candidate_tokens?;
+    let cache_read = usage.cache_read_tokens.unwrap_or(0).min(prompt_tokens);
+    let cache_write = usage
+        .cache_write_tokens
+        .unwrap_or(0)
+        .min(prompt_tokens.saturating_sub(cache_read));
+    let uncached_input = prompt_tokens
+        .saturating_sub(cache_read)
+        .saturating_sub(cache_write);
+    let input = scale_micros(uncached_input, input_price);
     let candidate = scale_micros(candidate_tokens, candidate_price);
-    Some(input.saturating_add(candidate))
+    let cache_read = scale_micros(
+        cache_read,
+        model
+            .cache_read_cost_micros_per_million
+            .unwrap_or(input_price),
+    );
+    let cache_write = scale_micros(
+        cache_write,
+        model
+            .cache_write_cost_micros_per_million
+            .unwrap_or(input_price),
+    );
+    Some(
+        input
+            .saturating_add(candidate)
+            .saturating_add(cache_read)
+            .saturating_add(cache_write),
+    )
 }
 
 fn scale_micros(tokens: u64, micros_per_million: u64) -> u64 {
@@ -515,6 +568,10 @@ mod tests {
             credential: None,
             input_cost_micros_per_million: Some(1_000_000),
             candidate_cost_micros_per_million: Some(2_000_000),
+            cache_read_cost_micros_per_million: None,
+            cache_write_cost_micros_per_million: None,
+            max_output_tokens: None,
+            reasoning: None,
             profile_revision: 1,
         };
         let mut usage = Usage {
@@ -525,5 +582,89 @@ mod tests {
         };
         finalize_usage(&mut usage, "", None, Some(&model));
         assert_eq!(usage.estimated_cost_micros, Some(4));
+    }
+
+    #[test]
+    fn cost_is_unavailable_without_provider_reported_usage() {
+        let model = price_model(None, None);
+        let mut usage = Usage {
+            model_calls: 1,
+            estimated_tokens: Some(100),
+            ..Usage::default()
+        };
+        finalize_usage(&mut usage, "hello", Some("answer"), Some(&model));
+        assert_eq!(
+            usage.estimated_cost_micros, None,
+            "a local token estimate must not become a cost claim"
+        );
+    }
+
+    #[test]
+    fn cost_prices_cache_read_and_write_separately_without_double_billing() {
+        let model = price_model(Some(250_000), Some(1_250_000));
+        let usage = Usage {
+            prompt_tokens: Some(1_000),
+            candidate_tokens: Some(200),
+            cache_read_tokens: Some(400),
+            cache_write_tokens: Some(100),
+            model_calls: 1,
+            ..Usage::default()
+        };
+        // 500 uncached * 1 + 400 read * 0.25 + 100 write * 1.25 + 200 * 2
+        assert_eq!(estimated_cost_micros(&usage, &model), Some(1_125));
+    }
+
+    #[test]
+    fn cache_tokens_without_a_cache_price_fall_back_to_the_input_price() {
+        let model = price_model(None, None);
+        let usage = Usage {
+            prompt_tokens: Some(10),
+            candidate_tokens: Some(0),
+            cache_read_tokens: Some(4),
+            cache_write_tokens: Some(1),
+            model_calls: 1,
+            ..Usage::default()
+        };
+        // 5 uncached + 4 read + 1 write, all at the input price.
+        assert_eq!(estimated_cost_micros(&usage, &model), Some(10));
+    }
+
+    fn price_model(cache_read: Option<u64>, cache_write: Option<u64>) -> ResolvedModel {
+        ResolvedModel {
+            provider: "p".into(),
+            adapter: "openai-compatible".into(),
+            model: "m".into(),
+            local: false,
+            residency: "remote".into(),
+            endpoint: None,
+            credential: None,
+            input_cost_micros_per_million: Some(1_000_000),
+            candidate_cost_micros_per_million: Some(2_000_000),
+            cache_read_cost_micros_per_million: cache_read,
+            cache_write_cost_micros_per_million: cache_write,
+            max_output_tokens: None,
+            reasoning: None,
+            profile_revision: 1,
+        }
+    }
+
+    #[test]
+    fn reported_cache_and_thinking_tokens_are_recorded_without_double_counting() {
+        let metadata = adk_rust::UsageMetadata {
+            prompt_token_count: 100,
+            candidates_token_count: 20,
+            total_token_count: 120,
+            cache_read_input_token_count: Some(40),
+            cache_creation_input_token_count: Some(10),
+            thinking_token_count: Some(7),
+            ..adk_rust::UsageMetadata::default()
+        };
+        let mut usage = Usage::default();
+        record_model_usage(&mut usage, &metadata);
+        assert_eq!(usage.prompt_tokens, Some(100));
+        assert_eq!(usage.candidate_tokens, Some(20));
+        assert_eq!(usage.cache_read_tokens, Some(40));
+        assert_eq!(usage.cache_write_tokens, Some(10));
+        assert_eq!(usage.thinking_tokens, Some(7));
     }
 }
