@@ -1,6 +1,6 @@
 //! bubblewrap, prlimit, and process-group execution.
 
-use super::{ExecOutput, Sandbox, SandboxError};
+use super::{ExecOutput, Sandbox, SandboxError, SandboxProfile};
 use std::future::Future;
 use std::path::{Component, Path};
 use std::process::Stdio;
@@ -31,7 +31,16 @@ impl Sandbox {
         F: Future<Output = ()>,
     {
         let guest_dir = self.guest_working_dir(working_dir)?;
-        let mut process = self.command(command, &guest_dir);
+        let argv = self.argv_for(command, &guest_dir, true)?;
+        let mut process = Command::new(argv.program);
+        process
+            .args(argv.args)
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0);
         let started = Instant::now();
         let mut child = process.spawn().map_err(|error| {
             SandboxError::spawn(format!("sandboxed command could not start: {error}"))
@@ -51,11 +60,11 @@ impl Sandbox {
         let read = read_both(
             &mut stdout,
             &mut stderr,
-            self.policy.limits.max_output_bytes,
+            self.policy.limits().max_output_bytes,
         );
         tokio::pin!(read);
         tokio::pin!(cancel);
-        let deadline = tokio::time::sleep(self.policy.limits.timeout);
+        let deadline = tokio::time::sleep(self.policy.limits().timeout);
         tokio::pin!(deadline);
 
         enum Selected {
@@ -74,7 +83,7 @@ impl Sandbox {
                 if stdout_truncated || stderr_truncated {
                     self.terminate(&mut child, pid).await?;
                     return Err(SandboxError::output_limit(
-                        self.policy.limits.max_output_bytes,
+                        self.policy.limits().max_output_bytes,
                     ));
                 }
                 let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
@@ -132,22 +141,6 @@ impl Sandbox {
         Ok(format!("/workspace/{relative}"))
     }
 
-    fn command(&self, command: &str, guest_dir: &str) -> Command {
-        let argv = self
-            .argv_for(command, guest_dir, true)
-            .expect("a validated guest directory resolves");
-        let mut process = Command::new(argv.program);
-        process
-            .args(argv.args)
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
-        process
-    }
-
     /// Program and arguments for one contained shell command.
     ///
     /// The process supervisor and PTY adapter reuse this exact vector, so a
@@ -182,17 +175,25 @@ impl Sandbox {
         guest_dir: &str,
         new_session: bool,
     ) -> Result<super::SandboxArgv, SandboxError> {
+        let rules = self.policy.rules();
+        rules.check_command(command).map_err(SandboxError::policy)?;
+        let limits = self.policy.limits();
         let mut args: Vec<std::ffi::OsString> = Vec::new();
         let mut push = |arg: &str| args.push(std::ffi::OsString::from(arg));
-        push(&format!("--cpu={}", self.policy.limits.cpu_seconds));
-        push(&format!("--as={}", self.policy.limits.memory_bytes));
-        push(&format!("--nproc={}", self.policy.limits.max_processes));
-        push(&format!("--fsize={}", self.policy.limits.max_file_bytes));
-        push(&format!("--nofile={}", self.policy.limits.max_open_files));
+        push(&format!("--cpu={}", limits.cpu_seconds));
+        push(&format!("--as={}", limits.memory_bytes));
+        push(&format!("--nproc={}", limits.max_processes));
+        push(&format!("--fsize={}", limits.max_file_bytes));
+        push(&format!("--nofile={}", limits.max_open_files));
         push("--");
         push(&self.policy.bubblewrap.to_string_lossy());
         push("--unshare-all");
         push("--unshare-user");
+        if rules.network.enabled {
+            // `--unshare-all` removes the network namespace; re-share it only
+            // for an explicitly network-enabled policy.
+            push("--share-net");
+        }
         push("--uid");
         push(&self.policy.uid.to_string());
         push("--gid");
@@ -210,6 +211,24 @@ impl Sandbox {
             push(key);
             push(value);
         }
+        if rules.network.enabled {
+            if let Some(proxy) = &rules.network.proxy {
+                for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+                    if !self.policy.environment.contains_key(key) {
+                        push("--setenv");
+                        push(key);
+                        push(proxy);
+                    }
+                }
+                if !rules.network.proxy_bypass.is_empty()
+                    && !self.policy.environment.contains_key("NO_PROXY")
+                {
+                    push("--setenv");
+                    push("NO_PROXY");
+                    push(&rules.network.proxy_bypass.join(","));
+                }
+            }
+        }
         push("--proc");
         push("/proc");
         push("--dev");
@@ -221,9 +240,55 @@ impl Sandbox {
             push(&mount.to_string_lossy());
             push(&mount.to_string_lossy());
         }
-        push("--bind");
-        push(&self.policy.workspace.to_string_lossy());
-        push("/workspace");
+        if rules.network.enabled {
+            // Resolver metadata is the only host `/etc` content needed for a
+            // network-enabled command. Never mount the whole directory.
+            for path in ["/etc/resolv.conf", "/etc/hosts"] {
+                let path = Path::new(path);
+                if path.exists() {
+                    push("--ro-bind");
+                    push(&path.to_string_lossy());
+                    push(&path.to_string_lossy());
+                }
+            }
+        }
+        // The workspace mount expresses the filesystem profile. `read-only`
+        // keeps every declared path visible but unwritable; `workspace-write`
+        // exposes the whole workspace or only the authorized roots.
+        match rules.profile {
+            SandboxProfile::ReadOnly => {
+                push("--ro-bind");
+                push(&self.policy.workspace.to_string_lossy());
+                push("/workspace");
+            }
+            SandboxProfile::WorkspaceWrite => {
+                let roots = self.writable_roots();
+                if roots.is_empty() {
+                    push("--bind");
+                    push(&self.policy.workspace.to_string_lossy());
+                    push("/workspace");
+                } else {
+                    push("--ro-bind");
+                    push(&self.policy.workspace.to_string_lossy());
+                    push("/workspace");
+                    for root in roots {
+                        push("--bind");
+                        push(&root.host.to_string_lossy());
+                        push(&root.guest.to_string_lossy());
+                    }
+                }
+                for protected in self.protected_paths() {
+                    push("--ro-bind");
+                    push(&protected.host.to_string_lossy());
+                    push(&protected.guest.to_string_lossy());
+                }
+            }
+            SandboxProfile::FullAccess => {
+                push("--bind");
+                push(&self.policy.workspace.to_string_lossy());
+                push("/workspace");
+            }
+        }
         push("--chdir");
         push(guest_dir);
         push("--");
