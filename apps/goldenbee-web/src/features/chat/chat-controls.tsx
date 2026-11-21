@@ -19,8 +19,6 @@ import type { GatewayWorker, Profile } from "@goldenbee/sdk"
 
 export interface ChatControlsProps {
   workers: GatewayWorker[]
-  /** The raw preference; a blank Worker means "let the resolver choose". */
-  selection: ChatSelection
   resolved: ResolvedSelection
   profiles: Profile[]
   profilesLoading: boolean
@@ -76,7 +74,6 @@ function profileMetadata(profile: Profile): string {
  */
 export function ChatControls({
   workers,
-  selection,
   resolved,
   profiles,
   profilesLoading,
@@ -88,7 +85,7 @@ export function ChatControls({
   onActivate,
 }: ChatControlsProps) {
   const available = selectableWorkers(workers)
-  const requestedWorker = resolved.selection.worker || selection.worker
+  const requestedWorker = resolved.selection.worker
   const workerIsListed = available.some(
     (candidate) => candidate.id === requestedWorker,
   )

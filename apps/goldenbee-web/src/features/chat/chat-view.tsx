@@ -208,7 +208,6 @@ export function ChatView({
 
       <ChatControls
         workers={workers}
-        selection={selection}
         resolved={resolved}
         profiles={profiles ?? []}
         profilesLoading={profilesLoading}
