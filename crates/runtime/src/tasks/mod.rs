@@ -529,24 +529,46 @@ impl Runtime {
     ///
     /// The task projection is updated only after the fallback provider has
     /// successfully returned a stream, so the recorded provider is truthful.
-    pub async fn record_model_fallback(&self, task_id: &str, model: common::ResolvedModel) {
+    /// The durable event carries the attempt that made the decision and the
+    /// primary provider that failed, so restart recovery can attach the
+    /// decision to the correct attempt.
+    pub async fn record_model_fallback(
+        &self,
+        task_id: &str,
+        decision: crate::execution::providers::FallbackDecision,
+    ) {
+        let mut evidence = None;
         let updated = self
             .store()
             .write(|state| {
                 let task = state.tasks.get_mut(task_id).ok_or_else(|| {
                     ApiError::new("task.not_found", "task disappeared during fallback")
                 })?;
-                task.resolved_model = Some(model.clone());
+                let attempt = task.attempt;
+                let from = task
+                    .resolved_model
+                    .take()
+                    .unwrap_or_else(|| decision.from.clone());
+                task.resolved_model = Some(decision.to.clone());
                 task.updated_at = now();
+                evidence = Some((attempt, from));
                 Ok(())
             })
             .await;
         if updated.is_ok() {
+            let Some((attempt, from)) = evidence else {
+                return;
+            };
             let _ = self
                 .append_event(
                     task_id,
                     "model.fallback",
-                    serde_json::json!({"resolved_model": model}),
+                    serde_json::json!({
+                        "attempt": attempt,
+                        "from": from,
+                        "to": decision.to,
+                        "reason": decision.reason,
+                    }),
                     true,
                 )
                 .await;

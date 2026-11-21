@@ -159,6 +159,7 @@ fn sdk_client_completes_team_and_profile_management_journey() {
         limits: common::Limits::default(),
         compaction: None,
         secret_refs: Vec::new(),
+        reasoning: None,
         created_at: 0,
     };
     let profile = runtime

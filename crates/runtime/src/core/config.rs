@@ -37,6 +37,16 @@ pub struct ProviderProfile {
     /// Declared context window, in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Declared maximum output tokens for one model call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Declared reasoning levels this model supports.
+    ///
+    /// Only adapters with a native reasoning request field may declare levels.
+    /// A level outside this list is rejected at admission instead of being
+    /// silently ignored.
+    #[serde(default)]
+    pub reasoning_levels: Vec<common::ReasoningLevel>,
     /// Credential reference, never a value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
@@ -51,6 +61,14 @@ pub struct ProviderProfile {
     /// million tokens. Used only for harness-side cost estimates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_cost_micros_per_million: Option<u64>,
+    /// Operator-declared cache-read price in millionths of a currency unit per
+    /// million tokens. Falls back to the input price for estimates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_cost_micros_per_million: Option<u64>,
+    /// Operator-declared cache-write price in millionths of a currency unit per
+    /// million tokens. Falls back to the input price for estimates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_cost_micros_per_million: Option<u64>,
     /// Data-handling class. A fallback may not change it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_class: Option<String>,
@@ -196,6 +214,11 @@ pub struct RuntimeConfig {
     pub agent_requirements: BTreeMap<String, AgentRequirement>,
     /// Provider selected by package-registered manual agents.
     pub agent_providers: BTreeMap<String, String>,
+    /// Reasoning level selected by a file-defined or manual agent.
+    ///
+    /// Absent means the agent requests no explicit reasoning. Composition
+    /// profiles use the profile revision's own selection instead.
+    pub agent_reasoning: BTreeMap<String, common::ReasoningLevel>,
     /// Configured local MCP connection policy, including disabled entries.
     /// Interior mutability lets a validated reload disable a connection for
     /// future admissions without rebuilding the process configuration.
@@ -244,10 +267,14 @@ impl RuntimeConfig {
                 local: true,
                 residency: "local".into(),
                 context_window: Some(131_072),
+                max_output_tokens: None,
+                reasoning_levels: Vec::new(),
                 credential: None,
                 cost_rank: Some(0),
                 input_cost_micros_per_million: None,
                 candidate_cost_micros_per_million: None,
+                cache_read_cost_micros_per_million: None,
+                cache_write_cost_micros_per_million: None,
                 data_class: Some("local".into()),
                 fallbacks: Vec::new(),
             },
@@ -263,10 +290,14 @@ impl RuntimeConfig {
                 local: true,
                 residency: "local".into(),
                 context_window: Some(131_072),
+                max_output_tokens: None,
+                reasoning_levels: Vec::new(),
                 credential: None,
                 cost_rank: Some(0),
                 input_cost_micros_per_million: None,
                 candidate_cost_micros_per_million: None,
+                cache_read_cost_micros_per_million: None,
+                cache_write_cost_micros_per_million: None,
                 data_class: Some("local".into()),
                 fallbacks: Vec::new(),
             },
@@ -312,6 +343,7 @@ impl RuntimeConfig {
             providers,
             agent_requirements: BTreeMap::new(),
             agent_providers: BTreeMap::new(),
+            agent_reasoning: BTreeMap::new(),
             mcp_policies: Arc::new(RwLock::new(BTreeMap::new())),
             permissions: crate::policy::default_handle(),
             mcp: crate::mcp::McpConfig::default(),

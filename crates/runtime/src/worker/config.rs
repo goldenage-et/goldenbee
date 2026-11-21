@@ -216,6 +216,7 @@ impl WorkerSettings {
         config.providers = self.provider_profiles();
         config.allow_remote = self.file.allow_remote;
         config.agent_providers = assets.agent_providers.clone();
+        config.agent_reasoning = assets.agent_reasoning.clone();
         config.agent_requirements = assets.agent_requirements.clone();
         config.tokens.clear();
         if let Some(token) = &self.file.token {

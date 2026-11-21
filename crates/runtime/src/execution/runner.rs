@@ -11,6 +11,7 @@ use crate::context::{ContextBundle, ManifestInput};
 use crate::data::artifacts::NativeArtifactStore;
 use crate::data::memory::NativeMemory;
 use crate::execution::profile::ProfileAgentBuilder;
+use crate::execution::providers::FallbackDecision;
 use crate::execution::ResumeInspection;
 use crate::mcp::{McpRegistry, RemoteMcpRegistry};
 use crate::sessions::{FileSessionService, SESSION_STORE_FILE};
@@ -771,8 +772,12 @@ impl crate::Executor for NativeExecutor {
         // before any output. Keep the record here and commit it through the
         // runtime before a terminal outcome so the durable projection names the
         // provider that actually ran.
-        let fallback_slot: Arc<std::sync::Mutex<Option<common::ResolvedModel>>> =
+        let fallback_slot: Arc<std::sync::Mutex<Option<FallbackDecision>>> =
             Arc::new(std::sync::Mutex::new(None));
+        // The provider that actually runs can change only through a recorded
+        // fallback. Keep the local projection in step so per-call cost uses the
+        // provider that produced the response.
+        let mut resolved_model = task.resolved_model.clone();
         let (agent, graph_thread) = match &graph {
             Some(graph) => (graph.agent.clone(), Some(task.session_id.clone())),
             None => {
@@ -801,9 +806,9 @@ impl crate::Executor for NativeExecutor {
                             Some(revision) => {
                                 let slot = fallback_slot.clone();
                                 let reporter: crate::execution::providers::FallbackReporter =
-                                    Arc::new(move |record| {
+                                    Arc::new(move |decision| {
                                         *slot.lock().expect("fallback slot is not poisoned") =
-                                            Some(record);
+                                            Some(decision);
                                     });
                                 match builder(&revision, &task.agent, Some(reporter)) {
                                     Ok(agent) => agent,
@@ -1192,8 +1197,9 @@ impl crate::Executor for NativeExecutor {
                 .expect("fallback slot is not poisoned")
                 .take()
         };
-        if let Some(record) = pending_fallback {
-            runtime.record_model_fallback(&task.id, record).await;
+        if let Some(decision) = pending_fallback {
+            resolved_model = Some(decision.to.clone());
+            runtime.record_model_fallback(&task.id, decision).await;
         }
 
         let mut output = String::new();
@@ -1276,8 +1282,9 @@ impl crate::Executor for NativeExecutor {
                     .expect("fallback slot is not poisoned")
                     .take()
             };
-            if let Some(record) = pending_fallback {
-                runtime.record_model_fallback(&task.id, record).await;
+            if let Some(decision) = pending_fallback {
+                resolved_model = Some(decision.to.clone());
+                runtime.record_model_fallback(&task.id, decision).await;
             }
             if graph.is_some()
                 && (event.llm_response.interrupted
@@ -1368,13 +1375,7 @@ impl crate::Executor for NativeExecutor {
                 if !event.llm_response.partial {
                     usage.model_calls += 1;
                 }
-                usage.prompt_tokens = Some(
-                    usage.prompt_tokens.unwrap_or(0) + metadata.prompt_token_count.max(0) as u64,
-                );
-                usage.candidate_tokens = Some(
-                    usage.candidate_tokens.unwrap_or(0)
-                        + metadata.candidates_token_count.max(0) as u64,
-                );
+                crate::execution::budget::record_model_usage(&mut usage, metadata);
             } else if !event.llm_response.partial
                 && (event.llm_response.finish_reason.is_some() || !event.tool_calls().is_empty())
             {
@@ -1382,7 +1383,7 @@ impl crate::Executor for NativeExecutor {
                 // counts. Count the call; leave the token values unavailable.
                 usage.model_calls += 1;
             }
-            if let Some(model) = &task.resolved_model {
+            if let Some(model) = &resolved_model {
                 usage.estimated_cost_micros =
                     crate::execution::budget::estimated_cost_micros(&usage, model);
             }
