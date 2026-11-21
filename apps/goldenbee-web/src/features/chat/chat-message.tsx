@@ -1,11 +1,17 @@
-import { CircleAlertIcon, CircleHelpIcon } from "lucide-react"
+import { CircleAlertIcon, CircleHelpIcon, CopyIcon, RotateCcwIcon } from "lucide-react"
+import { useState } from "react"
 
 import type { GatewayApproval } from "@goldenbee/sdk"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
+import { Button } from "@/components/ui/button"
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
-import { Message, MessageContent } from "@/components/ui/message"
+import {
+  Message,
+  MessageContent,
+  MessageFooter,
+} from "@/components/ui/message"
 import { Spinner } from "@/components/ui/spinner"
 import {
   ApprovalCard,
@@ -86,6 +92,8 @@ export function ChatMessageView({
   approvalClient = null,
   onApprovalUpdated,
 }: ChatMessageViewProps) {
+  const [copied, setCopied] = useState(false)
+
   if (message.role === "user") {
     const text = textParts(message)
       .map((part) => part.text)
@@ -132,6 +140,25 @@ export function ChatMessageView({
   )
   const streaming = texts.some((part) => part.streaming)
   const waiting = !task && errors.length === 0 && uncertainties.length === 0
+  const answerText = texts.map((part) => part.text).join("")
+  const retryable =
+    task !== undefined &&
+    (task.state === "failed" || task.state === "cancelled") &&
+    onRetry !== undefined &&
+    message.replyTo !== undefined
+
+  async function copyAnswer(): Promise<void> {
+    if (!answerText || !navigator.clipboard) {
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(answerText)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopied(false)
+    }
+  }
 
   return (
     <Message>
@@ -214,15 +241,48 @@ export function ChatMessageView({
         ) : null}
 
         {task && task.state !== "succeeded" ? (
-          <TaskView
-            task={task}
-            busy={busy}
-            onRetry={
-              onRetry && message.replyTo
-                ? () => onRetry(message.replyTo!)
-                : undefined
-            }
-          />
+          <TaskView task={task} />
+        ) : null}
+
+        {answerText || retryable ? (
+          <MessageFooter className="gap-1">
+            {answerText ? (
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Copy response"
+                title="Copy response"
+                onClick={() => {
+                  void copyAnswer()
+                }}
+              >
+                {copied ? (
+                  <span aria-hidden="true" className="text-positive">
+                    ✓
+                  </span>
+                ) : (
+                  <CopyIcon aria-hidden="true" />
+                )}
+              </Button>
+            ) : null}
+            {retryable ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  if (message.replyTo) {
+                    onRetry?.(message.replyTo)
+                  }
+                }}
+              >
+                <RotateCcwIcon data-icon="inline-start" aria-hidden="true" />
+                Retry
+              </Button>
+            ) : null}
+          </MessageFooter>
         ) : null}
       </MessageContent>
     </Message>

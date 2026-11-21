@@ -4,12 +4,10 @@ import {
   CircleCheckIcon,
   CircleHelpIcon,
   LoaderCircleIcon,
-  RotateCcwIcon,
   WrenchIcon,
 } from "lucide-react"
 import { useState } from "react"
 
-import { Button } from "@/components/ui/button"
 import {
   Trace,
   TraceCollapsible,
@@ -173,12 +171,8 @@ export function PlanView({ part }: { part: ChatPlanPart }) {
 
 export function TaskView({
   task,
-  busy,
-  onRetry,
 }: {
   task: ChatTaskPart
-  busy: boolean
-  onRetry?: () => void
 }) {
   const view = taskStateView(task.state)
   const status =
@@ -213,20 +207,6 @@ export function TaskView({
           {task.error.message}
           {task.error.recovery ? ` ${task.error.recovery}` : ""}
         </p>
-      ) : null}
-      {view.retryable && onRetry ? (
-        <div className="pl-6">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={onRetry}
-          >
-            <RotateCcwIcon data-icon="inline-start" aria-hidden="true" />
-            Retry
-          </Button>
-        </div>
       ) : null}
     </Trace>
   )
