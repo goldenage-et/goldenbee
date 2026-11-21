@@ -191,6 +191,8 @@ skills = "$assets/skills"
 directory = "$(worker_state "$name")"
 [settings]
 mode = "local"
+[workspace]
+browse = true
 EOF
       ;;
     coding)
@@ -325,6 +327,9 @@ start_worker() {
   (
     cd "$ROOT"
     export GOLDENBEE_DELEGATION_SECRET="$(token "$DELEGATION_SECRET_FILE")"
+    # Align the package sandbox and the runtime tool workspace with the
+    # Worker's durable storage directory.
+    export GOLDENBEE_DATA_DIR="$(worker_state "$name")"
     # Development web UI; production must not set this.
     export GOLDENBEE_DEV_UI=1
     exec setsid "$BIN_DIR/$name" --config "$config" serve --addr "127.0.0.1:$port"
@@ -514,6 +519,11 @@ start_gateway() {
     start_worker general
   fi
   log "gateway ready"
+  if [[ -f "$ROOT/apps/goldenbee-web/dist/index.html" ]]; then
+    log "gateway UI: http://$GATEWAY_ADDR/"
+  else
+    log "web bundle missing; run: make web"
+  fi
 }
 
 start_all() {

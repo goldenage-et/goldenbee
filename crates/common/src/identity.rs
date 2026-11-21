@@ -97,6 +97,8 @@ pub mod scopes {
     pub const ARTIFACT_WRITE: &str = "artifact:write";
     /// Download artifacts.
     pub const ARTIFACT_READ: &str = "artifact:read";
+    /// Read the Worker's configured workspace tree and bounded file text.
+    pub const WORKSPACE_READ: &str = "workspace:read";
     /// Register or decommission Workers and teams.
     pub const ADMIN: &str = "admin";
     /// Read visible team rosters.

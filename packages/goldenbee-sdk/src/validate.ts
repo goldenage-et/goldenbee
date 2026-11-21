@@ -23,6 +23,9 @@ import type {
   StreamPage,
   Team,
   WorkerSummary,
+  WorkspaceEntry,
+  WorkspaceFile,
+  WorkspaceTreePage,
 } from "./types.js"
 
 /** Minimal runtime guards. They reject wrong top-level shapes, not every field. */
@@ -220,6 +223,42 @@ export function isArtifact(value: unknown): value is Artifact {
 
 export function isArtifactList(value: unknown): value is Artifact[] {
   return isArrayOf(value, isArtifact)
+}
+
+export function isWorkspaceEntry(value: unknown): value is WorkspaceEntry {
+  return (
+    isRecord(value) &&
+    isString(value.name) &&
+    isString(value.path) &&
+    (value.kind === "file" || value.kind === "directory") &&
+    isFiniteNumber(value.size) &&
+    isFiniteNumber(value.modified_at) &&
+    typeof value.hidden === "boolean"
+  )
+}
+
+export function isWorkspaceTreePage(value: unknown): value is WorkspaceTreePage {
+  return (
+    isRecord(value) &&
+    isString(value.path) &&
+    isArrayOf(value.entries, isWorkspaceEntry) &&
+    (value.next_cursor === undefined || isString(value.next_cursor)) &&
+    typeof value.truncated === "boolean"
+  )
+}
+
+export function isWorkspaceFile(value: unknown): value is WorkspaceFile {
+  return (
+    isRecord(value) &&
+    isString(value.path) &&
+    value.kind === "file" &&
+    isFiniteNumber(value.size) &&
+    isFiniteNumber(value.modified_at) &&
+    (value.digest === undefined || isString(value.digest)) &&
+    typeof value.binary === "boolean" &&
+    typeof value.truncated === "boolean" &&
+    (value.text === undefined || isString(value.text))
+  )
 }
 
 export function isSocketTicket(value: unknown): value is SocketTicket {

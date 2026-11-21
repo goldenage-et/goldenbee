@@ -1260,6 +1260,7 @@ impl Worker {
                     .with_default_agent(default_agent)
                     .with_commands(instance.command_registry().await)
                     .with_plugins(instance.plugin_inventory().await)
+                    .with_workspace(instance.workspace_service().await?)
                     .with_mcp(Some(instance.mcp()), Some(instance.remote_mcp()));
                 let app = crate::serving::api_router(state.clone())
                     .merge(native)

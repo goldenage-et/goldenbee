@@ -252,6 +252,31 @@ agent factories that use `settings.tool_kernel()`. The kernel applies the
 timeout, cancellation, output ceiling, path lock, bounded concurrency, evidence,
 and audit described below.
 
+## Workspace browsing
+
+The web Client can show the Worker workspace read-only when the operator opts
+in. The tree uses the same root as the generic file tools.
+
+```toml
+[workspace]
+browse = false                 # opt-in
+max_entries = 500              # one directory page
+max_file_bytes = 262144        # text preview ceiling
+show_hidden = false            # dotfiles hidden
+ignored = [".git", "node_modules", "target", ".next", "dist"]
+```
+
+`GET /v1/workspace/tree` lists one directory page. `GET
+/v1/workspace/file` returns bounded text or binary metadata. Both require
+`workspace:read`; neither writes, uploads, or returns a host path. Paths are
+canonicalized below the root, symlinks that escape are denied, secret-looking
+names are never browsable, and every directory/file read is bounded.
+
+The package sandbox and this workspace must point at the same directory. In the
+development stack, `scripts/dev.sh` exports `GOLDENBEE_DATA_DIR` to the Worker
+storage directory, so General's shell and the tree both use
+`<storage>/workspace`.
+
 ## Process, web, image, plan, and question tools
 
 These capabilities are opt-in like the file tools. A package that declares

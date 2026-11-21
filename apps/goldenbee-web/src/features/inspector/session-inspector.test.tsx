@@ -1,9 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { ReactNode } from "react"
-import { GatewayError, type Artifact } from "@goldenbee/sdk"
+import {
+  GatewayError,
+  type Artifact,
+  type StreamPage,
+  type WorkspaceEntry,
+} from "@goldenbee/sdk"
 
 import {
   createChatInspectionStore,
@@ -14,7 +19,9 @@ import { MemoryChatHistory } from "@/test/memory-chat-history"
 import {
   SessionInspector,
   type ArtifactGateway,
+  type WorkspaceFileGateway,
 } from "@/features/inspector/session-inspector"
+import type { EventsGateway } from "@/features/inspector/workspace-tree"
 
 const taskState = {
   ...createInitialChatState("session-inspect"),
@@ -85,11 +92,46 @@ function artifactsClient(
   }
 }
 
+function workspaceClient(
+  entries: WorkspaceEntry[],
+): WorkspaceFileGateway & { treeCalls: string[] } {
+  const treeCalls: string[] = []
+  return {
+    treeCalls,
+    async workspaceTree(_worker, path = "") {
+      treeCalls.push(path)
+      return {
+        path,
+        entries,
+        truncated: false,
+      }
+    },
+  }
+}
+
+function eventsClient(pages: StreamPage[] = []): EventsGateway {
+  return {
+    async events(_taskId, after) {
+      return (
+        pages.find((page) => page.next_seq > after) ?? {
+          stream_id: "task:exec-ticket",
+          events: [],
+          next_seq: after,
+          oldest_seq: 0,
+          cursor_expired: false,
+        }
+      )
+    },
+  }
+}
+
 function renderInspector(
   options: {
     history?: MemoryChatHistory
     inspections?: ChatInspectionStore
     client?: ArtifactGateway | null
+    workspace?: WorkspaceFileGateway | null
+    events?: EventsGateway | null
   } = {},
 ) {
   const queryClient = new QueryClient({
@@ -100,7 +142,8 @@ function renderInspector(
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     )
   }
-  return render(
+  const openFile = vi.fn()
+  const rendered = render(
     <SessionInspector
       history={options.history ?? seededHistory()}
       inspections={options.inspections ?? inspectionStore()}
@@ -109,31 +152,85 @@ function renderInspector(
           ? artifactsClient([])
           : options.client
       }
+      workspaceClient={
+        options.workspace === undefined ? null : options.workspace
+      }
+      eventsClient={options.events === undefined ? null : options.events}
       chatId="chat-inspect"
       title="Alpha task"
       open
+      liveVersion={0}
+      liveStatus="live"
+      onOpenFile={openFile}
       onClose={() => undefined}
     />,
     { wrapper },
   )
+  return { ...rendered, openFile }
 }
 
 describe("focused session inspector", () => {
-  it("shows Artifacts and Details without a Files tree", () => {
+  it("shows Files, Artifacts, and Details", () => {
     renderInspector()
 
-    expect(screen.getByRole("tab", { name: "Artifacts" })).toBeInTheDocument()
-    expect(screen.getByRole("tab", { name: "Details" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute(
       "aria-selected",
       "true",
     )
+    expect(screen.getByRole("tab", { name: "Artifacts" })).toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Details" })).toBeInTheDocument()
     expect(
       screen.queryByRole("tab", { name: "Tasks" }),
     ).not.toBeInTheDocument()
+  })
+
+  it("opens a workspace file preview from the tree", async () => {
+    const user = userEvent.setup()
+    const workspace = workspaceClient([
+      {
+        name: "index.html",
+        path: "index.html",
+        kind: "file",
+        size: 12,
+        modified_at: 1,
+        hidden: false,
+      },
+    ])
+    const { openFile } = renderInspector({
+      workspace,
+      events: eventsClient(),
+    })
+
+    expect(await screen.findByText("index.html")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: /index\.html/ }))
+
+    expect(openFile).toHaveBeenCalledWith("index.html")
+    expect(workspace.treeCalls).toEqual([""])
+  })
+
+  it("shows a disabled workspace without blocking Artifacts", async () => {
+    const user = userEvent.setup()
+    const workspace = workspaceClient([])
+    workspace.workspaceTree = async () => {
+      throw new GatewayError({
+        kind: "forbidden",
+        status: 403,
+        code: "workspace.disabled",
+        message: "Workspace browsing is disabled for this Worker.",
+        retryable: false,
+      })
+    }
+    renderInspector({ workspace, events: eventsClient() })
+
     expect(
-      screen.queryByRole("tab", { name: "Files" }),
-    ).not.toBeInTheDocument()
-    expect(screen.queryByText(/workspace root/i)).not.toBeInTheDocument()
+      await screen.findByText("Workspace browsing is disabled for this Worker."),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole("tab", { name: "Artifacts" }))
+    expect(screen.getByRole("tab", { name: "Artifacts" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    )
   })
 
   it("lists artifacts with type, size, digest, and finalization", async () => {

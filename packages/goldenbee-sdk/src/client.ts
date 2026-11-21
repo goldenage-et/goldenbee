@@ -6,6 +6,7 @@ import {
 import {
   GatewayTaskStream,
   openTaskStream,
+  openWorkspaceStream,
 } from "./sse.js"
 import {
   connectSocket,
@@ -62,6 +63,8 @@ import type {
   UpdateProviderRequest,
   UpdateTeamRequest,
   WorkerDiscoveryFilter,
+  WorkspaceFile,
+  WorkspaceTreePage,
 } from "./types.js"
 import {
   isApproval,
@@ -94,6 +97,8 @@ import {
   isTeam,
   isTeamList,
   isWorkerList,
+  isWorkspaceFile,
+  isWorkspaceTreePage,
 } from "./validate.js"
 import { normalizeGatewayUrl } from "./url.js"
 
@@ -146,6 +151,22 @@ export interface GatewayClient {
     task?: string,
     options?: GatewayRequestOptions,
   ): Promise<DiagnosticBundle>
+  workspaceTree(
+    worker: string,
+    path?: string,
+    limit?: number,
+    cursor?: string,
+    options?: GatewayRequestOptions,
+  ): Promise<WorkspaceTreePage>
+  workspaceFile(
+    worker: string,
+    path: string,
+    options?: GatewayRequestOptions,
+  ): Promise<WorkspaceFile>
+  workspaceEvents(
+    worker: string,
+    options?: GatewayRequestOptions,
+  ): Promise<GatewayTaskStream>
   workerAudit(
     worker?: string,
     options?: GatewayRequestOptions,
@@ -649,6 +670,28 @@ export function createGatewayClient(
         isDiagnosticBundle,
         request,
       ),
+    workspaceTree: (worker, path = "", limit = 500, cursor, request = {}) =>
+      get(
+        `/v1/workers/${encodeSegment(worker)}/workspace/tree${queryString({
+          path,
+          limit,
+          cursor,
+        })}`,
+        isWorkspaceTreePage,
+        request,
+      ),
+    workspaceFile: (worker, path, request = {}) =>
+      get(
+        `/v1/workers/${encodeSegment(worker)}/workspace/file${queryString({ path })}`,
+        isWorkspaceFile,
+        request,
+      ),
+    workspaceEvents: (worker, request = {}) =>
+      openWorkspaceStream({
+        transport,
+        worker,
+        signal: request.signal,
+      }),
     workerAudit: (worker, request = {}) =>
       get(
         `/v1/admin/workers/audit${queryString({ worker })}`,

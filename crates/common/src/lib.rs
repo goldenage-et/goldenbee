@@ -39,6 +39,7 @@ pub mod task;
 pub mod team;
 pub mod telemetry;
 pub mod worker;
+pub mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -146,6 +147,7 @@ pub use worker::{
     UpdateWorkerRequest, WorkerDescriptor, WorkerDiscoveryFilter, WorkerIncarnation, WorkerLease,
     WorkerLeaseRequest, WorkerRegistrationRequest, WorkerSummary, LOCALITY_LOCAL, LOCALITY_REMOTE,
 };
+pub use workspace::{WorkspaceEntry, WorkspaceFile, WorkspaceTreePage};
 
 /// Wire protocol version implemented by this crate.
 pub const PROTOCOL_VERSION: &str = "1.0";

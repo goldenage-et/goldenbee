@@ -1,4 +1,5 @@
 import {
+  FileIcon,
   FolderPlusIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
@@ -23,6 +24,10 @@ export interface SessionTabsProps {
   onNewGroup(): void
   onRequestRename(group: SessionGroup): void
   onRequestClose(group: SessionGroup): void
+  preview?: { path: string; name: string } | null
+  previewActive?: boolean
+  onSelectPreview?(): void
+  onClosePreview?(): void
 }
 
 export function SessionTabs({
@@ -36,6 +41,10 @@ export function SessionTabs({
   onNewGroup,
   onRequestRename,
   onRequestClose,
+  preview,
+  previewActive = false,
+  onSelectPreview,
+  onClosePreview,
 }: SessionTabsProps) {
   const active = groups.find((group) => group.id === activeGroupId)
   const SidebarIcon = sidebarOpen ? PanelLeftCloseIcon : PanelLeftOpenIcon
@@ -62,7 +71,7 @@ export function SessionTabs({
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
       >
         {groups.map((group) => {
-          const selected = group.id === activeGroupId
+          const selected = group.id === activeGroupId && !previewActive
           const count = group.chatIds.filter(
             (chatId) => !backgroundChatIds.includes(chatId),
           ).length
@@ -92,6 +101,39 @@ export function SessionTabs({
             </button>
           )
         })}
+        {preview ? (
+          <div
+            className={cn(
+              "flex h-7 shrink-0 items-center rounded-[7px] border",
+              previewActive
+                ? "border-line bg-surface text-foreground"
+                : "border-transparent text-muted-foreground hover:bg-surface-2",
+            )}
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={previewActive}
+              aria-controls="session-workspace"
+              onClick={onSelectPreview}
+              className="flex min-w-0 items-center gap-1.5 py-1 pr-1 pl-2 text-meta font-medium outline-none focus-visible:outline-2 focus-visible:outline-gold"
+            >
+              <FileIcon className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="max-w-40 truncate">{preview.name}</span>
+            </button>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label={`Close file preview ${preview.name}`}
+              title="Close file preview"
+              className="mr-0.5"
+              onClick={onClosePreview}
+            >
+              <XIcon aria-hidden="true" />
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       <div

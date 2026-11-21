@@ -1,5 +1,5 @@
 .NOTPARALLEL:
-.PHONY: setup check check-ci build format format-check lint test test-fixtures docs dev dev-status dev-stop start stop worker\:general worker\:general\:build worker\:general\:dev worker\:general\:run worker\:general\:stop
+.PHONY: setup check check-ci build build\:embedded web format format-check lint test test-fixtures docs dev dev-status dev-stop start stop worker\:general worker\:general\:build worker\:general\:dev worker\:general\:run worker\:general\:stop
 
 # `make start gateway`, `make start gb-client`, `make start worker general`
 START_ARGS := $(filter-out start,$(MAKECMDGOALS))
@@ -31,6 +31,15 @@ check-ci: format-check lint test-fixtures
 
 build:
 	cargo build --workspace --locked
+
+# Release Gateway binaries embed the built browser Client. Debug builds read
+# apps/goldenbee-web/dist from disk, so Rust-only iteration does not need Bun.
+web:
+	bun install --frozen-lockfile
+	bun run build
+
+build\:embedded: web
+	cargo build --release --locked -p goldenbee-gateway
 
 format:
 	cargo fmt --all
@@ -75,7 +84,7 @@ worker\:general\:build:
 
 worker\:general: worker\:general\:build
 	@set -a; if [ -f .env ]; then . ./.env; fi; set +a; \
-	GOLDENBEE_DEV_UI=1 ./target/debug/general \
+	GOLDENBEE_DATA_DIR="$(CURDIR)/general/state" GOLDENBEE_DEV_UI=1 ./target/debug/general \
 		--config "$(CONFIG)" serve --addr "$(WORKER_ADDR)"
 
 worker\:general\:dev: worker\:general\:build

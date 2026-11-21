@@ -26,6 +26,7 @@ mod teams;
 mod tests;
 mod worker_client;
 mod workers;
+mod workspace;
 
 pub use self::local::LocalHost;
 use crate::config::{CoreConfig, HostConfig, StoreConfig, WorkerConfig};
@@ -37,6 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use self::artifact::{ArtifactContent, ArtifactStream};
+pub use self::workspace::WorkspaceEventStream;
 
 use self::worker_client::probe;
 

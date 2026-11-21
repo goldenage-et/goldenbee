@@ -315,6 +315,36 @@ export interface ArtifactContent {
   artifactId: string | undefined
 }
 
+/** One read-only Worker workspace entry. Paths are workspace-relative. */
+export interface WorkspaceEntry {
+  name: string
+  path: string
+  kind: "file" | "directory"
+  size: number
+  modified_at: number
+  hidden: boolean
+}
+
+/** One bounded directory page from a Worker workspace. */
+export interface WorkspaceTreePage {
+  path: string
+  entries: WorkspaceEntry[]
+  next_cursor?: string
+  truncated: boolean
+}
+
+/** One bounded text preview or metadata projection from a Worker workspace. */
+export interface WorkspaceFile {
+  path: string
+  kind: "file"
+  size: number
+  modified_at: number
+  digest?: string
+  binary: boolean
+  truncated: boolean
+  text?: string
+}
+
 export interface DiagnosticFinding {
   kind: string
   source: string

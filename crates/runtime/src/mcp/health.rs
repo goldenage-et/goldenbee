@@ -90,11 +90,13 @@ pub fn transport_name(config: &McpServerConfig) -> String {
 /// Local connections report failures as strings; remote connections report
 /// typed codes. Both become one inventory shape.
 pub fn failure_view(failure: &str) -> McpFailureView {
-    let (code, message) = failure
-        .split_once(": ")
-        .filter(|(code, _)| code.starts_with("mcp."))
-        .map(|(code, message)| (code.to_string(), message.to_string()))
-        .unwrap_or_else(|| ("mcp.error".to_string(), failure.to_string()));
+    let (code, message) = match failure.split_once(": ") {
+        Some((code, message)) if code.starts_with("mcp.") => {
+            (code.to_string(), message.to_string())
+        }
+        _ if failure.starts_with("mcp.") => (failure.to_string(), String::new()),
+        _ => ("mcp.error".to_string(), failure.to_string()),
+    };
     McpFailureView {
         code,
         message: common::redact(&message).chars().take(512).collect(),

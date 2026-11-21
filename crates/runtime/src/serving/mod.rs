@@ -26,6 +26,7 @@ mod retention;
 mod runs;
 mod sessions;
 mod tasks;
+mod workspace;
 
 pub use a2a::A2aServing;
 pub use error::failure;
@@ -59,6 +60,8 @@ pub struct WorkerState {
     pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
     /// Instance-owned remote MCP connection registry.
     pub remote_mcp: Option<Arc<crate::mcp::RemoteMcpRegistry>>,
+    /// Read-only workspace inspection service, when enabled by operator policy.
+    pub workspace: Option<crate::workspace::WorkspaceService>,
 }
 
 impl WorkerState {
@@ -74,6 +77,7 @@ impl WorkerState {
             plugins: Vec::new(),
             mcp: None,
             remote_mcp: None,
+            workspace: None,
         }
     }
 
@@ -107,6 +111,12 @@ impl WorkerState {
         self
     }
 
+    /// Attach optional read-only workspace inspection.
+    pub fn with_workspace(mut self, workspace: Option<crate::workspace::WorkspaceService>) -> Self {
+        self.workspace = workspace;
+        self
+    }
+
     /// Attach the instance-owned MCP connection registries.
     pub fn with_mcp(
         mut self,
@@ -127,6 +137,9 @@ pub fn api_router(state: WorkerState) -> Router {
         .route("/v1/status", get(health::status))
         .route("/v1/diagnostics", get(diagnostics::diagnostics))
         .route("/v1/capabilities", get(health::capabilities))
+        .route("/v1/workspace/tree", get(workspace::tree))
+        .route("/v1/workspace/file", get(workspace::file))
+        .route("/v1/workspace/events/stream", get(workspace::events))
         .route("/v1/commands", get(commands::list))
         .route("/v1/mcp/servers", get(mcp::servers))
         .route("/v1/mcp/servers/{server}/restart", post(mcp::restart))

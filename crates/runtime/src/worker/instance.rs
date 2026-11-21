@@ -478,6 +478,25 @@ impl WorkerInstance {
         );
         report
     }
+
+    /// Build the optional read-only workspace service from the active policy.
+    pub async fn workspace_service(
+        &self,
+    ) -> WorkerResult<Option<crate::workspace::WorkspaceService>> {
+        let settings = self.inner.settings.read().await;
+        if !settings.file.workspace.browse {
+            return Ok(None);
+        }
+        let policy = &settings.file.workspace;
+        crate::workspace::WorkspaceService::new(
+            settings.tool_workspace(),
+            policy.max_entries,
+            policy.max_file_bytes,
+            policy.show_hidden,
+            policy.ignored.clone(),
+        )
+        .map(Some)
+    }
 }
 
 /// Owned context supplied to compiled package code.

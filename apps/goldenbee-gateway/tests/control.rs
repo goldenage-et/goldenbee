@@ -94,7 +94,8 @@ async fn sdk_control_semantics_survive_gateway_routing_without_local_lease_state
                     "version": "0.1.0",
                     "protocol": common::PROTOCOL_VERSION,
                     "instance": "worker-a",
-                    "capabilities": []
+                    "capabilities": [],
+                    "installed_capabilities": []
                 })
             } else if line.contains("/control/commands") {
                 serde_json::json!({
@@ -138,6 +139,7 @@ async fn sdk_control_semantics_survive_gateway_routing_without_local_lease_state
 
     let data = tempfile::tempdir().expect("gateway data");
     let config = Config {
+        ui: Default::default(),
         listen: "127.0.0.1:0".into(),
         callers: vec![
             CallerConfig {

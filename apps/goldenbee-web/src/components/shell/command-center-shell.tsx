@@ -28,9 +28,14 @@ import { Button } from "@/components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { useViewportBelow } from "@/components/shell/use-viewport"
 import { ChatView } from "@/features/chat/chat-view"
-import { createChatInspectionStore } from "@/features/chat/chat-inspection-store"
+import {
+  createChatInspectionStore,
+  useChatInspection,
+} from "@/features/chat/chat-inspection-store"
 import type { ChatHistoryStore } from "@/features/chat/local-chat-history"
 import { SessionInspector } from "@/features/inspector/session-inspector"
+import { WorkspaceFilePreview } from "@/features/inspector/workspace-file-preview"
+import { useWorkspaceLive } from "@/features/inspector/use-workspace-live"
 import { useGatewayClient } from "@/features/connection/use-gateway-client"
 import {
   useConnection,
@@ -46,6 +51,15 @@ import type { SessionGroup } from "@/features/workspace/workspace-store"
 
 const panelLimitNotice =
   "Four panels are already visible. Solo or background a session before splitting."
+
+/** Invisible resize target; a quiet line appears only on hover, focus, or drag. */
+function PanelHandle() {
+  return (
+    <ResizableHandle
+      className="w-2 bg-transparent transition-colors after:bg-transparent hover:bg-line/40 focus-visible:bg-line/60 data-[separator=active]:bg-line/60 aria-[orientation=horizontal]:h-2"
+    />
+  )
+}
 
 export interface CommandCenterShellProps {
   store: ConnectionStore
@@ -103,7 +117,17 @@ export function CommandCenterShell({
   const [groupDialog, setGroupDialog] = useState<GroupDialogState | null>(null)
   const [closing, setClosing] = useState<SessionGroup | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [previewPath, setPreviewPath] = useState<string | null>(null)
   const previousInspectorDefault = useRef(inspectorDefault)
+  const activeInspection = useChatInspection(
+    (state) =>
+      controller.activeChatId
+        ? state.inspections[controller.activeChatId]
+        : undefined,
+    inspections,
+  )
+  const activeWorker = activeInspection?.selection?.worker ?? null
+  const workspaceLive = useWorkspaceLive(activeWorker, gatewayClient)
 
   useEffect(() => {
     // The inspector becomes an on-demand overlay below the narrow breakpoint.
@@ -112,6 +136,12 @@ export function CommandCenterShell({
       setInspectorOpen(false)
     }
   }, [narrow])
+
+  useEffect(() => {
+    // A focused session change closes the transient file preview.
+    // oxlint-disable-next-line react/set-state-in-effect
+    setPreviewPath(null)
+  }, [controller.activeChatId])
 
   useEffect(() => {
     if (previousInspectorDefault.current === inspectorDefault) {
@@ -201,6 +231,7 @@ export function CommandCenterShell({
   )
   const visibleChatIds = controller.visibleChatIds
   const stackedPanels = singleColumn || visibleChatIds.length === 1
+  const previewName = previewPath?.split("/").at(-1) ?? previewPath ?? ""
 
   const paletteActions = useMemo(() => {
     const actions: PaletteAction[] = [
@@ -475,7 +506,7 @@ export function CommandCenterShell({
         >
           {renderPanel(first)}
         </ResizablePanel>
-        <ResizableHandle withHandle />
+        <PanelHandle />
         <ResizablePanel
           defaultSize="50%"
           minSize="20%"
@@ -488,6 +519,18 @@ export function CommandCenterShell({
   }
 
   function renderWorkspace() {
+    if (previewPath) {
+      return (
+        <WorkspaceFilePreview
+          client={gatewayClient}
+          worker={activeWorker}
+          path={previewPath}
+          liveVersion={workspaceLive.version}
+          liveStatus={workspaceLive.status}
+          onClose={() => setPreviewPath(null)}
+        />
+      )
+    }
     const ids = visibleChatIds
 
     if (ids.length === 0) {
@@ -544,7 +587,7 @@ export function CommandCenterShell({
                 {renderPanel(chatId)}
               </ResizablePanel>
               {index < ids.length - 1 ? (
-                <ResizableHandle withHandle />
+                <PanelHandle />
               ) : null}
             </Fragment>
           ))}
@@ -569,7 +612,7 @@ export function CommandCenterShell({
           >
             {renderPanel(ids[0]!)}
           </ResizablePanel>
-          <ResizableHandle withHandle />
+          <PanelHandle />
           <ResizablePanel
             defaultSize="50%"
             minSize="25%"
@@ -598,7 +641,7 @@ export function CommandCenterShell({
           >
             {renderPanel(ids[0]!)}
           </ResizablePanel>
-          <ResizableHandle withHandle />
+          <PanelHandle />
           <ResizablePanel
             defaultSize="45%"
             minSize="25%"
@@ -626,7 +669,7 @@ export function CommandCenterShell({
         >
           {horizontalPair(ids[0]!, ids[1]!)}
         </ResizablePanel>
-        <ResizableHandle withHandle />
+        <PanelHandle />
         <ResizablePanel
           defaultSize="50%"
           minSize="25%"
@@ -724,8 +767,14 @@ export function CommandCenterShell({
               backgroundChatIds={controller.backgroundChatIds}
               sidebarOpen={sidebarOpen}
               onToggleSidebar={() => setSidebarOpen((open) => !open)}
-              onSelectGroup={controller.selectGroup}
-              onNewSession={splitPanel}
+              onSelectGroup={(id) => {
+                setPreviewPath(null)
+                controller.selectGroup(id)
+              }}
+              onNewSession={() => {
+                setPreviewPath(null)
+                splitPanel()
+              }}
               onNewGroup={() =>
                 setGroupDialog({
                   mode: "create",
@@ -740,6 +789,18 @@ export function CommandCenterShell({
                 })
               }
               onRequestClose={(group) => setClosing(group)}
+              preview={
+                previewPath
+                  ? { path: previewPath, name: previewName }
+                  : null
+              }
+              previewActive={previewPath !== null}
+              onSelectPreview={() => {
+                if (previewPath) {
+                  setPreviewPath(previewPath)
+                }
+              }}
+              onClosePreview={() => setPreviewPath(null)}
             />
 
             <main
@@ -759,9 +820,14 @@ export function CommandCenterShell({
                     history={history}
                     inspections={inspections}
                     artifactsClient={gatewayClient}
+                    workspaceClient={gatewayClient}
+                    eventsClient={gatewayClient}
                     chatId={controller.activeChatId}
                     title={controller.activeChatTitle}
                     open={inspectorOpen}
+                    liveVersion={workspaceLive.version}
+                    liveStatus={workspaceLive.status}
+                    onOpenFile={setPreviewPath}
                     onClose={() => toggleInspector(false)}
                   />
                 ) : null}
@@ -780,9 +846,14 @@ export function CommandCenterShell({
                       history={history}
                       inspections={inspections}
                       artifactsClient={gatewayClient}
+                      workspaceClient={gatewayClient}
+                      eventsClient={gatewayClient}
                       chatId={controller.activeChatId}
                       title={controller.activeChatTitle}
                       open={inspectorOpen}
+                      liveVersion={workspaceLive.version}
+                      liveStatus={workspaceLive.status}
+                      onOpenFile={setPreviewPath}
                       onClose={() => toggleInspector(false)}
                     />
                   </div>

@@ -65,6 +65,8 @@ base64.workspace = true
 # keeps its own contained-write helper private, so the two adapters that ADK
 # does not provide repeat the same final-component guard.
 libc = "0.2"
+# Recursive filesystem notifications for the read-only workspace SSE stream.
+notify.workspace = true
 # Interactive PTY sessions for the opt-in process tools. The child is still the
 # validated `prlimit`/`bubblewrap` vector; the PTY only carries its terminal.
 portable-pty = "0.9"

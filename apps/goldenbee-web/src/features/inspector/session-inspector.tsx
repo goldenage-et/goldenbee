@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
-import { isGatewayError, type Artifact } from "@goldenbee/sdk"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { isGatewayError, type Artifact, type WorkspaceEntry } from "@goldenbee/sdk"
 
+import { FileTree } from "@/components/ai-elements/file-tree"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { ChatInspectionStore } from "@/features/chat/chat-inspection-store"
@@ -11,14 +12,24 @@ import type {
   RestoredChat,
 } from "@/features/chat/local-chat-history"
 import { UsageFacts } from "@/features/usage/usage-facts"
+import {
+  buildFileTreeNodes,
+  loadChangedFiles,
+  loadWorkspaceDirectory,
+  type EventsGateway,
+  type WorkspaceGateway,
+} from "@/features/inspector/workspace-tree"
 
 export interface ArtifactGateway {
   artifacts(taskId: string): Promise<Artifact[]>
 }
 
-export type InspectorTab = "artifacts" | "details"
+export type WorkspaceFileGateway = WorkspaceGateway
+
+export type InspectorTab = "files" | "artifacts" | "details"
 
 const tabs: Array<{ id: InspectorTab; label: string }> = [
+  { id: "files", label: "Files" },
   { id: "artifacts", label: "Artifacts" },
   { id: "details", label: "Details" },
 ]
@@ -27,9 +38,14 @@ export interface SessionInspectorProps {
   history: ChatHistoryStore | null
   inspections: ChatInspectionStore
   artifactsClient: ArtifactGateway | null
+  workspaceClient: WorkspaceFileGateway | null
+  eventsClient: EventsGateway | null
   chatId: string | null
   title?: string
   open: boolean
+  liveVersion: number
+  liveStatus: "disabled" | "connecting" | "live" | "reconnecting"
+  onOpenFile(path: string): void
   onClose(): void
 }
 
@@ -76,6 +92,22 @@ function artifactError(error: unknown): { message: string; denial: boolean } {
   }
 }
 
+function workspaceError(error: unknown): { message: string; code?: string } {
+  if (isGatewayError(error)) {
+    return { message: error.message, code: error.code }
+  }
+  return {
+    message:
+      error instanceof Error && error.message
+        ? error.message
+        : "The Worker workspace could not be read.",
+  }
+}
+
+function workspaceDisabled(error: { code?: string }): boolean {
+  return error.code === "workspace.disabled"
+}
+
 /**
  * Focused-session context inspector.
  *
@@ -87,14 +119,28 @@ export function SessionInspector({
   history,
   inspections,
   artifactsClient,
+  workspaceClient,
+  eventsClient,
   chatId,
   title,
   open,
+  liveVersion,
+  liveStatus,
+  onOpenFile,
   onClose,
 }: SessionInspectorProps) {
-  const [tab, setTab] = useState<InspectorTab>("details")
+  const [tab, setTab] = useState<InspectorTab>("files")
   const [record, setRecord] = useState<RestoredChat | null>(null)
   const [recordError, setRecordError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [directories, setDirectories] = useState<Record<string, WorkspaceEntry[]>>(
+    {},
+  )
+  const [loadingFolders, setLoadingFolders] = useState<Set<string>>(
+    () => new Set(),
+  )
+  const [folderError, setFolderError] = useState<string | null>(null)
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const inspection = useChatInspection(
     (state) => (chatId ? state.inspections[chatId] : undefined),
     inspections,
@@ -141,6 +187,124 @@ export function SessionInspector({
   const gap = inspection?.gap ?? record?.chat.gap ?? null
   const recovery = inspection?.recovery ?? record?.chat.recovery ?? null
   const usage = inspection?.usage ?? null
+  const workerId = selection?.worker ?? null
+
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    setExpanded(new Set())
+    // oxlint-disable-next-line react/set-state-in-effect
+    setDirectories({})
+    // oxlint-disable-next-line react/set-state-in-effect
+    setLoadingFolders(new Set())
+    // oxlint-disable-next-line react/set-state-in-effect
+    setFolderError(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSelectedPath(null)
+  }, [workerId])
+
+  const workspaceRoot = useQuery({
+    queryKey: ["focused-session-workspace-root", workerId, liveVersion],
+    queryFn: () => loadWorkspaceDirectory(workspaceClient!, workerId!, ""),
+    enabled:
+      open &&
+      tab === "files" &&
+      workerId !== null &&
+      workspaceClient !== null,
+    retry: false,
+  })
+
+  const changedFiles = useQuery({
+    queryKey: ["focused-session-workspace-changes", taskId, liveVersion],
+    queryFn: () => loadChangedFiles(eventsClient!, taskId!),
+    enabled:
+      open && tab === "files" && taskId !== null && eventsClient !== null,
+    retry: false,
+  })
+
+  const workspaceNodes = useMemo(
+    () =>
+      buildFileTreeNodes(
+        workspaceRoot.data?.entries ?? [],
+        directories,
+        loadingFolders,
+        changedFiles.data ?? new Map(),
+      ),
+    [workspaceRoot.data, directories, loadingFolders, changedFiles.data],
+  )
+
+  const workspaceFailure = workspaceRoot.isError
+    ? workspaceError(workspaceRoot.error)
+    : null
+  const changesCoarse = changedFiles.isError
+    ? workspaceError(changedFiles.error)
+    : null
+  const expandedRef = useRef(expanded)
+  expandedRef.current = expanded
+  const liveVersionRef = useRef(0)
+
+  useEffect(() => {
+    if (
+      liveVersion === 0 ||
+      liveVersion === liveVersionRef.current ||
+      workerId === null ||
+      workspaceClient === null
+    ) {
+      return
+    }
+    liveVersionRef.current = liveVersion
+    setDirectories({})
+    for (const path of expandedRef.current) {
+      void loadWorkspaceDirectory(workspaceClient, workerId, path)
+        .then((page) => {
+          setDirectories((current) => ({ ...current, [path]: page.entries }))
+        })
+        .catch((cause: unknown) => {
+          setFolderError(workspaceError(cause).message)
+        })
+    }
+  }, [liveVersion, workerId, workspaceClient])
+
+  function ensureFolder(path: string) {
+    if (
+      directories[path] ||
+      loadingFolders.has(path) ||
+      workerId === null ||
+      workspaceClient === null
+    ) {
+      return
+    }
+    setFolderError(null)
+    setLoadingFolders((current) => new Set(current).add(path))
+    void loadWorkspaceDirectory(workspaceClient, workerId, path)
+      .then((page) => {
+        setDirectories((current) => ({ ...current, [path]: page.entries }))
+      })
+      .catch((cause: unknown) => {
+        setFolderError(workspaceError(cause).message)
+      })
+      .finally(() => {
+        setLoadingFolders((current) => {
+          const next = new Set(current)
+          next.delete(path)
+          return next
+        })
+      })
+  }
+
+  function toggleFolder(path: string, next: boolean) {
+    if (next) {
+      ensureFolder(path)
+    }
+    setExpanded((current) => {
+      const updated = new Set(current)
+      if (next) {
+        updated.add(path)
+      } else {
+        updated.delete(path)
+      }
+      return updated
+    })
+  }
 
   const artifacts = useQuery({
     queryKey: ["focused-session-artifacts", taskId],
@@ -230,6 +394,99 @@ export function SessionInspector({
           <p role="alert" className="text-meta text-destructive">
             {recordError}
           </p>
+        ) : null}
+
+        {chatId && tab === "files" ? (
+          <section
+            id="inspector-files"
+            role="tabpanel"
+            aria-label="Workspace files"
+            className="grid gap-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-micro font-bold tracking-[0.14em] text-dim uppercase">
+                  Workspace
+                </p>
+                <p className="truncate text-micro text-muted-foreground">
+                  {workerId ? `${workerId} · read-only` : "No Worker selected"}
+                </p>
+              </div>
+              <span
+                role="status"
+                className={
+                  liveStatus === "live"
+                    ? "text-micro text-positive"
+                    : liveStatus === "reconnecting"
+                      ? "text-micro text-gold"
+                      : "text-micro text-dim"
+                }
+              >
+                {liveStatus === "live"
+                  ? "● Live"
+                  : liveStatus === "reconnecting"
+                    ? "○ Reconnecting"
+                    : "Read-only"}
+              </span>
+            </div>
+
+            {!workerId ? (
+              <p className="text-meta text-muted-foreground">
+                Send a message first so the session panel selects a Worker.
+              </p>
+            ) : workspaceClient === null ? (
+              <p className="text-meta text-muted-foreground">
+                Workspace browsing is unavailable for this connection.
+              </p>
+            ) : workspaceRoot.isLoading ? (
+              <p role="status" className="text-meta text-muted-foreground">
+                Loading workspace…
+              </p>
+            ) : workspaceFailure ? (
+              workspaceDisabled(workspaceFailure) ? (
+                <p role="alert" className="text-meta text-destructive">
+                  Workspace browsing is disabled for this Worker.
+                </p>
+              ) : (
+                <div role="alert" className="grid gap-1">
+                  <p className="text-meta text-destructive">
+                    The Worker workspace could not be read.
+                  </p>
+                  <p className="text-micro text-muted-foreground">
+                    {workspaceFailure.message}
+                  </p>
+                </div>
+              )
+            ) : (
+              <>
+                {changesCoarse ? (
+                  <p className="text-micro text-muted-foreground">
+                    Changed-file evidence is unavailable: {changesCoarse.message}
+                  </p>
+                ) : null}
+                {folderError ? (
+                  <p role="alert" className="text-micro text-destructive">
+                    {folderError}
+                  </p>
+                ) : null}
+                {workspaceRoot.data?.truncated ? (
+                  <p className="text-micro text-gold">
+                    This directory is larger than the display bound.
+                  </p>
+                ) : null}
+                <FileTree
+                  nodes={workspaceNodes}
+                  expanded={expanded}
+                  selected={selectedPath ?? undefined}
+                  onExpandedChange={toggleFolder}
+                  onSelect={(path) => {
+                    setSelectedPath(path)
+                    onOpenFile(path)
+                  }}
+                />
+              </>
+            )}
+          </section>
         ) : null}
 
         {chatId && tab === "artifacts" ? (

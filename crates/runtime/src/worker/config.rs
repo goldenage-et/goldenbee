@@ -131,7 +131,7 @@ impl WorkerSettings {
 
     /// Workspace used by generic file/search tools. Defaults below storage so
     /// an instance never writes into the package or configuration directory.
-    pub(crate) fn tool_workspace(&self) -> std::path::PathBuf {
+    pub fn tool_workspace(&self) -> std::path::PathBuf {
         match self.file.tools.workspace.as_deref() {
             Some(value) => self.resolve_path(value),
             None => self.data_dir.join("workspace"),
@@ -430,6 +430,9 @@ pub struct FileConfig {
     /// Generic file/search tool workspace and runtime limits.
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// Read-only workspace inspection policy for Clients.
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
     /// Configured memory-file assembly. The runtime hardcodes no filename.
     #[serde(default)]
     pub context: ContextConfig,
@@ -604,6 +607,57 @@ fn default_tool_output_bytes() -> usize {
 
 fn default_tool_parallel() -> usize {
     4
+}
+
+/// Read-only workspace inspection policy.
+///
+/// Browsing is opt-in. The workspace root is the same path used by the generic
+/// file tools, so a Client can never see a different directory than the agent.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceConfig {
+    /// Whether the read-only tree and file routes are enabled.
+    #[serde(default)]
+    pub browse: bool,
+    /// Maximum entries returned in one directory page.
+    #[serde(default = "default_workspace_entries")]
+    pub max_entries: usize,
+    /// Maximum bytes returned for one text file preview.
+    #[serde(default = "default_workspace_file_bytes")]
+    pub max_file_bytes: usize,
+    /// Whether dotfiles and secret-looking files are listed.
+    #[serde(default)]
+    pub show_hidden: bool,
+    /// Directory names skipped while walking or listing.
+    #[serde(default = "default_workspace_ignored")]
+    pub ignored: Vec<String>,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            browse: false,
+            max_entries: default_workspace_entries(),
+            max_file_bytes: default_workspace_file_bytes(),
+            show_hidden: false,
+            ignored: default_workspace_ignored(),
+        }
+    }
+}
+
+fn default_workspace_entries() -> usize {
+    500
+}
+
+fn default_workspace_file_bytes() -> usize {
+    262_144
+}
+
+fn default_workspace_ignored() -> Vec<String> {
+    [".git", "node_modules", "target", ".next", "dist"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 /// Optional per-owner retention overrides loaded from Worker configuration.

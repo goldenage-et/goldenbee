@@ -31,6 +31,9 @@ revision store and never create a second profile loader or authority.
 | `/v1/health` | New | Minimal public liveness. |
 | `/v1/status` | New | Authenticated health, readiness, lifecycle, and capacity projection. |
 | `/v1/capabilities` | New | Authenticated manifest, command inventory, and durability disclosure. |
+| `/v1/workspace/tree` | New | One bounded directory page from the Worker workspace. Requires `workspace:read` and `[workspace] browse = true`. |
+| `/v1/workspace/file` | New | Bounded UTF-8 preview or binary metadata for one workspace-relative file. Requires `workspace:read`. |
+| `/v1/workspace/events/stream` | New | Live `workspace.changed` SSE notifications for visible workspace paths. Requires `workspace:read`. |
 | `/v1/commands` | New | List runtime and Worker-defined commands. Requires `task:read`. |
 | `/v1/commands/{name}` | New | Read one command descriptor, or invoke it with `POST`. Invocation requires `task:submit`. |
 | `/v1/mcp/servers` | New | Configured MCP connections with transport, state, restart count, and redacted last failure. Requires `operate`. |
@@ -586,6 +589,39 @@ not a second runner, session store, or event vocabulary.
   `uncertainty`, `usage`, and `exit_code`, matching `RunResult`. A bounded wait
   or a closed live stream ends with the uncertain class rather than a claimed
   success.
+
+
+## Workspace inspection
+
+`GET /v1/workspace/tree` and `GET /v1/workspace/file` expose the same
+workspace root used by the generic file tools. They are read-only and opt-in:
+
+```toml
+[workspace]
+browse = true
+max_entries = 500
+max_file_bytes = 262144
+show_hidden = false
+ignored = [".git", "node_modules", "target", ".next", "dist"]
+```
+
+- Every path is workspace-relative. Responses never contain the host workspace
+  root or an absolute path.
+- Paths are canonicalized below the configured root. `..`, absolute paths, and
+  symlinks that escape the root are denied with `workspace.path_denied`.
+- Symlink entries are not listed, dotfiles are hidden unless `show_hidden` is
+  set, and secret-looking names (`.env`, credential, token, private keys) are
+  never browsable.
+- Directory pages are bounded by `max_entries` and return `next_cursor` when
+  truncated. File previews return at most `max_file_bytes`; binary files return
+  metadata only.
+- Reads require `workspace:read`. Disabled, unavailable, denied, missing, and
+  oversized cases use stable `workspace.*` errors.
+- `GET /v1/workspace/events/stream` is a read-only SSE stream backed by one
+  recursive filesystem watcher. Events carry workspace-relative `paths` in the
+  standard Worker event envelope. Notifications are best-effort and not
+  replayable; a reconnect must refetch the tree. The watcher drops batches for
+  a slow subscriber rather than growing an unbounded queue.
 
 ## Artifacts
 

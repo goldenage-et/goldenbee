@@ -8,6 +8,7 @@ mod admin;
 mod diagnostics;
 mod handlers;
 mod types;
+mod workspace;
 
 use crate::state::SharedState;
 use axum::routing::{delete, get, post};
@@ -29,6 +30,12 @@ pub(crate) fn caller_routes() -> Router<SharedState> {
         .route(
             "/v1/workers/{id}/diagnostics",
             get(diagnostics::diagnostics),
+        )
+        .route("/v1/workers/{id}/workspace/tree", get(workspace::tree))
+        .route("/v1/workers/{id}/workspace/file", get(workspace::file))
+        .route(
+            "/v1/workers/{id}/workspace/events/stream",
+            get(workspace::events),
         )
         .merge(admin::routes())
 }

@@ -61,3 +61,7 @@ mode = "local"
 # max_depth = 1
 # max_fanout = 1
 # limits = { max_duration_ms = 60000, max_depth = 1, max_fanout = 1 }
+
+# Read-only workspace browsing for the web Client.
+[workspace]
+browse = true

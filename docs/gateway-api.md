@@ -40,8 +40,16 @@ direct-core:       business backend -> gateway-core -> Worker
 
 ## Endpoint audit
 
+The embedded browser Client may call the authenticated `/v1` surface without a
+bearer token only when all of these hold: the request carries the
+`x-goldenbee-ui` marker, the TCP peer is loopback, and the `Host` header is
+loopback (`localhost`, `127.0.0.1`, or `::1`). That local session uses the first
+configured caller's scopes and Worker allow-list. An explicit token must still
+be valid. Set `"ui": { "local_auth": false }` to disable this path.
+
 | Path | Classification | Notes |
 | --- | --- | --- |
+| `/`, `/index.html`, `/assets/*`, `/favicon.svg` | New, public | Static browser Client embedded in release binaries. Unknown non-API paths do not receive the HTML shell; unknown `/v1/*` paths stay JSON 404s. |
 | `/v1/health` | New, public | Minimal liveness plus approved and reachable Worker counts. |
 | `GET /v1/workers` | New, authenticated | Discovery filtered by caller visibility, capability, protocol, locality, and lease-derived health. |
 | `POST /v1/workers/register` | New, Worker control token | Authenticated registration; all descriptors are verified against the live Worker endpoint. |
@@ -57,6 +65,9 @@ direct-core:       business backend -> gateway-core -> Worker
 | `GET /v1/admin/workers/audit` | New, `admin` | Retained admin decisions, optionally filtered by Worker. |
 | `GET /v1/workers/audit` | Legacy alias, `admin` | Same audit response as `/v1/admin/workers/audit`. |
 | `DELETE /v1/workers/{id}` | Legacy alias, `admin` | Same decommission behavior as `/v1/admin/workers/{id}`. |
+| `GET /v1/workers/{id}/workspace/tree` | New, `workspace:read` or `admin` | One bounded directory page from a visible Worker workspace. |
+| `GET /v1/workers/{id}/workspace/file` | New, `workspace:read` or `admin` | Bounded text preview or binary metadata from a visible Worker workspace. |
+| `GET /v1/workers/{id}/workspace/events/stream` | New, `workspace:read` or `admin` | SSE relay of `workspace.changed` notifications from a visible Worker. |
 | `GET /v1/teams` | New, `team:read` or `task:read` | Team rosters visible in the caller namespace. |
 | `POST /v1/teams` | New, `team:write` or `admin` | Create an inactive version-1 Master/subworker roster. Members must be registered, visible, and capability-compatible. |
 | `GET /v1/teams/{id}` | New, `team:read` or `task:read` | Fetch the current versioned roster. |
@@ -332,6 +343,23 @@ uses authenticated HTTP; `Socket::connect` redeems one ticket; `SocketSession`
 sends typed command frames, awaits matching acknowledgments, and streams events.
 The `sdk-client` example consumes this adapter with `--socket` and does not open
 a parallel raw WebSocket or HTTP event stream for submit/watch.
+
+## Workspace relay
+
+The Gateway forwards read-only workspace tree and file requests to a visible
+Worker. It does not read the filesystem itself and does not store file content.
+
+- `GET /v1/workers/{id}/workspace/tree?path=&limit=&cursor=` lists one directory.
+- `GET /v1/workers/{id}/workspace/file?path=` returns a bounded text preview or
+  binary metadata.
+- `GET /v1/workers/{id}/workspace/events/stream` relays the Worker's
+  best-effort SSE change stream. It is not a durable task journal; reconnecting
+  Clients refetch the tree.
+- Both routes require `workspace:read` and caller visibility of the Worker.
+- The delegation carries only `workspace:read`; Worker path containment,
+  hidden-file policy, and bounds remain authoritative.
+- `workspace.disabled`, `workspace.unavailable`, and `workspace.path_denied`
+  are forwarded as typed Worker errors.
 
 ## Artifact relay
 

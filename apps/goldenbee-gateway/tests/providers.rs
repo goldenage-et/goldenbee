@@ -18,6 +18,7 @@ fn encode(bytes: &[u8]) -> String {
 
 async fn start_gateway(directory: &std::path::Path, env_name: &str) -> String {
     let config = Config {
+        ui: Default::default(),
         listen: "127.0.0.1:0".into(),
         callers: vec![
             CallerConfig {
@@ -588,6 +589,7 @@ async fn missing_master_key_fails_gateway_startup() {
         common::now_ms()
     );
     let config = Config {
+        ui: Default::default(),
         listen: "127.0.0.1:0".into(),
         callers: vec![CallerConfig {
             token: ADMIN_TOKEN.into(),

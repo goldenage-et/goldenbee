@@ -27,6 +27,7 @@ pub mod subagents;
 mod tasks;
 mod tools;
 pub mod worker;
+pub mod workspace;
 
 /// Shared Worker runtime version advertised by package manifests.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

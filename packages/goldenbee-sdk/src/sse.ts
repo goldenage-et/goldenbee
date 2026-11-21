@@ -356,6 +356,24 @@ export async function openTaskStream(options: {
 }
 
 /**
+ * Open the read-only workspace change stream for one Worker.
+ *
+ * The Worker emits the same event envelope as task streams, so the existing
+ * bearer-auth fetch transport, parser, and abort behavior are reused.
+ */
+export async function openWorkspaceStream(options: {
+  transport: GatewayTransport
+  worker: string
+  signal?: AbortSignal
+}): Promise<GatewayTaskStream> {
+  const response = await options.transport.openStream(
+    `/v1/workers/${encodeSegment(options.worker)}/workspace/events/stream`,
+    options.signal,
+  )
+  return new GatewayTaskStream(response, { signal: options.signal })
+}
+
+/**
  * Detect a history gap in a retained event page.
  *
  * `cursor_expired` covers a cursor older than retention. With `after=0` the
