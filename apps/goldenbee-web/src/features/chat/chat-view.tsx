@@ -19,6 +19,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import type { ApprovalGateway } from "@/features/approvals/approval-card"
 import { ChatComposer } from "@/features/chat/chat-composer"
 import { ChatControls } from "@/features/chat/chat-controls"
 import { ChatMessageView } from "@/features/chat/chat-message"
@@ -66,6 +67,8 @@ export interface ChatViewProps {
   title?: string
   /** Test seam; production builds the client from the connection store. */
   client?: ChatGateway | null
+  /** Test seam for approval decisions; defaults to the connection client. */
+  approvalClient?: ApprovalGateway | null
   /** Test seam for the Worker-owned Runtime Profile catalog. */
   profileClient?: SelectionGateway | null
   /** Test seam for the non-secret local selection preference. */
@@ -92,6 +95,7 @@ export function ChatView({
   chatId,
   title,
   client,
+  approvalClient,
   profileClient,
   selectionStore,
   onNewChat,
@@ -103,6 +107,8 @@ export function ChatView({
   inspectionStore,
 }: ChatViewProps) {
   const gatewayClient = useGatewayClient(store)
+  const approvalsClient =
+    approvalClient !== undefined ? approvalClient : gatewayClient
   const workers = useConnection((state) => state.workers, store)
   const preferences = selectionStore ?? chatSelectionStore
   const [selection, setSelection] = useState<ChatSelection>(
@@ -506,6 +512,10 @@ export function ChatView({
                       message={message}
                       busy={busy}
                       onRetry={(userMessageId) => chat.retry(userMessageId)}
+                      approvalClient={approvalsClient}
+                      onApprovalUpdated={(approval) =>
+                        chat.applyApproval(approval)
+                      }
                     />
                   </MessageScrollerItem>
                 ))

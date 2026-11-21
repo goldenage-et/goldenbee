@@ -1,8 +1,14 @@
 import { CircleAlertIcon, CircleHelpIcon } from "lucide-react"
 
+import type { GatewayApproval } from "@goldenbee/sdk"
+
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Message, MessageContent } from "@/components/ui/message"
+import {
+  ApprovalCard,
+  type ApprovalGateway,
+} from "@/features/approvals/approval-card"
 import {
   PlanView,
   ReasoningView,
@@ -67,12 +73,17 @@ export interface ChatMessageViewProps {
   message: ChatMessage
   busy: boolean
   onRetry?(userMessageId: string): void
+  /** Approval transport; null disables decisions without hiding the card. */
+  approvalClient?: ApprovalGateway | null
+  onApprovalUpdated?(approval: GatewayApproval): void
 }
 
 export function ChatMessageView({
   message,
   busy,
   onRetry,
+  approvalClient = null,
+  onApprovalUpdated,
 }: ChatMessageViewProps) {
   if (message.role === "user") {
     const text = textParts(message)
@@ -102,6 +113,10 @@ export function ChatMessageView({
   )
   const plans = message.parts.filter(
     (part): part is Extract<ChatPart, { type: "plan" }> => part.type === "plan",
+  )
+  const approvals = message.parts.filter(
+    (part): part is Extract<ChatPart, { type: "approval" }> =>
+      part.type === "approval",
   )
   const usages = message.parts.filter(
     (part): part is Extract<ChatPart, { type: "usage" }> =>
@@ -158,6 +173,16 @@ export function ChatMessageView({
         {message.parts.length === 0 ? (
           <p className="text-sm text-muted-foreground">Sending task…</p>
         ) : null}
+
+        {approvals.map((part) => (
+          <ApprovalCard
+            key={`${message.id}-approval-${part.approvalId}`}
+            part={part}
+            taskId={message.taskId}
+            client={approvalClient}
+            onUpdated={(approval) => onApprovalUpdated?.(approval)}
+          />
+        ))}
 
         {errors.map((part, index) => (
           <ErrorView key={`${message.id}-error-${index}`} part={part} />

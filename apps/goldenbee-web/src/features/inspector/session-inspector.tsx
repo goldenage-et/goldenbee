@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { isGatewayError, type Artifact } from "@goldenbee/sdk"
 
+import { routeHref } from "@/app/router"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { ChatInspectionStore } from "@/features/chat/chat-inspection-store"
@@ -247,7 +248,17 @@ export function SessionInspector({
               </p>
               {taskId ? (
                 <dl className="mt-1">
-                  <Fact label="Task id" value={taskId} />
+                  <Fact
+                    label="Task id"
+                    value={
+                      <a
+                        href={routeHref({ name: "task", taskId })}
+                        className="break-all font-mono text-gold underline-offset-2 hover:underline"
+                      >
+                        {taskId}
+                      </a>
+                    }
+                  />
                   <Fact
                     label="State"
                     value={currentTask?.state ?? status ?? "Unknown"}
@@ -281,9 +292,12 @@ export function SessionInspector({
                       key={task.taskId}
                       className="rounded-[7px] border border-line bg-surface-2 px-2 py-1.5"
                     >
-                      <p className="truncate font-mono text-micro text-foreground">
+                      <a
+                        href={routeHref({ name: "task", taskId: task.taskId })}
+                        className="block truncate font-mono text-micro text-gold underline-offset-2 hover:underline"
+                      >
                         {task.taskId}
-                      </p>
+                      </a>
                       <p className="mt-0.5 text-micro text-muted-foreground">
                         {task.state}
                         {task.terminal ? " · terminal" : " · open"}

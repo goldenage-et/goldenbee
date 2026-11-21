@@ -411,10 +411,10 @@ describe("command center shell", () => {
   it("keeps attention as an honest empty route", async () => {
     renderApp({ route: "#/attention" })
     expect(
-      await screen.findByText("No pending approvals"),
+      await screen.findByText("No approval queue"),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/Nothing is simulated in the meantime/i),
+      screen.getByText(/does not simulate a global approval queue/i),
     ).toBeInTheDocument()
     expect(
       screen.getByRole("link", { name: "Attention" }),
