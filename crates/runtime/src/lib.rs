@@ -23,6 +23,7 @@ mod process;
 mod sandbox;
 pub mod serving;
 mod sessions;
+pub mod subagents;
 mod tasks;
 mod tools;
 pub mod worker;

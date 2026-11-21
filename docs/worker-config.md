@@ -112,11 +112,16 @@ or drop a policy setting.
   Worker starts with no accepted bearer token; management and invocation routes
   return `401`.
 - Capacity fields `max_active`, `max_queue`, `per_principal`, and
-- Capacity fields `max_active`, `max_queue`, `per_principal`, and
   `event_retention` are optional and default to the runtime limits. Event
   streams add optional `max_streams` (default 64), `stream_buffer` (default
   512), and `stream_keepalive_ms` (default 15000). They bound viewers only;
   execution admission is unchanged.
+- `max_subagents` (default 8) is reserved admission capacity for runtime-local
+  subagent tasks. A child is exempt from its parent's `per_principal` quota but
+  bounded by this reserve, so a parent that waits on a child cannot exhaust its
+  own quota. A waiting parent releases its execution permit; `max_active` is
+  never widened. Subagent definitions and their depth, fanout, model, tool, and
+  permission ceilings belong to the Worker Package, not this file.
 - `drain_timeout_ms` bounds how long admitted work may finish after admission
   closes. The default is 10000 ms. At expiry remaining execution is cancelled
   and unfinished attempts are left recoverable rather than marked failed or

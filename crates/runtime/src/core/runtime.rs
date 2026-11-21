@@ -63,6 +63,7 @@ struct Inner {
     approval_notify: Notify,
     session_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     hooks: RwLock<Option<Arc<dyn crate::worker::WorkerHooks>>>,
+    subagents: RwLock<Option<Arc<crate::subagents::SubagentConfig>>>,
     /// Sessions started in this process, keyed by canonical identity. The
     /// stored context is replayed to `session_end` hooks at shutdown.
     hooked_sessions: Mutex<BTreeMap<String, crate::worker::SessionHookContext>>,
@@ -163,6 +164,7 @@ impl Runtime {
                 approval_notify: Notify::new(),
                 session_locks: Mutex::new(BTreeMap::new()),
                 hooks: RwLock::new(None),
+                subagents: RwLock::new(None),
                 hooked_sessions: Mutex::new(BTreeMap::new()),
                 settings: RwLock::new(BTreeMap::new()),
                 mcp_credentials,
@@ -837,6 +839,19 @@ impl Runtime {
     /// Install compiled Worker hooks used at admission and lifecycle points.
     pub async fn set_hooks(&self, hooks: Option<Arc<dyn crate::worker::WorkerHooks>>) {
         *self.inner.hooks.write().await = hooks;
+    }
+
+    /// Install the Worker-declared runtime-local subagent policy.
+    ///
+    /// A runtime without a policy rejects every subagent operation instead of
+    /// admitting work it cannot bound.
+    pub async fn set_subagent_config(&self, config: Option<Arc<crate::subagents::SubagentConfig>>) {
+        *self.inner.subagents.write().await = config;
+    }
+
+    /// Active Worker-declared subagent policy.
+    pub async fn subagent_config(&self) -> Option<Arc<crate::subagents::SubagentConfig>> {
+        self.inner.subagents.read().await.clone()
     }
 
     pub(crate) async fn hooks(&self) -> Option<Arc<dyn crate::worker::WorkerHooks>> {

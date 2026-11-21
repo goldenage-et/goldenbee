@@ -124,11 +124,17 @@ fn release(cache: &Path, prompt: &str, revision: &str) -> PathBuf {
                 record["registered"],
                 serde_json::json!([
                     "browser",
+                    "close_subagent",
                     "exec_command",
+                    "interrupt_subagent",
+                    "list_subagents",
                     "manual",
                     "observe_knowledge",
                     "recall_knowledge",
-                    "save_artifact"
+                    "save_artifact",
+                    "send_input",
+                    "spawn_subagent",
+                    "wait_subagent"
                 ])
             );
             assert_eq!(

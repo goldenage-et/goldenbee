@@ -192,6 +192,12 @@ pub struct RuntimeConfig {
     pub max_queue: usize,
     /// Per-principal queued+running ceiling.
     pub per_principal: usize,
+    /// Reserved admission capacity for runtime-local subagent tasks.
+    ///
+    /// Children are exempt from their parent's per-principal quota but bounded
+    /// by this reserved reserve, so a parent that already owns its full quota
+    /// can still admit the child it waits on.
+    pub max_subagents: usize,
     /// Durable event retention per stream.
     pub event_retention: usize,
     /// Filesystem roots whose absolute paths may appear in evidence.
@@ -340,6 +346,7 @@ impl RuntimeConfig {
             max_active: 4,
             max_queue: 32,
             per_principal: 8,
+            max_subagents: 8,
             event_retention: 2_000,
             redaction_roots: vec![data_dir.clone()],
             drain_timeout_ms: 10_000,

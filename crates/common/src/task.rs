@@ -264,6 +264,24 @@ pub struct Task {
     /// Provider-confirmed usage.
     #[serde(default)]
     pub usage: Usage,
+    /// Immediate parent task when this task is a runtime-local subagent.
+    ///
+    /// The linkage is durable and survives restart, so result merge and
+    /// cancellation cascade never depend on in-process state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    /// Root task of the subagent lineage. Absent for a root task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_task_id: Option<String>,
+    /// Frozen narrowing for a runtime-local subagent task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<crate::subagent::SubagentPolicy>,
+    /// Time the lineage owner closed this child, if it did.
+    ///
+    /// A closed child keeps its durable result and history; it is no longer
+    /// listed by default and cannot receive follow-up input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<i64>,
     /// Creation time.
     pub created_at: i64,
     /// Last update time.

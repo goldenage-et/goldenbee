@@ -233,6 +233,10 @@ fn task_projection(state: TaskState) -> GatewayTask {
             usage: common::Usage::default(),
             created_at: 1,
             updated_at: 1,
+            parent_task_id: None,
+            root_task_id: None,
+            subagent: None,
+            closed_at: None,
         },
     }
 }

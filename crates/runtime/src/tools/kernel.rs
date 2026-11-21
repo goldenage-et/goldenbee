@@ -611,6 +611,26 @@ impl KernelTool {
         })
     }
 
+    fn subagent_denied_permission(
+        &self,
+        snapshot: &crate::policy::PolicySnapshot,
+        policy: &common::SubagentPolicy,
+    ) -> Value {
+        json!({
+            "decision": "deny",
+            "evaluated": "deny",
+            "mode": policy
+                .permission_mode
+                .as_deref()
+                .unwrap_or_else(|| snapshot.mode().as_str()),
+            "rule": "subagent_tool_allowlist",
+            "reason": "subagent_tool_not_allowed",
+            "capability": self.descriptor.capability,
+            "policy": snapshot.summary(),
+            "approval": null,
+        })
+    }
+
     fn sandbox_profile(&self, effective: &EffectiveConfig) -> &'static str {
         effective.config.sandbox.profile.as_str()
     }
@@ -1318,8 +1338,53 @@ impl Tool for KernelTool {
             .await;
             return Ok(error_value(&violation.code, &violation.message));
         }
+        // A subagent's frozen tool allowlist and permission ceiling are part of
+        // the same single enforcement point. No child can widen either by
+        // naming a tool the definition did not authorize.
+        let subagent_policy = task
+            .as_ref()
+            .and_then(|task| task.subagent.as_ref())
+            .cloned();
+        if let Some(policy) = &subagent_policy {
+            if !policy.allows_tool(self.inner.name()) {
+                let permission = self.subagent_denied_permission(&snapshot, policy);
+                self.observe(
+                    &effective,
+                    ctx.as_ref(),
+                    &args,
+                    task.as_ref(),
+                    ToolObservation {
+                        ok: false,
+                        error_code: Some("permission.denied".to_string()),
+                        duration: None,
+                        queue_wait: None,
+                        truncated: false,
+                        output_bytes: 0,
+                        result_digest: String::new(),
+                        post_digest: String::new(),
+                        diff: Value::Null,
+                        effect: None,
+                        permission,
+                    },
+                )
+                .await;
+                return Ok(error_value(
+                    "permission.denied",
+                    format!(
+                        "tool '{}' is outside this subagent's frozen tool allowlist",
+                        self.inner.name()
+                    ),
+                ));
+            }
+        }
         let request = self.policy_request(&effective, &args, &relative, task.as_ref());
-        let evaluated = snapshot.evaluate(&request);
+        let evaluated = match subagent_policy
+            .as_ref()
+            .and_then(crate::subagents::mode_ceiling)
+        {
+            Some(mode) => snapshot.evaluate_with_mode(mode, &request),
+            None => snapshot.evaluate(&request),
+        };
         let authorization = self
             .authorize(&evaluated, &snapshot, &request, task.as_ref())
             .await;
