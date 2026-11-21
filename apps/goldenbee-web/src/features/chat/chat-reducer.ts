@@ -6,6 +6,7 @@ import {
   messageWithParts,
   reconcileOutput,
   statusForState,
+  upsertUsagePart,
   taskPart,
   updateTaskPart,
 } from "./chat-events"
@@ -196,6 +197,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           uncertainty: projection.uncertainty ?? current.uncertainty,
           usage: projection.usage ?? current.usage,
         }))
+        if (projection.usage) {
+          updated = upsertUsagePart(updated, projection.usage, "projection")
+        }
         return projection.output
           ? reconcileOutput(updated, projection.output)
           : updated

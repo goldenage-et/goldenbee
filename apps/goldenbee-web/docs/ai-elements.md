@@ -58,6 +58,7 @@ App-local AI Elements composition:
 | --- | --- |
 | `src/components/ai-elements/connection-trace.tsx` | <https://ui.shadcn.com/docs/components/base/trace>, following <https://ui.shadcn.com/docs/ai-elements/base/task> |
 | `src/features/chat/chat-message.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/chat> and <https://ui.shadcn.com/docs/ai-elements/base/message> (Message, Bubble, Trace) |
+| `src/features/chat/chat-trace.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/reasoning>, <https://ui.shadcn.com/docs/ai-elements/base/tool>, and <https://ui.shadcn.com/docs/ai-elements/base/task> (Trace, TraceCollapsible); Gateway part mapping lives here, not in the vendored files |
 | `src/features/chat/chat-composer.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/prompt-input> (Input Group only; no attachments) |
 | `src/features/chat/chat-view.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/chat> (Message Scroller) |
 

@@ -9,10 +9,9 @@ import type {
 /**
  * Chat state is the reduced projection of Gateway task events.
  *
- * Ticket 03 renders answer text, task state, errors, and submission
- * uncertainty. Reasoning, tools, approvals, plans, and richer diagnostics are
- * added by later tickets; their event kinds are intentionally ignored here
- * instead of being turned into invented parts.
+ * Text, reasoning, tools, task state, plans, usage, errors, and diagnostics are
+ * explicit parts. Approvals are added by ticket 05; their event kinds are
+ * intentionally ignored here instead of being turned into invented parts.
  */
 export interface ChatSelection {
   worker: string
@@ -25,6 +24,66 @@ export type ChatTextPart = {
   text: string
   author?: string
   streaming: boolean
+}
+
+/**
+ * Live reasoning trace. `model.thinking`/`model.thinking.complete` are not
+ * durable, so this part is only what the current connection observed.
+ */
+export type ChatReasoningPart = {
+  type: "reasoning"
+  text: string
+  author?: string
+  streaming: boolean
+  complete: boolean
+}
+
+export type ChatToolStatus = "running" | "ok" | "error" | "unknown"
+
+/**
+ * One tool call, keyed by the Gateway tool `id`. The stream carries name,
+ * agent, server, and result status only; arguments, output, and duration are
+ * deliberately unavailable.
+ */
+export type ChatToolPart = {
+  type: "tool"
+  id: string
+  name: string
+  agent?: string
+  server?: string
+  status: ChatToolStatus
+  errorCode?: string
+}
+
+export type ChatPlanStepStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "error"
+  | "unknown"
+
+export interface ChatPlanStep {
+  id: string
+  target: string
+  capability?: string
+  status: ChatPlanStepStatus
+}
+
+/** Latest observation for one planned child. */
+export interface ChatChildObservation {
+  child: string
+  binding?: string
+  remoteTaskId?: string
+  state?: string
+  artifactDigests: string[]
+}
+
+/** One Master plan, keyed by `plan_id`. */
+export type ChatPlanPart = {
+  type: "plan"
+  planId: string
+  steps: ChatPlanStep[]
+  observed: ChatChildObservation[]
 }
 
 export type ChatTaskPart = {
@@ -74,6 +133,9 @@ export type ChatDiagnosticPart = {
 
 export type ChatPart =
   | ChatTextPart
+  | ChatReasoningPart
+  | ChatToolPart
+  | ChatPlanPart
   | ChatTaskPart
   | ChatUsagePart
   | ChatErrorPart

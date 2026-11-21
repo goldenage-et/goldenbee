@@ -1,15 +1,23 @@
 import type { StreamEvent, TaskError, TaskState } from "@goldenbee/sdk"
 
 import type {
+  ChatChildObservation,
   ChatDiagnosticPart,
   ChatErrorInfo,
   ChatMessage,
   ChatPart,
+  ChatPlanPart,
+  ChatPlanStep,
+  ChatPlanStepStatus,
+  ChatReasoningPart,
   ChatRunStatus,
   ChatState,
   ChatStreamGap,
   ChatTaskPart,
   ChatTextPart,
+  ChatToolPart,
+  ChatToolStatus,
+  ChatUsagePart,
 } from "./chat-types"
 
 const taskStates: readonly TaskState[] = [
@@ -26,16 +34,10 @@ const taskStates: readonly TaskState[] = [
 ]
 
 /**
- * Event kinds owned by later tickets. They are ignored rather than rendered as
- * invented content; ticket 04 adds reasoning/tool/plan parts, ticket 05 adds
- * approvals.
+ * Approval kinds are owned by ticket 05. They are ignored rather than rendered
+ * as invented content, but durable kinds still advance the cursor.
  */
-const laterTicketKinds = new Set([
-  "model.thinking",
-  "model.thinking.complete",
-  "tool.call",
-  "tool.result",
-  "tool.outcome_unknown",
+const ignoredKinds = new Set([
   "approval.requested",
   "approval.approved",
   "approval.rejected",
@@ -43,23 +45,39 @@ const laterTicketKinds = new Set([
   "approval.expired",
   "approval.receipt",
   "approval.resume_unavailable",
-  "master.plan_created",
-  "master.child_observed",
+])
+
+const textKinds = new Set([
+  "model.delta",
+  "model.delta.complete",
+  "graph.output",
+])
+
+const reasoningKinds = new Set(["model.thinking", "model.thinking.complete"])
+
+const toolKinds = new Set(["tool.call", "tool.result", "tool.outcome_unknown"])
+
+const planKinds = new Set(["master.plan_created", "master.child_observed"])
+
+const usageKinds = new Set(["budget.exhausted", "budget.usage_unavailable"])
+
+const diagnosticKinds = new Set([
   "artifact.finalized",
   "artifact.recording_failed",
   "model.fallback",
   "context.compacted",
   "graph.interrupted",
   "graph.thread_bound",
-  "graph.output",
   "team.receipt",
   "operation.reconciled",
-  "budget.exhausted",
-  "budget.usage_unavailable",
   "hook.after_task_failed",
 ])
 
-const textKinds = new Set(["model.delta", "model.delta.complete"])
+const usagePriority: Record<ChatUsagePart["source"], number> = {
+  projection: 0,
+  budget: 1,
+  terminal: 2,
+}
 
 export const terminalKinds = new Set([
   "task.succeeded",
@@ -169,6 +187,408 @@ function appendDiagnostic(
       part.detail === diagnostic.detail,
   )
   return duplicate ? message : appendPart(message, diagnostic)
+}
+
+function lastReasoningPart(
+  message: ChatMessage,
+): ChatReasoningPart | undefined {
+  for (let index = message.parts.length - 1; index >= 0; index -= 1) {
+    const part = message.parts[index]
+    if (part?.type === "reasoning") {
+      return part
+    }
+  }
+  return undefined
+}
+
+function appendReasoning(
+  message: ChatMessage,
+  text: string,
+  author?: string,
+): ChatMessage {
+  const current = lastReasoningPart(message)
+  if (current?.streaming && (author === undefined || current.author === author)) {
+    const index = message.parts.lastIndexOf(current)
+    const parts = message.parts.map((part, position) =>
+      position === index ? { ...current, text: current.text + text } : part,
+    )
+    return { ...message, parts }
+  }
+  return appendPart(message, {
+    type: "reasoning",
+    text,
+    author,
+    streaming: true,
+    complete: false,
+  })
+}
+
+function completeReasoning(
+  message: ChatMessage,
+  text: string,
+  author?: string,
+): ChatMessage {
+  const current = lastReasoningPart(message)
+  if (current?.streaming) {
+    const index = message.parts.lastIndexOf(current)
+    const parts = message.parts.map((part, position) =>
+      position === index
+        ? { ...current, text, streaming: false, complete: true }
+        : part,
+    )
+    return { ...message, parts }
+  }
+  if (current?.complete && current.text === text) {
+    return message
+  }
+  return appendPart(message, {
+    type: "reasoning",
+    text,
+    author,
+    streaming: false,
+    complete: true,
+  })
+}
+
+/** Reasoning is not durable; a terminal task closes the observed run. */
+function closeReasoning(message: ChatMessage): ChatMessage {
+  let changed = false
+  const parts = message.parts.map((part) => {
+    if (part.type !== "reasoning" || !part.streaming) {
+      return part
+    }
+    changed = true
+    return { ...part, streaming: false, complete: true }
+  })
+  return changed ? { ...message, parts } : message
+}
+
+function closeText(message: ChatMessage): ChatMessage {
+  let changed = false
+  const parts = message.parts.map((part) => {
+    if (part.type !== "text" || !part.streaming) {
+      return part
+    }
+    changed = true
+    return { ...part, streaming: false }
+  })
+  return changed ? { ...message, parts } : message
+}
+
+function findTool(message: ChatMessage, id: string): ChatToolPart | undefined {
+  return message.parts.find(
+    (part): part is ChatToolPart => part.type === "tool" && part.id === id,
+  )
+}
+
+function upsertTool(message: ChatMessage, next: ChatToolPart): ChatMessage {
+  const current = findTool(message, next.id)
+  if (!current) {
+    return appendPart(message, next)
+  }
+  const index = message.parts.lastIndexOf(current)
+  const parts = message.parts.map((part, position) =>
+    position === index ? next : part,
+  )
+  return { ...message, parts }
+}
+
+function applyToolEvent(
+  message: ChatMessage,
+  event: StreamEvent,
+): ChatMessage {
+  const payload = isRecord(event.payload) ? event.payload : {}
+  if (event.kind === "tool.outcome_unknown") {
+    const reason = textField(payload.reason) ?? "the effect outcome is unknown"
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: `Tool outcome unknown: ${reason}.`,
+    })
+  }
+  const id = textField(payload.id)
+  if (!id) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: `Ignored malformed ${event.kind} event without a tool id.`,
+    })
+  }
+
+  const current = findTool(message, id)
+  const name = textField(payload.name) ?? current?.name
+  if (!name) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: `Ignored malformed ${event.kind} event without a tool name.`,
+    })
+  }
+  const agent = textField(payload.agent) ?? current?.agent
+  const server = textField(payload.server) ?? current?.server
+
+  if (event.kind === "tool.call") {
+    return upsertTool(message, {
+      type: "tool",
+      id,
+      name,
+      agent,
+      server,
+      // A replay must not reopen a terminal tool result.
+      status: current && current.status !== "running" ? current.status : "running",
+      errorCode: current?.errorCode,
+    })
+  }
+
+  const status: ChatToolStatus =
+    payload.ok === true ? "ok" : payload.ok === false ? "error" : "unknown"
+  const errorCode =
+    payload.ok === false ? textField(payload.error_code) : undefined
+  return upsertTool(message, {
+    type: "tool",
+    id,
+    name,
+    agent,
+    server,
+    status,
+    errorCode,
+  })
+}
+
+function planStatusForState(state: string | undefined): ChatPlanStepStatus {
+  switch (state) {
+    case "succeeded":
+      return "done"
+    case "failed":
+    case "cancelled":
+      return "error"
+    case "unknown":
+      return "unknown"
+    case "accepted":
+    case "queued":
+    case "running":
+    case "waiting_approval":
+    case "cancelling":
+    case "recovering":
+      return "running"
+    default:
+      return "unknown"
+  }
+}
+
+function planChildren(payload: Record<string, unknown>): ChatPlanStep[] {
+  const children = Array.isArray(payload.children) ? payload.children : []
+  const steps: ChatPlanStep[] = []
+  for (const child of children) {
+    if (!isRecord(child)) {
+      continue
+    }
+    const id = textField(child.id)
+    if (!id) {
+      continue
+    }
+    const target = textField(child.target) ?? id
+    steps.push({
+      id,
+      target,
+      capability: textField(child.capability),
+      status: "pending",
+    })
+  }
+  return steps
+}
+
+function findPlan(message: ChatMessage, planId: string): ChatPlanPart | undefined {
+  return message.parts.find(
+    (part): part is ChatPlanPart =>
+      part.type === "plan" && part.planId === planId,
+  )
+}
+
+function upsertPlan(message: ChatMessage, next: ChatPlanPart): ChatMessage {
+  const current = findPlan(message, next.planId)
+  if (!current) {
+    return appendPart(message, next)
+  }
+  const index = message.parts.lastIndexOf(current)
+  const parts = message.parts.map((part, position) =>
+    position === index ? next : part,
+  )
+  return { ...message, parts }
+}
+
+function applyPlanEvent(message: ChatMessage, event: StreamEvent): ChatMessage {
+  const payload = isRecord(event.payload) ? event.payload : {}
+  const planId = textField(payload.plan_id)
+  if (!planId) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: `Ignored malformed ${event.kind} event without a plan id.`,
+    })
+  }
+
+  const current = findPlan(message, planId)
+  if (event.kind === "master.plan_created") {
+    const created = planChildren(payload)
+    // A replay keeps statuses already learned from child observations.
+    const steps = created.map((step) => {
+      const observed = current?.steps.find((existing) => existing.id === step.id)
+      return observed ? { ...step, status: observed.status } : step
+    })
+    return upsertPlan(message, {
+      type: "plan",
+      planId,
+      steps,
+      observed: current?.observed ?? [],
+    })
+  }
+
+  const childId = textField(payload.child)
+  if (!childId) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: `Ignored malformed ${event.kind} event without a child id.`,
+    })
+  }
+  const state = textField(payload.state)
+  const remoteTaskId = textField(payload.remote_task_id)
+  const binding = textField(payload.binding)
+  const artifactDigests = Array.isArray(payload.artifact_digests)
+    ? payload.artifact_digests.filter(
+        (digest): digest is string => typeof digest === "string",
+      )
+    : []
+  const observation: ChatChildObservation = {
+    child: childId,
+    binding,
+    remoteTaskId,
+    state,
+    artifactDigests,
+  }
+
+  const steps = current?.steps ?? []
+  const existingStep = steps.find((step) => step.id === childId)
+  const status = state
+    ? planStatusForState(state)
+    : (existingStep?.status ?? "unknown")
+  const nextSteps = existingStep
+    ? steps.map((step) => (step.id === childId ? { ...step, status } : step))
+    : [...steps, { id: childId, target: childId, status }]
+  const observed = current?.observed ?? []
+  const nextObserved = observed.some((item) => item.child === childId)
+    ? observed.map((item) => (item.child === childId ? observation : item))
+    : [...observed, observation]
+
+  return upsertPlan(message, {
+    type: "plan",
+    planId,
+    steps: nextSteps,
+    observed: nextObserved,
+  })
+}
+
+function findUsage(message: ChatMessage): ChatUsagePart | undefined {
+  return message.parts.find(
+    (part): part is ChatUsagePart => part.type === "usage",
+  )
+}
+
+export function upsertUsagePart(
+  message: ChatMessage,
+  usage: ChatTaskPart["usage"],
+  source: ChatUsagePart["source"],
+): ChatMessage {
+  if (!usage) {
+    return message
+  }
+  const current = findUsage(message)
+  if (current && usagePriority[source] < usagePriority[current.source]) {
+    return message
+  }
+  const next: ChatUsagePart = { type: "usage", usage, source }
+  if (!current) {
+    return appendPart(message, next)
+  }
+  const index = message.parts.lastIndexOf(current)
+  const parts = message.parts.map((part, position) =>
+    position === index ? next : part,
+  )
+  return { ...message, parts }
+}
+
+function applyUsageEvent(
+  message: ChatMessage,
+  event: StreamEvent,
+): ChatMessage {
+  const payload = isRecord(event.payload) ? event.payload : {}
+  let next = upsertUsagePart(message, usageField(payload.usage), "budget")
+
+  if (event.kind === "budget.exhausted") {
+    const dimension = textField(payload.kind) ?? "limit"
+    const limit = numberField(payload.limit)
+    const used = numberField(payload.used)
+    const partial = payload.partial_output === true ? " Partial output was kept." : ""
+    const bounds =
+      limit === undefined
+        ? ""
+        : ` (limit ${limit}${used === undefined ? "" : `, used ${used}`})`
+    next = appendDiagnostic(next, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: `Budget exhausted for ${dimension}${bounds}.${partial}`,
+    })
+  } else {
+    const uncertainty = textField(payload.uncertainty)
+    next = appendDiagnostic(next, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: uncertainty
+        ? `Usage is unavailable or inexact: ${uncertainty}`
+        : "Usage is unavailable for part of this task.",
+    })
+  }
+  return next
+}
+
+function diagnosticDetail(event: StreamEvent): string {
+  const payload = isRecord(event.payload) ? event.payload : {}
+  switch (event.kind) {
+    case "artifact.finalized": {
+      const name = textField(payload.name) ?? "artifact"
+      const digest = textField(payload.digest)
+      return digest ? `Artifact ${name} finalized (${digest}).` : `Artifact ${name} finalized.`
+    }
+    case "artifact.recording_failed": {
+      const name = textField(payload.name) ?? "artifact"
+      const error = textField(payload.error) ?? "recording failed"
+      return `Artifact ${name} could not be recorded: ${error}.`
+    }
+    case "model.fallback":
+      return `The task fell back to another model.`
+    case "context.compacted":
+      return "The context was compacted."
+    case "graph.interrupted":
+      return "The graph paused at a checkpoint."
+    case "graph.thread_bound":
+      return "The graph bound to a native thread."
+    case "team.receipt":
+      return "A native team receipt was observed."
+    case "operation.reconciled": {
+      const operation = textField(payload.operation) ?? "effect"
+      const status = textField(payload.status)
+      return status
+        ? `Effect operation ${operation} reconciled as ${status}.`
+        : `Effect operation ${operation} reconciled.`
+    }
+    case "hook.after_task_failed": {
+      const code = textField(payload.code)
+      return code ? `After-task hook failed: ${code}.` : "After-task hook failed."
+    }
+    default:
+      return `Unrecognized event "${event.kind}".`
+  }
 }
 
 export function taskPart(message: ChatMessage): ChatTaskPart | undefined {
@@ -388,7 +808,7 @@ function applyTaskEvent(
       if (!payloadState) {
         return message
       }
-      const next = updateTaskPart(message, (current) => ({
+      let next = updateTaskPart(message, (current) => ({
         ...current,
         state: payloadState,
         attempt: attempt ?? current.attempt,
@@ -397,6 +817,9 @@ function applyTaskEvent(
         uncertainty: uncertainty ?? current.uncertainty,
         usage: usage ?? current.usage,
       }))
+      if (usage) {
+        next = upsertUsagePart(next, usage, "projection")
+      }
       return output ? reconcileOutput(next, output) : next
     }
     case "task.succeeded":
@@ -425,9 +848,15 @@ function applyTaskEvent(
         uncertainty: uncertainty ?? current.uncertainty,
         usage: usage ?? current.usage,
       }))
+      if (usage) {
+        next = upsertUsagePart(next, usage, "terminal")
+      }
       if (output) {
         next = reconcileOutput(next, output)
       }
+      // A terminal event closes the observed live runs even when the Worker did
+      // not emit a completion event before stopping.
+      next = closeReasoning(closeText(next))
       if (event.kind === "task.unknown") {
         const code = error?.code ?? "task.unknown"
         const duplicate = next.parts.some(
@@ -501,10 +930,26 @@ function applyTextEvent(
     case "model.delta":
       return appendDelta(message, text, author)
     case "model.delta.complete":
+    case "graph.output":
       return completeDelta(message, text, author)
     default:
       return message
   }
+}
+
+function applyReasoningEvent(
+  message: ChatMessage,
+  event: StreamEvent,
+): ChatMessage {
+  const payload = isRecord(event.payload) ? event.payload : {}
+  const text = textField(payload.text)
+  if (!text) {
+    return message
+  }
+  const author = textField(payload.author)
+  return event.kind === "model.thinking.complete"
+    ? completeReasoning(message, text, author)
+    : appendReasoning(message, text, author)
 }
 
 function gapFromEvent(event: StreamEvent): ChatStreamGap | null {
@@ -534,13 +979,13 @@ export function applyStreamEvent(
   event: StreamEvent,
   status: ChatRunStatus,
 ): StreamEventResult {
-  if (laterTicketKinds.has(event.kind)) {
-    return { message, gap: null }
-  }
-
   const gap = gapFromEvent(event)
   if (gap) {
     return { message, gap }
+  }
+
+  if (ignoredKinds.has(event.kind) || event.kind.startsWith("stream.")) {
+    return { message, gap: null }
   }
 
   if (textKinds.has(event.kind)) {
@@ -550,5 +995,44 @@ export function applyStreamEvent(
     return { message: applyTextEvent(message, event), gap: null }
   }
 
-  return { message: applyTaskEvent(message, event), gap: null }
+  if (reasoningKinds.has(event.kind)) {
+    return { message: applyReasoningEvent(message, event), gap: null }
+  }
+
+  if (toolKinds.has(event.kind)) {
+    return { message: applyToolEvent(message, event), gap: null }
+  }
+
+  if (planKinds.has(event.kind)) {
+    return { message: applyPlanEvent(message, event), gap: null }
+  }
+
+  if (usageKinds.has(event.kind)) {
+    return { message: applyUsageEvent(message, event), gap: null }
+  }
+
+  if (event.kind.startsWith("task.")) {
+    return { message: applyTaskEvent(message, event), gap: null }
+  }
+
+  if (diagnosticKinds.has(event.kind)) {
+    return {
+      message: appendDiagnostic(message, {
+        type: "diagnostic",
+        eventKind: event.kind,
+        detail: diagnosticDetail(event),
+      }),
+      gap: null,
+    }
+  }
+
+  // Unknown kinds are surfaced as a diagnostic, never thrown.
+  return {
+    message: appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: diagnosticDetail(event),
+    }),
+    gap: null,
+  }
 }
