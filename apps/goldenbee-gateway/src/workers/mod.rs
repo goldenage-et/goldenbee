@@ -34,6 +34,10 @@ pub(crate) fn caller_routes() -> Router<SharedState> {
         .route("/v1/workers/{id}/workspace/tree", get(workspace::tree))
         .route("/v1/workers/{id}/workspace/file", get(workspace::file))
         .route(
+            "/v1/workers/{id}/workspace/content",
+            get(workspace::content),
+        )
+        .route(
             "/v1/workers/{id}/workspace/events/stream",
             get(workspace::events),
         )

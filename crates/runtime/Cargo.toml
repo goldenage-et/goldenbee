@@ -67,6 +67,7 @@ base64.workspace = true
 libc = "0.2"
 # Recursive filesystem notifications for the read-only workspace SSE stream.
 notify.workspace = true
+mime_guess.workspace = true
 # Interactive PTY sessions for the opt-in process tools. The child is still the
 # validated `prlimit`/`bubblewrap` vector; the PTY only carries its terminal.
 portable-pty = "0.9"

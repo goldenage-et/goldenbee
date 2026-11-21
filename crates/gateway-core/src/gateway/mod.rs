@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use self::artifact::{ArtifactContent, ArtifactStream};
-pub use self::workspace::WorkspaceEventStream;
+pub use self::workspace::{WorkspaceEventStream, WorkspaceRawContent};
 
 use self::worker_client::probe;
 

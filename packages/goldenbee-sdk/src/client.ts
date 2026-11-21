@@ -63,6 +63,7 @@ import type {
   UpdateProviderRequest,
   UpdateTeamRequest,
   WorkerDiscoveryFilter,
+  WorkspaceContent,
   WorkspaceFile,
   WorkspaceTreePage,
 } from "./types.js"
@@ -163,6 +164,12 @@ export interface GatewayClient {
     path: string,
     options?: GatewayRequestOptions,
   ): Promise<WorkspaceFile>
+  workspaceContent(
+    worker: string,
+    path: string,
+    range?: string,
+    options?: GatewayRequestOptions,
+  ): Promise<WorkspaceContent>
   workspaceEvents(
     worker: string,
     options?: GatewayRequestOptions,
@@ -686,6 +693,25 @@ export function createGatewayClient(
         isWorkspaceFile,
         request,
       ),
+    workspaceContent: async (worker, path, range, request = {}) => {
+      const response = await transport.openResponse(
+        `/v1/workers/${encodeSegment(worker)}/workspace/content${queryString({ path })}`,
+        "*/*",
+        request.signal,
+        range ? { range } : undefined,
+      )
+      const length = response.headers.get("content-length")
+      const parsedLength = length === null ? Number.NaN : Number(length)
+      return {
+        blob: await response.blob(),
+        contentType:
+          response.headers.get("content-type") ?? "application/octet-stream",
+        contentLength: Number.isFinite(parsedLength) ? parsedLength : undefined,
+        contentRange: response.headers.get("content-range") ?? undefined,
+        digest: response.headers.get("x-goldenbee-workspace-digest") ?? undefined,
+        status: response.status,
+      }
+    },
     workspaceEvents: (worker, request = {}) =>
       openWorkspaceStream({
         transport,

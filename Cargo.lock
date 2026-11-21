@@ -3967,6 +3967,7 @@ dependencies = [
  "hmac",
  "libc",
  "load-harness",
+ "mime_guess",
  "notify",
  "portable-pty",
  "provider-crypto",

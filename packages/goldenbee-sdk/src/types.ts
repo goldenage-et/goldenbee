@@ -340,9 +340,20 @@ export interface WorkspaceFile {
   size: number
   modified_at: number
   digest?: string
+  content_type?: string
   binary: boolean
   truncated: boolean
   text?: string
+}
+
+/** Bounded raw bytes for media/PDF/binary preview. */
+export interface WorkspaceContent {
+  blob: Blob
+  contentType: string
+  contentLength?: number
+  contentRange?: string
+  digest?: string
+  status: number
 }
 
 export interface DiagnosticFinding {

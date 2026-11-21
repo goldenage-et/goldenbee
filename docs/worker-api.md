@@ -33,6 +33,7 @@ revision store and never create a second profile loader or authority.
 | `/v1/capabilities` | New | Authenticated manifest, command inventory, and durability disclosure. |
 | `/v1/workspace/tree` | New | One bounded directory page from the Worker workspace. Requires `workspace:read` and `[workspace] browse = true`. |
 | `/v1/workspace/file` | New | Bounded UTF-8 preview or binary metadata for one workspace-relative file. Requires `workspace:read`. |
+| `/v1/workspace/content` | New | Bounded raw bytes for image, PDF, audio, video, and binary previews. Supports one byte range. Requires `workspace:read`. |
 | `/v1/workspace/events/stream` | New | Live `workspace.changed` SSE notifications for visible workspace paths. Requires `workspace:read`. |
 | `/v1/commands` | New | List runtime and Worker-defined commands. Requires `task:read`. |
 | `/v1/commands/{name}` | New | Read one command descriptor, or invoke it with `POST`. Invocation requires `task:submit`. |
@@ -617,6 +618,10 @@ ignored = [".git", "node_modules", "target", ".next", "dist"]
   metadata only.
 - Reads require `workspace:read`. Disabled, unavailable, denied, missing, and
   oversized cases use stable `workspace.*` errors.
+- `GET /v1/workspace/content` streams raw bytes for media and binary previews,
+  bounded by `max_preview_bytes`. It supports a single `Range` header and
+  returns workspace-relative metadata only in headers. HTML is served as
+  `text/plain`, never active markup, and SVG is intended for an `<img>`.
 - `GET /v1/workspace/events/stream` is a read-only SSE stream backed by one
   recursive filesystem watcher. Events carry workspace-relative `paths` in the
   standard Worker event envelope. Notifications are best-effort and not

@@ -330,6 +330,7 @@ export class GatewayTransport {
     path: string,
     accept: string,
     signal?: AbortSignal,
+    headers?: Record<string, string>,
   ): Promise<Response> {
     let completed = 0
     let last: GatewayError | undefined
@@ -342,6 +343,7 @@ export class GatewayTransport {
           method: "GET",
           headers: {
             accept,
+            ...headers,
             ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
           },
           signal: abort.signal,

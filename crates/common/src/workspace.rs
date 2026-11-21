@@ -43,6 +43,10 @@ pub struct WorkspaceTreePage {
     pub truncated: bool,
 }
 
+fn default_content_type() -> String {
+    "application/octet-stream".into()
+}
+
 /// One bounded file read or metadata projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceFile {
@@ -59,6 +63,9 @@ pub struct WorkspaceFile {
     /// SHA-256 digest as `sha256:<hex>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
+    /// Server-classified content type for preview selection.
+    #[serde(default = "default_content_type")]
+    pub content_type: String,
     /// Whether the content is not valid UTF-8 text.
     #[serde(default)]
     pub binary: bool,

@@ -23,12 +23,29 @@ impl WorkspaceWatch {
     }
 }
 
+/// One bounded raw preview response.
+pub struct WorkspaceContent {
+    /// Bytes in the requested range.
+    pub bytes: Vec<u8>,
+    /// Safe server-classified content type.
+    pub content_type: String,
+    /// First byte offset in the full file.
+    pub start: u64,
+    /// Last byte offset in the full file.
+    pub end: u64,
+    /// Full file size.
+    pub total: u64,
+    /// SHA-256 digest of the full file.
+    pub digest: String,
+}
+
 /// Resolved workspace inspection policy and root.
 #[derive(Debug, Clone)]
 pub struct WorkspaceService {
     root: PathBuf,
     max_entries: usize,
     max_file_bytes: usize,
+    max_preview_bytes: usize,
     show_hidden: bool,
     ignored: Vec<String>,
 }
@@ -39,6 +56,7 @@ impl WorkspaceService {
         root: PathBuf,
         max_entries: usize,
         max_file_bytes: usize,
+        max_preview_bytes: usize,
         show_hidden: bool,
         ignored: Vec<String>,
     ) -> Result<Self, ApiError> {
@@ -58,6 +76,7 @@ impl WorkspaceService {
             root,
             max_entries: max_entries.max(1),
             max_file_bytes: max_file_bytes.max(1),
+            max_preview_bytes: max_preview_bytes.max(1),
             show_hidden,
             ignored,
         })
@@ -225,15 +244,84 @@ impl WorkspaceService {
             };
             (Some(text), truncated)
         };
+        let content_type = content_type_for(&path, binary);
         Ok(WorkspaceFile {
             path: relative_path(&self.root, &path),
             kind: "file".into(),
             size: metadata.len(),
             modified_at: modified_at(&metadata),
             digest: Some(digest),
+            content_type,
             binary,
             truncated,
             text,
+        })
+    }
+
+    /// Read bounded raw bytes for media/PDF/binary preview.
+    ///
+    /// HTML is deliberately reported as plain text so a direct content request
+    /// can never be interpreted as active markup. SVG remains an image type and
+    /// is intended for an `<img>` element, not inline document evaluation.
+    pub fn content(
+        &self,
+        raw_path: &str,
+        range: Option<&str>,
+    ) -> Result<WorkspaceContent, ApiError> {
+        let path = self.resolve(raw_path)?;
+        let name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if self.is_secret(&name) {
+            return Err(ApiError::new(
+                "workspace.path_denied",
+                "the requested workspace file is not browsable",
+            ));
+        }
+        let metadata = fs::metadata(&path).map_err(|_| {
+            ApiError::new(
+                "workspace.not_found",
+                "the requested workspace file was not found",
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(ApiError::new(
+                "workspace.not_found",
+                "the requested workspace path is not a file",
+            ));
+        }
+        let total = metadata.len();
+        if total > self.max_preview_bytes as u64 {
+            return Err(ApiError::new(
+                "workspace.too_large",
+                "the requested workspace file exceeds the preview ceiling",
+            ));
+        }
+        let bytes = fs::read(&path).map_err(|_| {
+            ApiError::new(
+                "workspace.not_found",
+                "the requested workspace file could not be read",
+            )
+        })?;
+        let digest = common::bytes_digest(&bytes);
+        let (start, end) = parse_range(range, total)?;
+        let selected = bytes
+            .get(start as usize..end.saturating_add(1) as usize)
+            .ok_or_else(|| {
+                ApiError::new(
+                    "workspace.range_invalid",
+                    "the requested byte range is invalid",
+                )
+            })?
+            .to_vec();
+        Ok(WorkspaceContent {
+            bytes: selected,
+            content_type: content_type_for(&path, std::str::from_utf8(&bytes).is_err()),
+            start,
+            end,
+            total,
+            digest,
         })
     }
 
@@ -352,6 +440,71 @@ impl WorkspaceService {
     }
 }
 
+fn parse_range(raw: Option<&str>, total: u64) -> Result<(u64, u64), ApiError> {
+    let Some(raw) = raw.filter(|value| !value.trim().is_empty()) else {
+        return Ok((0, total.saturating_sub(1)));
+    };
+    let value = raw.trim().strip_prefix("bytes=").ok_or_else(|| {
+        ApiError::new(
+            "workspace.range_invalid",
+            "only single byte ranges are supported",
+        )
+    })?;
+    if value.contains(',') {
+        return Err(ApiError::new(
+            "workspace.range_invalid",
+            "multiple byte ranges are not supported",
+        ));
+    }
+    let (start, end) = value.split_once('-').ok_or_else(|| {
+        ApiError::new(
+            "workspace.range_invalid",
+            "the requested byte range is invalid",
+        )
+    })?;
+    let start = start.trim().parse::<u64>().map_err(|_| {
+        ApiError::new(
+            "workspace.range_invalid",
+            "the requested byte range is invalid",
+        )
+    })?;
+    let end = if end.trim().is_empty() {
+        total.saturating_sub(1)
+    } else {
+        end.trim().parse::<u64>().map_err(|_| {
+            ApiError::new(
+                "workspace.range_invalid",
+                "the requested byte range is invalid",
+            )
+        })?
+    };
+    if total == 0 || start >= total || start > end {
+        return Err(ApiError::new(
+            "workspace.range_invalid",
+            "the requested byte range is outside the file",
+        ));
+    }
+    Ok((start, end.min(total - 1)))
+}
+
+fn content_type_for(path: &Path, binary: bool) -> String {
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if name.ends_with(".html") || name.ends_with(".htm") {
+        return "text/plain; charset=utf-8".into();
+    }
+    let guessed = mime_guess::from_path(path)
+        .first_raw()
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    if guessed == "application/octet-stream" && !binary {
+        return "text/plain; charset=utf-8".into();
+    }
+    guessed
+}
+
 fn relative_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .ok()
@@ -386,7 +539,15 @@ mod tests {
     use super::*;
 
     fn service(root: &Path) -> WorkspaceService {
-        WorkspaceService::new(root.to_path_buf(), 50, 8, false, vec![".git".into()]).unwrap()
+        WorkspaceService::new(
+            root.to_path_buf(),
+            50,
+            8,
+            1024 * 1024,
+            false,
+            vec![".git".into()],
+        )
+        .unwrap()
     }
 
     #[test]

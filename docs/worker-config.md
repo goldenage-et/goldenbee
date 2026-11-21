@@ -262,6 +262,7 @@ in. The tree uses the same root as the generic file tools.
 browse = false                 # opt-in
 max_entries = 500              # one directory page
 max_file_bytes = 262144        # text preview ceiling
+max_preview_bytes = 26214400   # raw media/PDF/binary preview ceiling
 show_hidden = false            # dotfiles hidden
 ignored = [".git", "node_modules", "target", ".next", "dist"]
 ```

@@ -39,6 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.13"
 notify = "8.2"
+mime_guess = "2.0"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
 
 [workspace.lints.rust]

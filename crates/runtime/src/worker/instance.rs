@@ -497,6 +497,7 @@ impl WorkerInstance {
             root,
             policy.max_entries,
             policy.max_file_bytes,
+            policy.max_preview_bytes,
             policy.show_hidden,
             policy.ignored.clone(),
         )

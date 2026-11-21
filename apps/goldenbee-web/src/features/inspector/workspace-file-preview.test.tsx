@@ -29,9 +29,20 @@ function renderPreview(
             kind: "file",
             size: file.text.length,
             modified_at: 1,
+            content_type: "application/octet-stream",
             binary: file.binary ?? false,
             truncated: false,
             text: file.binary ? undefined : file.text,
+          }
+        },
+        async workspaceContent(_worker, _path) {
+          return {
+            blob: new Blob([file.text]),
+            contentType: "application/octet-stream",
+            status: 200,
+            contentLength: file.text.length,
+            digest: undefined,
+            contentRange: undefined,
           }
         },
       }}
@@ -66,9 +77,9 @@ describe("workspace file preview", () => {
     expect(await screen.findByText("**bold**")).toBeInTheDocument()
   })
 
-  it("does not render binary bytes", async () => {
+  it("previews images without rendering raw bytes as text", async () => {
     renderPreview({ path: "image.png", text: "not-bytes", binary: true })
-    expect(await screen.findByText("Binary content is not previewed.")).toBeInTheDocument()
+    expect(await screen.findByRole("img", { name: "image.png" })).toBeInTheDocument()
     expect(screen.queryByText("not-bytes")).not.toBeInTheDocument()
   })
 })

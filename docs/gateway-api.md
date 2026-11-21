@@ -43,13 +43,15 @@ direct-core:       business backend -> gateway-core -> Worker
 The embedded browser Client may call the authenticated `/v1` surface without a
 bearer token only when all of these hold: the request carries the
 `x-goldenbee-ui` marker, the TCP peer is loopback, and the `Host` header is
-loopback (`localhost`, `127.0.0.1`, or `::1`). That local session uses the first
-configured caller's scopes and Worker allow-list. An explicit token must still
-be valid. Set `"ui": { "local_auth": false }` to disable this path.
+loopback (`localhost`, `127.0.0.1`, or `::1`). That local session uses the
+scopes and Worker allow-list of `ui.caller`, or the first configured caller when
+`ui.caller` is omitted. An explicit token must still be valid. Requests carrying `Forwarded`, `X-Forwarded-For`, or `X-Real-IP` do
+not receive the local session. Set `"ui": { "local_auth": false }` to disable
+this path.
 
 | Path | Classification | Notes |
 | --- | --- | --- |
-| `/`, `/index.html`, `/assets/*`, `/favicon.svg` | New, public | Static browser Client embedded in release binaries. Unknown non-API paths do not receive the HTML shell; unknown `/v1/*` paths stay JSON 404s. |
+| `/`, `/index.html`, `/assets/*`, `/favicon.svg` | New, public | Static browser Client embedded in release binaries. Unknown document paths receive the HTML shell for client-side routes; missing hashed assets stay 404, and unknown `/v1/*` paths stay JSON 404s. |
 | `/v1/health` | New, public | Minimal liveness plus approved and reachable Worker counts. |
 | `GET /v1/workers` | New, authenticated | Discovery filtered by caller visibility, capability, protocol, locality, and lease-derived health. |
 | `POST /v1/workers/register` | New, Worker control token | Authenticated registration; all descriptors are verified against the live Worker endpoint. |
@@ -67,6 +69,7 @@ be valid. Set `"ui": { "local_auth": false }` to disable this path.
 | `DELETE /v1/workers/{id}` | Legacy alias, `admin` | Same decommission behavior as `/v1/admin/workers/{id}`. |
 | `GET /v1/workers/{id}/workspace/tree` | New, `workspace:read` or `admin` | One bounded directory page from a visible Worker workspace. |
 | `GET /v1/workers/{id}/workspace/file` | New, `workspace:read` or `admin` | Bounded text preview or binary metadata from a visible Worker workspace. |
+| `GET /v1/workers/{id}/workspace/content` | New, `workspace:read` or `admin` | Bounded raw media preview bytes with Range forwarding. |
 | `GET /v1/workers/{id}/workspace/events/stream` | New, `workspace:read` or `admin` | SSE relay of `workspace.changed` notifications from a visible Worker. |
 | `GET /v1/teams` | New, `team:read` or `task:read` | Team rosters visible in the caller namespace. |
 | `POST /v1/teams` | New, `team:write` or `admin` | Create an inactive version-1 Master/subworker roster. Members must be registered, visible, and capability-compatible. |

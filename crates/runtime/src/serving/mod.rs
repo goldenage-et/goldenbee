@@ -139,6 +139,7 @@ pub fn api_router(state: WorkerState) -> Router {
         .route("/v1/capabilities", get(health::capabilities))
         .route("/v1/workspace/tree", get(workspace::tree))
         .route("/v1/workspace/file", get(workspace::file))
+        .route("/v1/workspace/content", get(workspace::content))
         .route("/v1/workspace/events/stream", get(workspace::events))
         .route("/v1/commands", get(commands::list))
         .route("/v1/mcp/servers", get(mcp::servers))

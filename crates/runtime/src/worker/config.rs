@@ -625,6 +625,9 @@ pub struct WorkspaceConfig {
     /// Maximum bytes returned for one text file preview.
     #[serde(default = "default_workspace_file_bytes")]
     pub max_file_bytes: usize,
+    /// Maximum bytes returned by the raw content endpoint for media previews.
+    #[serde(default = "default_workspace_preview_bytes")]
+    pub max_preview_bytes: usize,
     /// Whether dotfiles and secret-looking files are listed.
     #[serde(default)]
     pub show_hidden: bool,
@@ -639,6 +642,7 @@ impl Default for WorkspaceConfig {
             browse: false,
             max_entries: default_workspace_entries(),
             max_file_bytes: default_workspace_file_bytes(),
+            max_preview_bytes: default_workspace_preview_bytes(),
             show_hidden: false,
             ignored: default_workspace_ignored(),
         }
@@ -651,6 +655,10 @@ fn default_workspace_entries() -> usize {
 
 fn default_workspace_file_bytes() -> usize {
     262_144
+}
+
+fn default_workspace_preview_bytes() -> usize {
+    25 * 1024 * 1024
 }
 
 fn default_workspace_ignored() -> Vec<String> {

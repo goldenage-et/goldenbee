@@ -255,6 +255,7 @@ export function isWorkspaceFile(value: unknown): value is WorkspaceFile {
     isFiniteNumber(value.size) &&
     isFiniteNumber(value.modified_at) &&
     (value.digest === undefined || isString(value.digest)) &&
+    (value.content_type === undefined || isString(value.content_type)) &&
     typeof value.binary === "boolean" &&
     typeof value.truncated === "boolean" &&
     (value.text === undefined || isString(value.text))

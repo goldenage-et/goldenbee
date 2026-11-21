@@ -154,4 +154,36 @@ fn workspace_tree_and_preview_are_bounded_and_relative() {
     assert_eq!(denied.status(), reqwest::StatusCode::BAD_REQUEST);
     let error: serde_json::Value = denied.json().expect("error JSON");
     assert_eq!(error["code"], "workspace.path_denied");
+
+    std::fs::write(workspace.join("pixel.png"), [0_u8, 1, 2, 3, 4, 5]).expect("image");
+    let partial = client
+        .get(format!("{}/v1/workspace/content", worker.base))
+        .query(&[("path", "pixel.png")])
+        .bearer_auth("dev-token")
+        .header(reqwest::header::RANGE, "bytes=1-3")
+        .send()
+        .expect("content responds");
+    assert_eq!(partial.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        partial
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok()),
+        Some("bytes 1-3/6")
+    );
+    assert_eq!(partial.bytes().expect("bytes"), vec![1, 2, 3]);
+
+    std::fs::write(workspace.join("page.html"), "<script>alert(1)</script>").expect("html");
+    let html = client
+        .get(format!("{}/v1/workspace/content", worker.base))
+        .query(&[("path", "page.html")])
+        .bearer_auth("dev-token")
+        .send()
+        .expect("html content responds");
+    assert_eq!(
+        html.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain; charset=utf-8")
+    );
 }
