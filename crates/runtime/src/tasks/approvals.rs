@@ -27,6 +27,32 @@ impl Runtime {
         risk: &str,
         ttl_ms: i64,
     ) -> Result<Approval> {
+        self.request_approval_with_action(
+            task_id, operation, target, digest, risk, ttl_ms, None, None, None,
+        )
+        .await
+    }
+
+    /// Request approval for one exact permission action.
+    ///
+    /// The action, mode, and rule are recorded on the durable approval and in
+    /// the `approval.requested` event. The digest remains the authorization
+    /// identity: a changed tool, argument set, path, command, domain, sandbox
+    /// profile, principal, or profile revision produces a different digest and
+    /// therefore a new decision.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn request_approval_with_action(
+        &self,
+        task_id: &str,
+        operation: &str,
+        target: &str,
+        digest: &str,
+        risk: &str,
+        ttl_ms: i64,
+        action: Option<common::ApprovalAction>,
+        mode: Option<String>,
+        rule: Option<String>,
+    ) -> Result<Approval> {
         let at = now();
         let (approval, created) = self
             .store()
@@ -71,6 +97,9 @@ impl Runtime {
                     requested_by: task.caller.clone(),
                     expires_at: at + ttl_ms.max(1),
                     status: "pending".into(),
+                    action: action.clone(),
+                    mode: mode.clone(),
+                    rule: rule.clone(),
                     decided_by: None,
                     decided_at: None,
                     receipt: None,
@@ -98,6 +127,9 @@ impl Runtime {
                 "expires_at": approval.expires_at,
                 "risk": approval.risk,
                 "requested_by": approval.requested_by,
+                "mode": approval.mode,
+                "rule": approval.rule,
+                "action": approval.action,
             }),
             true,
         )

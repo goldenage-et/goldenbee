@@ -11,6 +11,7 @@ pub mod a2a;
 mod approvals;
 mod artifacts;
 mod auth;
+mod checkpoints;
 mod commands;
 mod control;
 mod diagnostics;
@@ -21,6 +22,7 @@ mod peers;
 mod plans;
 mod profiles;
 mod retention;
+mod sessions;
 mod tasks;
 
 pub use a2a::A2aServing;
@@ -102,6 +104,16 @@ pub fn api_router(state: WorkerState) -> Router {
         .route("/v1/tasks/{id}/artifacts", get(artifacts::task_artifacts))
         .route("/v1/tasks/{id}/cancel", post(tasks::cancel))
         .route("/v1/tasks/{id}/resume", post(tasks::resume))
+        .route(
+            "/v1/tasks/{id}/checkpoints",
+            get(checkpoints::task_checkpoints),
+        )
+        .route("/v1/checkpoints/{checkpoint}", get(checkpoints::checkpoint))
+        .route("/v1/checkpoints/{checkpoint}/diff", get(checkpoints::diff))
+        .route(
+            "/v1/checkpoints/{checkpoint}/restore",
+            post(checkpoints::restore),
+        )
         .route("/v1/approvals", get(approvals::list))
         .route("/v1/approvals/{id}", get(approvals::get))
         .route("/v1/approvals/{id}/decision", post(approvals::decide))
@@ -138,6 +150,15 @@ pub fn api_router(state: WorkerState) -> Router {
         .route(
             "/v1/sessions/{session}/control",
             get(control::status).post(control::acquire),
+        )
+        .route("/v1/sessions", get(sessions::list))
+        .route("/v1/sessions/latest", get(sessions::latest))
+        .route("/v1/sessions/{session}", get(sessions::session))
+        .route("/v1/sessions/{session}/fork", post(sessions::fork))
+        .route("/v1/sessions/{session}/rename", post(sessions::rename))
+        .route(
+            "/v1/sessions/{session}/transcript",
+            get(sessions::transcript).post(sessions::export),
         )
         .route(
             "/v1/sessions/{session}/control/commands",

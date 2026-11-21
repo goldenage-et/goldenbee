@@ -9,6 +9,7 @@
 
 pub mod artifact;
 pub mod backup;
+pub mod checkpoint;
 pub mod command;
 pub mod control;
 pub mod delegation;
@@ -41,6 +42,10 @@ pub use artifact::{Artifact, ArtifactGrant};
 pub use backup::{
     BackupApproval, BackupArtifact, BackupExecution, BackupFile, BackupManifest, BackupProfile,
     BackupRelease, BackupTask, GatewayBackup, WorkerBackup, BACKUP_FORMAT, BACKUP_SCHEMA,
+};
+pub use checkpoint::{
+    CheckpointDiff, CheckpointFileView, CheckpointRestoreOutcome, CheckpointRestoreRequest,
+    CheckpointView, DiffHunk, DiffLine, FileDiff,
 };
 pub use command::{
     kinds as command_kinds, CommandArgument, CommandDescriptor, CommandRequest, CommandResponse,
@@ -83,8 +88,8 @@ pub use plan::{
     PlanControlRequest, PlanCriterion,
 };
 pub use profile::{
-    Approval, ApprovalDecision, ContextCompaction, CreateProfileRequest, DeletedProfile, Profile,
-    ProfileRevision, ProfileVersionRequest, ReviseProfileRequest,
+    Approval, ApprovalAction, ApprovalDecision, ContextCompaction, CreateProfileRequest,
+    DeletedProfile, Profile, ProfileRevision, ProfileVersionRequest, ReviseProfileRequest,
 };
 pub use providers::{
     adapter_discovers_models, CreatePairCodeRequest, CreateProviderRequest, PairCodeResponse,
@@ -94,7 +99,9 @@ pub use providers::{
     PROVIDER_ENVELOPE_INFO, PROVIDER_ENVELOPE_TTL_MS,
 };
 pub use redaction::redact;
-pub use session::{SessionTurn, SessionView};
+pub use session::{
+    SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionTurn, SessionView,
+};
 pub use socket::{
     SocketCommand, SocketCommandFrame, SocketOutcome, SocketScope, SocketServerFrame, SocketTicket,
     SOCKET_HEARTBEAT_MS, SOCKET_IDLE_TIMEOUT_MS, SOCKET_MAX_FRAME_BYTES, SOCKET_MAX_SUBSCRIPTIONS,

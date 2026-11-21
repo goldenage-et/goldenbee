@@ -156,6 +156,42 @@ pub struct DeletedProfile {
     pub deleted: String,
 }
 
+/// Exact action described by one permission approval.
+///
+/// The action is the durable identity an approver saw. Its canonical digest is
+/// the approval digest, so a changed tool, argument set, resolved path,
+/// command, domain, sandbox profile, principal, or profile revision requires a
+/// new decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalAction {
+    /// Tool name that will execute.
+    pub tool: String,
+    /// Canonical digest of the exact call arguments.
+    pub arguments_digest: String,
+    /// Workspace-relative paths the call resolves against.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Command text, when the tool executes a command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Network destination host, when the tool reaches a remote domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// Sandbox profile the decision is bound to.
+    pub sandbox_profile: String,
+    /// Principal that requested the action.
+    pub principal: String,
+    /// Profile revision pinned at admission.
+    pub profile_revision: u64,
+}
+
+impl ApprovalAction {
+    /// Canonical digest of the complete action.
+    pub fn digest(&self) -> String {
+        crate::canonical_digest(self)
+    }
+}
+
 /// Approval request for one exact protected operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Approval {
@@ -179,6 +215,17 @@ pub struct Approval {
     pub expires_at: i64,
     /// `pending`, `approved`, `rejected`, `expired`, or `revoked`.
     pub status: String,
+    /// Exact permission action, when this approval was created by the
+    /// permission policy. Effect approvals keep their operation-specific
+    /// digest and leave this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<ApprovalAction>,
+    /// Permission mode that produced the request, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Policy rule that produced the request, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
     /// Deciding principal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<String>,

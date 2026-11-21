@@ -63,6 +63,11 @@ impl Worker {
         let mut compaction_preserve_recent = None;
         let mut compaction_max_retries = None;
         let mut compaction_strategy = None;
+        let mut title = None;
+        let mut task_id = None;
+        let mut checkpoint_id = None;
+        let mut restore_mode = None;
+        let mut restore_files = Vec::new();
         let mut activate = false;
         let mut probe_only = false;
         while index < args.len() {
@@ -95,7 +100,12 @@ impl Worker {
                 | "--compaction-budget"
                 | "--compaction-preserve-recent"
                 | "--compaction-max-retries"
-                | "--compaction-strategy" => {
+                | "--compaction-strategy"
+                | "--title"
+                | "--task"
+                | "--checkpoint"
+                | "--mode"
+                | "--file" => {
                     let Some(value) = args.get(index + 1) else {
                         return Err(ApiError::new(
                             "cli.value_missing",
@@ -170,6 +180,11 @@ impl Worker {
                             })?)
                         }
                         "--compaction-strategy" => compaction_strategy = Some(value.clone()),
+                        "--title" => title = Some(value.clone()),
+                        "--task" => task_id = Some(value.clone()),
+                        "--checkpoint" => checkpoint_id = Some(value.clone()),
+                        "--mode" => restore_mode = Some(value.clone()),
+                        "--file" => restore_files.push(value.clone()),
                         _ => {}
                     }
                     index += 2;
@@ -680,6 +695,235 @@ impl Worker {
                 instance.shutdown().await;
                 result
             }
+            "session" => {
+                let instance = self.start(&config).await?;
+                let principal = instance.operator_principal().await?;
+                let runtime = instance.runtime();
+                let subcommand = positionals.get(1).map(String::as_str).unwrap_or("");
+                let id = positionals.get(2).cloned();
+                let result: WorkerResult<()> = async {
+                    match subcommand {
+                        "list" => {
+                            let views = runtime.session_views(&principal).await?;
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&views)
+                                        .unwrap_or_else(|_| "[]".into())
+                                );
+                            } else {
+                                for view in views {
+                                    println!(
+                                        "session: {} title={} events={} updated_at={}",
+                                        view.session_id,
+                                        view.title.as_deref().unwrap_or("-"),
+                                        view.event_count,
+                                        view.updated_at
+                                    );
+                                }
+                            }
+                            Ok(())
+                        }
+                        "latest" => {
+                            let view = runtime.latest_session(&principal).await?;
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&view)
+                                        .unwrap_or_else(|_| "{}".into())
+                                );
+                            } else {
+                                println!(
+                                    "session: {} title={} events={}",
+                                    view.session_id,
+                                    view.title.as_deref().unwrap_or("-"),
+                                    view.event_count
+                                );
+                            }
+                            Ok(())
+                        }
+                        "show" => {
+                            let id = id.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session show requires a session id",
+                                )
+                            })?;
+                            let view = runtime.session_view(&principal, &id).await?;
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&view)
+                                        .unwrap_or_else(|_| "{}".into())
+                                );
+                            } else {
+                                for turn in &view.turns {
+                                    println!("{}: {}", turn.role, turn.text);
+                                }
+                            }
+                            Ok(())
+                        }
+                        "fork" => {
+                            let source = id.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session fork requires a source session id",
+                                )
+                            })?;
+                            let target = positionals.get(3).cloned().ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session fork requires a new session id",
+                                )
+                            })?;
+                            let request = common::SessionForkRequest {
+                                session_id: target,
+                                title: title.clone(),
+                            };
+                            let view = runtime.fork_session(&principal, &source, &request).await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&view).unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
+                        "rename" => {
+                            let id = id.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session rename requires a session id",
+                                )
+                            })?;
+                            let title = title.clone().ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.title_required",
+                                    "session rename requires --title",
+                                )
+                            })?;
+                            let view = runtime
+                                .rename_session(
+                                    &principal,
+                                    &id,
+                                    &common::SessionRenameRequest { title },
+                                )
+                                .await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&view).unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
+                        "export" => {
+                            let id = id.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session export requires a session id",
+                                )
+                            })?;
+                            let transcript = runtime.export_session(&principal, &id).await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&transcript)
+                                    .unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
+                        "transcript" => {
+                            let id = id.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session transcript requires a session id",
+                                )
+                            })?;
+                            let transcript = runtime.session_transcript(&principal, &id).await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&transcript)
+                                    .unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
+                        other => Err(ApiError::new(
+                            "cli.session_command_unknown",
+                            format!("unknown session command '{other}'"),
+                        )),
+                    }
+                }
+                .await;
+                instance.shutdown().await;
+                result
+            }
+            "checkpoint" => {
+                let instance = self.start(&config).await?;
+                let principal = instance.operator_principal().await?;
+                let runtime = instance.runtime();
+                let subcommand = positionals.get(1).map(String::as_str).unwrap_or("");
+                let id = positionals.get(2).cloned();
+                let result: WorkerResult<()> = async {
+                    match subcommand {
+                        "list" => {
+                            let task = id.or_else(|| task_id.clone()).ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.task_required",
+                                    "checkpoint list requires a task id",
+                                )
+                            })?;
+                            let checkpoints =
+                                runtime.checkpoints_for_task(&principal, &task).await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&checkpoints)
+                                    .unwrap_or_else(|_| "[]".into())
+                            );
+                            Ok(())
+                        }
+                        "diff" => {
+                            let checkpoint =
+                                id.or_else(|| checkpoint_id.clone()).ok_or_else(|| {
+                                    ApiError::new(
+                                        "cli.checkpoint_required",
+                                        "checkpoint diff requires a checkpoint id",
+                                    )
+                                })?;
+                            let diff = runtime.checkpoint_diff(&principal, &checkpoint).await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&diff).unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
+                        "restore" => {
+                            let checkpoint =
+                                id.or_else(|| checkpoint_id.clone()).ok_or_else(|| {
+                                    ApiError::new(
+                                        "cli.checkpoint_required",
+                                        "checkpoint restore requires a checkpoint id",
+                                    )
+                                })?;
+                            let request = common::CheckpointRestoreRequest {
+                                mode: restore_mode.clone().unwrap_or_else(|| "rewind".into()),
+                                files: (!restore_files.is_empty()).then(|| restore_files.clone()),
+                            };
+                            let outcome = runtime
+                                .restore_checkpoint(&principal, &checkpoint, &request)
+                                .await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&outcome)
+                                    .unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
+                        other => Err(ApiError::new(
+                            "cli.checkpoint_command_unknown",
+                            format!("unknown checkpoint command '{other}'"),
+                        )),
+                    }
+                }
+                .await;
+                instance.shutdown().await;
+                result
+            }
             "run" => {
                 let input = input
                     .ok_or_else(|| ApiError::new("cli.input_required", "run requires --input"))?;
@@ -1026,6 +1270,8 @@ impl Worker {
              serve --config <path> [--addr 127.0.0.1:8080] [--agent <id>]\n      Native ADK web server, REST, and A2A. No Gateway or SDK.\n  \
              commands list|show|run --config <path> [--command <name>] [--input <text>]\n      [--arg name=value] [--session <id>] [--json]\n      Discover and execute neutral runtime and Worker-defined commands.\n  \
              profile list|show|create|revise|activate|deactivate|delete|export --config <path> [options]\n      Worker-native immutable profile management.\n      Compaction options: --compaction-budget <tokens> [--compaction-strategy truncation]\n      [--compaction-preserve-recent <events>] [--compaction-max-retries <attempts>].\n  \
+             session list|latest|show|fork|rename|export|transcript --config <path> [options]\n      Continue, resume, fork, rename, and durably export canonical sessions.\n      Fork: session fork <source> <new> [--title <title>]. Rename: --title <title>.\n  \
+             checkpoint list|diff|restore --config <path> [options]\n      Inspect turn-boundary file checkpoints and rewind/undo/restore a turn or file set.\n      Restore options: --mode rewind|undo|restore [--file <workspace-relative-path> ...].\n  \
              up --config <path> [--addr ADDR] [--json]\n      Start this Worker in the background and wait for readiness.\n  \
              status --config <path> [--json]\n      Report background process and health.\n  \
              down --config <path> [--json]\n      Stop the background Worker with bounded drain.\n  \
