@@ -5,8 +5,10 @@ import {
   MessageSquareIcon,
   PackageIcon,
   PlugIcon,
+  ScrollTextIcon,
   SearchIcon,
   SettingsIcon,
+  StethoscopeIcon,
   type LucideIcon,
 } from "lucide-react"
 import { cn } from "cn"
@@ -40,6 +42,18 @@ const items: RailItem[] = [
     route: { name: "attention" },
     icon: BellIcon,
     active: (route) => route.name === "attention",
+  },
+  {
+    label: "Diagnostics",
+    route: { name: "diagnostics" },
+    icon: StethoscopeIcon,
+    active: (route) => route.name === "diagnostics",
+  },
+  {
+    label: "Audit",
+    route: { name: "audit" },
+    icon: ScrollTextIcon,
+    active: (route) => route.name === "audit",
   },
   {
     label: "Packages",

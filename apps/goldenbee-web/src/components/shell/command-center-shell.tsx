@@ -317,6 +317,8 @@ export function CommandCenterShell({
     const navigation: Array<[string, string, AppRoute]> = [
       ["overview", "Open Gateway overview", { name: "overview" }],
       ["attention", "Open attention queue", { name: "attention" }],
+      ["diagnostics", "Open diagnostics", { name: "diagnostics" }],
+      ["audit", "Open audit", { name: "audit" }],
       ["packages", "Open packages", { name: "packages" }],
       ["instances", "Open instances", { name: "instances" }],
       ["providers", "Open providers", { name: "providers" }],
@@ -336,6 +338,12 @@ export function CommandCenterShell({
         label: "Open Client settings",
         group: "Settings",
         run: () => openSettings("client"),
+      },
+      {
+        id: "settings-connection",
+        label: "Open Connection settings",
+        group: "Settings",
+        run: () => openSettings("connection"),
       },
       {
         id: "settings-gateway",
@@ -450,6 +458,7 @@ export function CommandCenterShell({
 
       <ContextSidebar
         store={store}
+        route={route}
         profiles={profiles}
         defaultProfileId={defaultProfileId}
         backgroundSessions={controller.backgroundSessions}

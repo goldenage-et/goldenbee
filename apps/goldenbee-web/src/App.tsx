@@ -3,6 +3,8 @@ import { useMemo, useState } from "react"
 import { useAppRoute } from "@/app/router"
 import { CommandCenterShell } from "@/components/shell/command-center-shell"
 import { AttentionView } from "@/features/attention/attention-view"
+import { AuditPage } from "@/features/audit/audit-page"
+import { DiagnosticsPage } from "@/features/diagnostics/diagnostics-page"
 import {
   browserChatHistory,
   type ChatHistoryStore,
@@ -101,6 +103,10 @@ export function App({
         return null
       case "attention":
         return <AttentionView />
+      case "diagnostics":
+        return <DiagnosticsPage store={store} client={hostClient} />
+      case "audit":
+        return <AuditPage store={store} client={hostClient} />
       case "packages":
         return hostClient ? <PackagesPage client={hostClient} /> : null
       case "instances":

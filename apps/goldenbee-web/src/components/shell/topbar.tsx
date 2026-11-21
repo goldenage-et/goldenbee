@@ -16,6 +16,8 @@ import { profileNameForUrl } from "@/features/workspace/gateway-profiles"
 const routeLabels: Partial<Record<AppRoute["name"], string>> = {
   overview: "Gateway overview",
   attention: "Attention",
+  diagnostics: "Diagnostics",
+  audit: "Audit",
   packages: "Packages",
   instances: "Instances",
   instance: "Instance detail",

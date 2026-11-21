@@ -47,4 +47,14 @@ describe("app hash routes", () => {
       parseRoute(routeHref({ name: "task", taskId: "exec 1" })),
     ).toEqual({ name: "task", taskId: "exec 1" })
   })
+
+  it("round-trips the diagnostics and audit routes", () => {
+    expect(parseRoute("#/diagnostics")).toEqual({ name: "diagnostics" })
+    expect(routeHref({ name: "diagnostics" })).toBe("#/diagnostics")
+    expect(parseRoute("#/audit")).toEqual({ name: "audit" })
+    expect(routeHref({ name: "audit" })).toBe("#/audit")
+    // Existing routes are untouched by the operator additions.
+    expect(parseRoute("#/chat")).toEqual({ name: "chat" })
+    expect(parseRoute("#/attention")).toEqual({ name: "attention" })
+  })
 })

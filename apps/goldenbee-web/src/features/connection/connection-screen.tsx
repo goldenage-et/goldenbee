@@ -19,44 +19,12 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { connectionErrorCopy as errorCopy } from "@/features/connection/connection-errors"
 import {
   connectionStore,
   useConnection,
-  type ConnectionErrorView,
   type ConnectionStore,
 } from "@/features/connection/connection-store"
-
-function errorCopy(error: ConnectionErrorView) {
-  switch (error.kind) {
-    case "unauthorized":
-      return {
-        title: "Caller token rejected",
-        description: "Gateway recognized the request but did not accept this caller token.",
-      }
-    case "forbidden":
-      return {
-        title: "Caller token lacks access",
-        description: "The token is valid, but this caller cannot discover Workers.",
-      }
-    case "invalid-url":
-      return {
-        title: "Check the Gateway URL",
-        description: "The address must be an http or https URL without credentials.",
-      }
-    case "network":
-    case "timeout":
-    case "aborted":
-      return {
-        title: "Gateway unreachable",
-        description: "No Gateway answered at this address.",
-      }
-    default:
-      return {
-        title: "Gateway request failed",
-        description: "Gateway answered, but the connection check did not complete.",
-      }
-  }
-}
 
 export function ConnectionScreen({
   store = connectionStore,

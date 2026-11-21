@@ -7,7 +7,7 @@ import {
   within,
 } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { ReactNode } from "react"
 
 import { App } from "@/App"
@@ -143,7 +143,7 @@ function renderApp(options: RenderOptions = {}) {
   }
   window.location.hash = options.route ?? "#/chat"
   const user = userEvent.setup()
-  render(
+  const rendered = render(
     <App
       store={connectedStore()}
       history={history}
@@ -153,7 +153,15 @@ function renderApp(options: RenderOptions = {}) {
     />,
     { wrapper },
   )
-  return { history, workspace, preferences, profiles, user, storage }
+  return {
+    history,
+    workspace,
+    preferences,
+    profiles,
+    user,
+    storage,
+    unmount: rendered.unmount,
+  }
 }
 
 async function waitForChat(): Promise<void> {
@@ -166,6 +174,7 @@ async function waitForChat(): Promise<void> {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   window.location.hash = ""
   window.localStorage.clear()
   Object.defineProperty(window, "innerWidth", {
@@ -324,6 +333,13 @@ describe("command center shell", () => {
 
     await user.keyboard("{Control>}k{/Control}")
     dialog = await screen.findByRole("dialog", { name: "Command palette" })
+    await user.type(
+      within(dialog).getByRole("combobox", { name: "Command" }),
+      "audit",
+    )
+    expect(
+      await within(dialog).findByRole("option", { name: /Open audit/ }),
+    ).toBeInTheDocument()
     await user.keyboard("{Escape}")
     await waitFor(() => {
       expect(
@@ -359,6 +375,20 @@ describe("command center shell", () => {
     expect(storage.getItem(clientSettingsStorageKey) ?? "").not.toContain(
       "caller-token",
     )
+
+    await user.click(within(dialog).getByRole("tab", { name: "Connection" }))
+    expect(within(dialog).getByText("Local connection")).toBeInTheDocument()
+    expect(within(dialog).getByLabelText("Gateway URL")).toHaveValue(
+      "http://gateway.test",
+    )
+    expect(within(dialog).getByLabelText("Caller token")).toHaveAttribute(
+      "type",
+      "password",
+    )
+    expect(document.body.textContent ?? "").not.toContain("caller-token")
+    expect(
+      within(dialog).getByRole("button", { name: "Reconnect" }),
+    ).toBeInTheDocument()
 
     await user.click(within(dialog).getByRole("tab", { name: "Gateway" }))
     expect(within(dialog).getByText("Read-only")).toBeInTheDocument()
@@ -419,6 +449,65 @@ describe("command center shell", () => {
     expect(
       screen.getByRole("link", { name: "Attention" }),
     ).toHaveAttribute("aria-current", "page")
+  })
+
+  it("routes to diagnostics and audit from the shell and sidebar", async () => {
+    const bundle = {
+      generated_at: 1_700_000_000_000,
+      health: { status: "ok", workers: 1, reachable: 1 },
+      metrics: [],
+      storage: { metadata: "ok", artifacts: "ok", degraded: [] },
+      findings: [],
+      correlation: {},
+      audit: [],
+      traces: [],
+      subsystems: { runtime: "ok" },
+    }
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        const body = url.includes("/audit") ? [] : bundle
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(body),
+          headers: { get: () => null },
+        } as unknown as Response
+      }),
+    )
+
+    const diagnostics = renderApp({ route: "#/diagnostics" })
+    expect(
+      await screen.findByRole("heading", { name: "Diagnostics" }),
+    ).toBeInTheDocument()
+    expect(
+      within(
+        screen.getByRole("navigation", { name: "Primary navigation" }),
+      ).getByRole("link", { name: "Diagnostics" }),
+    ).toHaveAttribute("aria-current", "page")
+    const sidebar = screen.getByRole("complementary", {
+      name: "Gateway context",
+    })
+    expect(
+      within(sidebar).getByRole("link", { name: "Diagnostics" }),
+    ).toHaveAttribute("aria-current", "page")
+    expect(within(sidebar).getByRole("link", { name: "Audit" })).toBeInTheDocument()
+    expect(await screen.findByText("Gateway health")).toBeInTheDocument()
+    diagnostics.unmount()
+
+    renderApp({ route: "#/audit" })
+    expect(
+      await screen.findByRole("heading", { name: "Audit" }),
+    ).toBeInTheDocument()
+    expect(
+      within(
+        screen.getByRole("navigation", { name: "Primary navigation" }),
+      ).getByRole("link", { name: "Audit" }),
+    ).toHaveAttribute("aria-current", "page")
+    expect(
+      await screen.findByText("No registry decisions have been retained."),
+    ).toBeInTheDocument()
   })
 })
 
