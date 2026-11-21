@@ -8,7 +8,7 @@ use adk_rust::server::{create_app, ServerConfig};
 use adk_rust::Launcher;
 #[cfg(not(feature = "launcher-cli"))]
 use adk_rust::SingleAgentLoader;
-use common::{ApiError, CommandRequest, Principal, SubmitTaskRequest, TaskState};
+use common::{ApiError, CommandRequest, Principal, TaskState};
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 #[cfg(not(feature = "launcher-cli"))]
@@ -37,7 +37,12 @@ impl Worker {
         let mut index = 0;
         let mut positionals: Vec<String> = Vec::new();
         let mut json = false;
+        let mut jsonl = false;
         let mut input = None;
+        let mut input_files: Vec<String> = Vec::new();
+        let mut image_files: Vec<String> = Vec::new();
+        let mut continue_session = false;
+        let mut resume_session = None;
         let mut agent = None;
         let mut session = "local-session".to_string();
         let mut addr = None;
@@ -73,11 +78,16 @@ impl Worker {
         while index < args.len() {
             match args[index].as_str() {
                 "--json" => json = true,
+                "--jsonl" => jsonl = true,
+                "--continue" => continue_session = true,
                 "--probe-only" => probe_only = true,
                 "--activate" => activate = true,
                 "--input"
                 | "--agent"
                 | "--session"
+                | "--resume"
+                | "--input-file"
+                | "--image"
                 | "--addr"
                 | "--config"
                 | "--code"
@@ -116,6 +126,9 @@ impl Worker {
                         "--input" => input = Some(value.clone()),
                         "--agent" => agent = Some(value.clone()),
                         "--session" => session = value.clone(),
+                        "--resume" => resume_session = Some(value.clone()),
+                        "--input-file" => input_files.push(value.clone()),
+                        "--image" => image_files.push(value.clone()),
                         "--addr" => addr = Some(value.clone()),
                         "--config" => config = Some(value.clone()),
                         "--code" => pair_code = Some(value.clone()),
@@ -942,8 +955,47 @@ impl Worker {
                 result
             }
             "run" => {
-                let input = input
-                    .ok_or_else(|| ApiError::new("cli.input_required", "run requires --input"))?;
+                if json && jsonl {
+                    return Err(ApiError::new(
+                        "cli.option_conflict",
+                        "--json and --jsonl select different output modes",
+                    ));
+                }
+                let mut sources = Vec::new();
+                if let Some(value) = &input {
+                    if value == "-" {
+                        sources.push(common::RunSource::Stdin);
+                    } else {
+                        sources.push(common::RunSource::Text {
+                            text: value.clone(),
+                        });
+                    }
+                }
+                for path in &input_files {
+                    sources.push(common::RunSource::File {
+                        path: path.clone(),
+                        media_type: None,
+                    });
+                }
+                for path in &image_files {
+                    sources.push(common::RunSource::Image {
+                        path: path.clone(),
+                        media_type: None,
+                    });
+                }
+                if sources.is_empty() {
+                    return Err(ApiError::new(
+                        "cli.input_required",
+                        "run requires --input, --input-file, or --image",
+                    ));
+                }
+                // Resolve and bound local sources before any Worker startup or
+                // task admission. A malformed source therefore fails without
+                // execution.
+                let run_input = {
+                    let mut stdin = std::io::stdin().lock();
+                    crate::headless::resolve_sources(&sources, &mut stdin)?
+                };
                 let instance = self.start(&config).await?;
                 let agent = match agent {
                     Some(agent) => agent,
@@ -953,67 +1005,67 @@ impl Worker {
                     .operator_principal()
                     .await
                     .unwrap_or_else(|_| Principal::new("local", "local", &["*"]));
-                let response = instance
+                let request = common::RunRequest {
+                    agent: Some(agent),
+                    profile: profile_name.clone(),
+                    session_id: (if continue_session || resume_session.is_some() {
+                        None
+                    } else {
+                        Some(session)
+                    }),
+                    continue_session,
+                    resume_session: resume_session.clone(),
+                    input: run_input,
+                    limits: Default::default(),
+                    idempotency_key: idempotency_key
+                        .clone()
+                        .or_else(|| Some(format!("cli-{}", uuid_like()))),
+                    wait_ms: None,
+                };
+                let outcome = instance
                     .runtime()
-                    .submit_task(
-                        &principal,
-                        SubmitTaskRequest {
-                            namespace: Some("local".into()),
-                            agent,
-                            session_id: session,
-                            input,
-                            idempotency_key: format!("cli-{}", uuid_like()),
-                            profile: profile_name.clone(),
-                            worker: None,
-                            team: None,
-                            limits: Default::default(),
-                        },
-                    )
-                    .await?;
-                loop {
-                    let task = instance
-                        .runtime()
-                        .task_unscoped(&response.task_id)
-                        .await
-                        .ok_or_else(|| {
-                            ApiError::new("task.not_found", "task disappeared from durable state")
-                        })?;
-                    if task.state.is_terminal() {
+                    .run_headless(&principal, request, &mut |frame| {
+                        if jsonl {
+                            let line = serde_json::to_string(frame).map_err(|_| {
+                                ApiError::new(
+                                    "cli.output",
+                                    "the headless frame could not be serialized",
+                                )
+                            })?;
+                            println!("{line}");
+                        }
+                        Ok(())
+                    })
+                    .await;
+                let code = match outcome {
+                    Ok(result) => {
                         if json {
                             println!(
                                 "{}",
-                                serde_json::json!({
-                                    "task_id": task.id,
-                                    "state": task.state,
-                                    "output": task.output,
-                                    "evidence": task.evidence,
-                                    "error": task.error,
-                                    "usage": task.usage,
-                                    "asset_revision": task.asset_revision,
-                                    "profile_revision": task.profile_revision,
-                                    "resolved_model": task.resolved_model,
-                                    "native_invocation_id": task.native_invocation_id,
-                                })
+                                serde_json::to_string_pretty(&result)
+                                    .unwrap_or_else(|_| "{}".into())
                             );
-                        } else if let Some(output) = &task.output {
-                            println!("{output}");
-                        } else {
-                            println!("{:?}", task.state);
-                        }
-                        let result = match task.state {
-                            TaskState::Succeeded => Ok(()),
-                            TaskState::Cancelled => {
-                                Err(ApiError::new("task.cancelled", "task was cancelled"))
+                        } else if !jsonl {
+                            if let Some(output) = &result.output {
+                                println!("{output}");
+                            } else {
+                                println!("{:?}", result.state);
                             }
-                            _ => Err(task.error.unwrap_or_else(|| {
-                                ApiError::new("task.failed", "task did not succeed")
-                            })),
-                        };
-                        instance.shutdown().await;
-                        return result;
+                        }
+                        result.exit_code
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
+                    Err(error) => {
+                        eprintln!(
+                            "{}: {}: {}",
+                            instance.name(),
+                            error.code,
+                            common::redact(&error.message)
+                        );
+                        common::error_exit_code(&error)
+                    }
+                };
+                instance.shutdown().await;
+                std::process::exit(code);
             }
             "dev" => {
                 let instance = self.start(&config).await?;
@@ -1186,7 +1238,7 @@ impl Worker {
                     runtime.clone(),
                     &manifest,
                     agents,
-                    default_agent,
+                    default_agent.clone(),
                     instance.session_service(),
                     instance.plugins(),
                     &base,
@@ -1195,6 +1247,7 @@ impl Worker {
                 let state = crate::serving::WorkerState::new(runtime, manifest)
                     .with_durable_a2a(a2a.durable())
                     .with_browser(instance.browser())
+                    .with_default_agent(default_agent)
                     .with_commands(instance.command_registry().await);
                 let app = crate::serving::api_router(state.clone())
                     .merge(native)
@@ -1282,7 +1335,7 @@ impl Worker {
              Commands:\n  \
              probe [--json]\n      Machine-readable compiled registration report for installer smoke checks.\n  \
              capabilities --config <path> [--json]\n      Show installed capabilities and configured agents.\n  \
-             run --config <path> --input <text> [--agent <id>] [--profile <name>] [--session <id>] [--json]\n      Execute through shared runtime and the native ADK Runner.\n  \
+             run --config <path> --input <text|-> [--input-file <path> ...] [--image <path> ...]\n      [--agent <id>] [--profile <name>] [--session <id>] [--continue | --resume <id>]\n      [--json | --jsonl] [--idempotency-key <key>]\n      Execute one task through the shared runtime. --input - reads stdin.\n      --json prints one structured result; --jsonl streams ordered frames.\n      Stable exit classes: 0 success, 2 usage, 3 authorization, 4 approval,\n      5 execution failure, 6 uncertain, 7 cancelled.\n  \
              dev --config <path> [--agent <id>] [--profile <name>]\n      Native ADK Runner launcher console. No Gateway or SDK.\n  \
              serve --config <path> [--addr 127.0.0.1:8080] [--agent <id>]\n      Native ADK web server, REST, and A2A. No Gateway or SDK.\n  \
              commands list|show|run --config <path> [--command <name>] [--input <text>]\n      [--arg name=value] [--session <id>] [--json]\n      Discover and execute neutral runtime and Worker-defined commands.\n  \

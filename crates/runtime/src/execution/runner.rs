@@ -1104,13 +1104,29 @@ impl crate::Executor for NativeExecutor {
                 .runtime_toolsets
                 .push(RuntimeToolset::new(toolset));
         }
+        // Admitted inline images stay native multimodal parts. Admission already
+        // bounded the decoded size and media type, so a decode failure here means
+        // durable state was corrupted; fail before the native invocation.
+        let mut content = Content::new("user").with_text(task.input.clone());
+        for image in &task.input_images {
+            let data = match image.decode() {
+                Ok(data) => data,
+                Err(_) => {
+                    return ExecutionOutcome::failure(ApiError::new(
+                        "validation.run_image",
+                        "admitted inline image data could not be decoded",
+                    ))
+                }
+            };
+            content.parts.push(Part::InlineData {
+                mime_type: image.media_type.clone(),
+                data,
+                uri: image.name.clone(),
+                annotations: None,
+            });
+        }
         let mut stream = match runner
-            .run_with_config(
-                user_id,
-                session_id,
-                Content::new("user").with_text(task.input.clone()),
-                Some(run_config),
-            )
+            .run_with_config(user_id, session_id, content, Some(run_config))
             .await
         {
             Ok(stream) => stream,

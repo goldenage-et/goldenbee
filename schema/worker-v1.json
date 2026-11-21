@@ -399,6 +399,137 @@
       },
       "additionalProperties": false
     },
+    "runSource": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["text", "stdin", "file", "image"] },
+        "text": { "type": "string", "maxLength": 1000000 },
+        "path": { "type": "string" },
+        "media_type": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "runFile": {
+      "type": "object",
+      "required": ["name", "media_type", "bytes", "digest"],
+      "properties": {
+        "name": { "type": "string" },
+        "media_type": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "digest": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "runImage": {
+      "type": "object",
+      "required": ["media_type", "data"],
+      "properties": {
+        "media_type": { "type": "string", "enum": ["image/png", "image/jpeg", "image/webp", "image/gif"] },
+        "data": { "type": "string", "maxLength": 699052 },
+        "name": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "runInput": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "maxLength": 1000000 },
+        "files": { "type": "array", "maxItems": 16, "items": { "$ref": "#/definitions/runFile" } },
+        "images": { "type": "array", "maxItems": 4, "items": { "$ref": "#/definitions/runImage" } }
+      },
+      "additionalProperties": false
+    },
+    "runRequest": {
+      "type": "object",
+      "required": ["input"],
+      "properties": {
+        "agent": { "type": "string" },
+        "profile": { "type": "string" },
+        "session_id": { "type": "string" },
+        "continue": { "type": "boolean" },
+        "resume_session": { "type": "string" },
+        "input": { "$ref": "#/definitions/runInput" },
+        "limits": { "$ref": "#/definitions/limits" },
+        "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "wait_ms": { "type": "integer", "minimum": 0, "maximum": 600000 }
+      },
+      "additionalProperties": false
+    },
+    "runResult": {
+      "type": "object",
+      "required": ["schema_version", "task_id", "session_id", "agent", "profile", "profile_revision", "asset_revision", "state", "exit_code"],
+      "properties": {
+        "schema_version": { "type": "integer", "minimum": 1 },
+        "task_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "agent": { "type": "string" },
+        "profile": { "type": "string" },
+        "profile_revision": { "type": "integer", "minimum": 0 },
+        "asset_revision": { "type": "integer", "minimum": 0 },
+        "trace_id": { "type": "string" },
+        "state": { "type": "string" },
+        "resolved_model": {},
+        "output": { "type": "string" },
+        "error": { "$ref": "#/definitions/error" },
+        "uncertainty": { "type": "string" },
+        "usage": { "type": "object" },
+        "native_invocation_id": { "type": "string" },
+        "evidence": {},
+        "exit_code": { "type": "integer", "minimum": 0, "maximum": 7 }
+      },
+      "additionalProperties": false
+    },
+    "jsonlItem": {
+      "type": "object",
+      "required": ["item_type"],
+      "properties": {
+        "item_type": { "type": "string", "enum": ["agent_message", "reasoning", "tool_call", "approval", "diff"] },
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "name": { "type": "string" },
+        "server": { "type": "string" },
+        "agent": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "error_code": { "type": "string" },
+        "operation": { "type": "string" },
+        "target": { "type": "string" },
+        "risk": { "type": "string" },
+        "decision": { "type": "string" },
+        "status": { "type": "string" },
+        "diff": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "jsonlFrame": {
+      "type": "object",
+      "required": ["type", "task_id"],
+      "properties": {
+        "type": { "type": "string", "enum": ["task_started", "turn_started", "item_started", "item_updated", "item_completed", "task_completed"] },
+        "schema_version": { "type": "integer", "minimum": 1 },
+        "task_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "agent": { "type": "string" },
+        "profile": { "type": "string" },
+        "profile_revision": { "type": "integer", "minimum": 0 },
+        "asset_revision": { "type": "integer", "minimum": 0 },
+        "trace_id": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 0 },
+        "seq": { "type": "integer", "minimum": 0 },
+        "at": { "type": "integer" },
+        "resolved_model": {},
+        "item": { "$ref": "#/definitions/jsonlItem" },
+        "state": { "type": "string" },
+        "output": { "type": "string" },
+        "error": { "$ref": "#/definitions/error" },
+        "uncertainty": { "type": "string" },
+        "usage": { "type": "object" },
+        "native_invocation_id": { "type": "string" },
+        "evidence": {},
+        "exit_code": { "type": "integer", "minimum": 0, "maximum": 7 }
+      },
+      "additionalProperties": false
+    },
     "capabilities": {
       "type": "object",
       "required": ["package", "version", "protocol", "runtime", "adk", "instance", "durable_tasks", "a2a_task_storage", "a2a_durable", "artifact_storage", "artifact_transfer", "artifact_max_bytes", "capabilities"],

@@ -13,6 +13,7 @@ pub mod context;
 mod core;
 mod data;
 mod execution;
+pub mod headless;
 pub mod master;
 pub mod mcp;
 pub mod peer;
@@ -59,6 +60,7 @@ pub use execution::providers::{
     ProviderRegistry, ProviderRequirements, ProviderView, SecretSource,
 };
 pub use execution::{ExecutionOutcome, Executor};
+pub use headless::resolve_sources;
 pub use master::{
     CriterionResult, MasterPlan, PlanChild, PlanEscalation, PlanEvaluation, PlanProvenance,
     PlanRecovery,

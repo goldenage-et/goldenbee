@@ -93,6 +93,12 @@ impl WorkerSettings {
                 format!("permission policy is invalid: {message}"),
             )
         })?;
+        file.sandbox.validate().map_err(|message| {
+            ApiError::new(
+                "config.sandbox",
+                format!("sandbox policy is invalid: {message}"),
+            )
+        })?;
         validate_peers(&file.peers, file.allow_remote)?;
         validate_skills(&file.skills)?;
         Ok(Self {
@@ -124,6 +130,11 @@ impl WorkerSettings {
     /// Process-wide tool pipeline, when startup configured it.
     pub fn tool_kernel(&self) -> Option<crate::tools::ToolKernel> {
         self.kernel.clone()
+    }
+
+    /// Effective runtime-owned sandbox policy for this instance.
+    pub fn sandbox_rules(&self) -> &crate::sandbox::SandboxRules {
+        &self.file.sandbox
     }
 
     /// Resolved skill disclosure behavior for this revision.
@@ -327,6 +338,10 @@ pub struct FileConfig {
     /// Permission mode, ordered rules, and approval bounds.
     #[serde(default)]
     pub permissions: crate::policy::PermissionPolicy,
+    /// Sandbox profile, network, paths, command ceiling, proxy, and process
+    /// limits. Runtime-owned; a package or profile can only narrow it.
+    #[serde(default)]
+    pub sandbox: crate::sandbox::SandboxRules,
     /// Maximum time admitted work may finish after admission closes. The
     /// remaining work is left recoverable, not marked failed or succeeded.
     #[serde(default = "default_drain_timeout")]
