@@ -100,7 +100,7 @@ print(json.dumps({{"decision": "continue"}}))
     let mut manifest = String::from(
         "manifest_version = 1\nname = \"acceptance-plugin\"\nversion = \"0.1.0\"\ndescription = \"runtime acceptance fixture\"\ntools = [\"shell\"]\n[commands]\ndirectory = \"commands\"\n[skills]\ndirectory = \"skills\"\n",
     );
-    for event in ["prompt_submit", "pre_tool", "stop"] {
+    for event in ["prompt_submit", "pre_tool", "stop", "subagent_stop"] {
         manifest.push_str(&format!(
             "[[hooks]]\nname = \"{event}\"\nevent = \"{event}\"\ncommand = \"hook.py\"\ntimeout_ms = 5000\n"
         ));
@@ -487,6 +487,10 @@ fn assert_scenario_events(events: &[Value]) {
         "subagent terminal evidence missing: {events:?}"
     );
     assert!(
+        events.iter().any(|event| event["kind"] == "subagent.stop"),
+        "automatic subagent-stop evidence missing: {events:?}"
+    );
+    assert!(
         events
             .iter()
             .any(|event| event["kind"] == "checkpoint.committed"),
@@ -518,7 +522,7 @@ fn assert_audit_and_evidence(base: &str, task: &Value, events: &[Value], accepta
         events
             .windows(2)
             .all(|pair| pair[0]["seq"].as_u64() < pair[1]["seq"].as_u64()),
-        "events must be ordered by sequence"
+        "events must be ordered by sequence: {events:?}"
     );
 
     let audit = get(base, &format!("/v1/tasks/{task_id}/audit"));
@@ -612,6 +616,11 @@ fn assert_audit_and_evidence(base: &str, task: &Value, events: &[Value], accepta
     assert!(
         plugin.contains("pre_tool|shell"),
         "plugin tool hook missing: {plugin:?}"
+    );
+    let plugin = wait_log(&acceptance.plugin_hook, "subagent_stop|");
+    assert!(
+        plugin.contains("subagent_stop|"),
+        "automatic subagent-stop hook missing: {plugin:?}"
     );
 }
 
@@ -1046,6 +1055,12 @@ fn negative_cases_cover_untrusted_plugin_denied_paths_and_missing_capabilities()
     let terminal =
         event_kind(&cancel_events, "subagent.terminal").expect("child terminal evidence");
     assert_eq!(terminal["payload"]["state"], "cancelled", "{terminal}");
+    assert!(
+        cancel_events
+            .iter()
+            .any(|event| event["kind"] == "subagent.stop"),
+        "cancelled child did not emit subagent.stop: {cancel_events:?}"
+    );
 
     // Compaction pressure keeps canonical history while emitting native
     // compaction evidence.

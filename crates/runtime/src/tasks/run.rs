@@ -635,24 +635,40 @@ impl Runtime {
                 )
                 .await;
         }
+        let state_name = match task.state {
+            TaskState::Succeeded => "succeeded",
+            TaskState::Cancelled => "cancelled",
+            TaskState::Unknown => "unknown",
+            TaskState::Recovering => "recovering",
+            _ => "failed",
+        };
         let _ = self
             .audit(
                 &task.caller,
                 "task.finish",
                 task_id,
-                match task.state {
-                    TaskState::Succeeded => "succeeded",
-                    TaskState::Cancelled => "cancelled",
-                    TaskState::Unknown => "unknown",
-                    TaskState::Recovering => "recovering",
-                    _ => "failed",
-                },
+                state_name,
                 task.error
                     .as_ref()
                     .map(|error| error.code.as_str())
                     .unwrap_or(""),
             )
             .await;
+        // A runtime-local child has exactly one stop notification after its
+        // terminal projection is durable, regardless of how it terminated.
+        if task.state.is_terminal() {
+            if let Some(parent_id) = task.parent_task_id.clone() {
+                let _ = self
+                    .notify_subagent_stop(
+                        &parent_id,
+                        &task.id,
+                        &task.agent,
+                        &task.session_id,
+                        state_name,
+                    )
+                    .await;
+            }
+        }
         // A lineage that did not succeed must not leave owned work running.
         // A successful parent may leave background children running; their
         // completion still reports through the same durable notification.
