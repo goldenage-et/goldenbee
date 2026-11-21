@@ -997,7 +997,6 @@ describe("app shell chat navigation", () => {
 
     await user.click(screen.getByRole("link", { name: "Chat" }))
 
-    expect(await screen.findByRole("heading", { name: "Chat" })).toBeInTheDocument()
     expect(screen.getByLabelText("Message")).toBeInTheDocument()
     expect(screen.getByText("Start a task")).toBeInTheDocument()
   })

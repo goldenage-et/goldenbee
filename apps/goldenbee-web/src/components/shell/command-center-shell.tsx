@@ -6,7 +6,6 @@ import { StatusDot } from "@/components/shell/status-dot"
 import { StatusBadge } from "@/components/shell/status-badge"
 import { IconRail } from "@/components/shell/icon-rail"
 import { ContextSidebar } from "@/components/shell/context-sidebar"
-import { Topbar } from "@/components/shell/topbar"
 import { SessionTabs } from "@/components/shell/session-tabs"
 import {
   CommandPalette,
@@ -454,6 +453,8 @@ export function CommandCenterShell({
     >
       <IconRail
         route={route}
+        sidebarOpen={drawerOpen}
+        onToggleSidebar={() => setDrawerOpen((open) => !open)}
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings("client")}
       />
@@ -488,29 +489,15 @@ export function CommandCenterShell({
       ) : null}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar
-          route={route}
-          store={store}
-          groupName={controller.activeGroup?.name}
-          sidebarOpen={drawerOpen}
-          onToggleSidebar={() => setDrawerOpen((open) => !open)}
-          onOpenPalette={() => setPaletteOpen(true)}
-          onOpenGatewaySettings={() => openSettings("gateway")}
-          onNewSession={() => controller.newSession()}
-        />
-
         {route.name === "chat" ? (
           <>
             <SessionTabs
               groups={controller.groups}
               activeGroupId={controller.activeGroupId}
               backgroundChatIds={controller.backgroundChatIds}
-              inspectorOpen={inspectorOpen}
               onSelectGroup={controller.selectGroup}
               onNewSession={splitPanel}
-              onSplit={splitPanel}
-              onToggleInspector={() => toggleInspector()}
-              onRequestNewGroup={() =>
+              onNewGroup={() =>
                 setGroupDialog({
                   mode: "create",
                   name: `Group ${controller.groups.length + 1}`,
@@ -528,13 +515,13 @@ export function CommandCenterShell({
 
             <main
               aria-label="Session workspace"
-              className="flex min-h-0 flex-1 overflow-hidden p-2.5"
+              className="flex min-h-0 flex-1 overflow-hidden p-2"
             >
               <div
                 id="session-workspace"
                 role="tabpanel"
                 aria-label={`Session group ${controller.activeGroup?.name ?? "Sessions"}`}
-                className="flex min-h-0 flex-1 gap-2.5"
+                className="flex min-h-0 flex-1 gap-2"
               >
                 {visibleChatIds.length > 0 ? (
                   <div
@@ -551,7 +538,7 @@ export function CommandCenterShell({
                             : "double"
                     }
                     className={cn(
-                      "grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] gap-2.5",
+                      "grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] gap-2",
                       stackedPanels ? "grid-cols-1" : "grid-cols-2",
                     )}
                   >
@@ -576,6 +563,8 @@ export function CommandCenterShell({
                           focused={chatId === controller.activeChatId}
                           panelLabel={`Session ${controller.titleFor(chatId)}`}
                           inspectionStore={inspections}
+                          inspectorOpen={inspectorOpen}
+                          onToggleInspector={() => toggleInspector()}
                           onFocus={() => controller.focusChat(chatId)}
                           onSolo={() => soloPanel(chatId)}
                           onNewChat={splitPanel}
@@ -648,7 +637,7 @@ export function CommandCenterShell({
           </>
         ) : (
           <main className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6">
+            <div className="mx-auto w-full max-w-7xl px-3 py-3 sm:px-4">
               {children}
             </div>
           </main>

@@ -7,6 +7,10 @@ import {
 } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@/components/ui/native-select"
 import type { ProfileErrorView } from "@/features/chat/chat-profiles"
 import {
   activeRevision,
@@ -29,9 +33,6 @@ export interface ChatControlsProps {
   onChange(next: ChatSelection): void
   onActivate(): void
 }
-
-const selectClass =
-  "h-8 min-w-40 rounded-xl border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-50"
 
 function profileLabel(profile: Profile): string {
   if (profile.active_revision > 0) {
@@ -100,68 +101,78 @@ export function ChatControls({
   )
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="grid gap-1.5">
-          <Label htmlFor="chat-worker">Worker</Label>
-          <select
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <div className="flex min-w-0 items-center gap-1">
+          <Label htmlFor="chat-worker" className="sr-only">
+            Worker
+          </Label>
+          <NativeSelect
             id="chat-worker"
-            className={selectClass}
+            size="sm"
+            className="max-w-56"
             value={requestedWorker}
             disabled={available.length === 0}
+            aria-label="Worker"
             onChange={(event) =>
               onChange({ ...resolved.selection, worker: event.target.value })
             }
           >
             {available.length === 0 ? (
-              <option value="">No reachable Worker</option>
+              <NativeSelectOption value="">No reachable Worker</NativeSelectOption>
             ) : null}
             {requestedWorker && !workerIsListed ? (
-              <option value={requestedWorker}>
+              <NativeSelectOption value={requestedWorker}>
                 {requestedWorker} · unavailable
-              </option>
+              </NativeSelectOption>
             ) : null}
             {available.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
+              <NativeSelectOption key={candidate.id} value={candidate.id}>
                 {candidate.id} · {candidate.package} v{candidate.version}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </div>
 
-        <div className="grid gap-1.5">
-          <Label htmlFor="chat-agent">Agent</Label>
-          <select
+        <div className="flex min-w-0 items-center gap-1">
+          <Label htmlFor="chat-agent" className="sr-only">
+            Agent
+          </Label>
+          <NativeSelect
             id="chat-agent"
-            className={selectClass}
+            size="sm"
+            className="max-w-48"
             value={resolved.selection.agent}
             disabled={resolved.agents.length === 0}
+            aria-label="Agent"
             onChange={(event) =>
               onChange({ ...resolved.selection, agent: event.target.value })
             }
           >
             {resolved.agents.length === 0 ? (
-              <option value="">No agent capability</option>
+              <NativeSelectOption value="">No agent capability</NativeSelectOption>
             ) : null}
             {resolved.selection.agent &&
             !resolved.agents.some(
               (capability) => capability.id === resolved.selection.agent,
             ) ? (
-              <option value={resolved.selection.agent}>
+              <NativeSelectOption value={resolved.selection.agent}>
                 {resolved.selection.agent} · unavailable
-              </option>
+              </NativeSelectOption>
             ) : null}
             {resolved.agents.map((capability) => (
-              <option key={capability.id} value={capability.id}>
+              <NativeSelectOption key={capability.id} value={capability.id}>
                 {capability.id}
                 {capability.description ? ` · ${capability.description}` : ""}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </div>
 
-        <div className="grid gap-1.5">
-          <Label htmlFor="chat-profile">Runtime Profile</Label>
+        <div className="flex min-w-0 items-center gap-1">
+          <Label htmlFor="chat-profile" className="sr-only">
+            Runtime Profile
+          </Label>
           <ProfileSelect
             resolved={resolved}
             profiles={profiles}
@@ -169,10 +180,7 @@ export function ChatControls({
             error={profilesError}
             onChange={onChange}
           />
-          <p
-            className="max-w-64 text-xs text-muted-foreground"
-            aria-live="polite"
-          >
+          <p className="sr-only" aria-live="polite">
             {profilesLoading
               ? "Loading Worker-owned Runtime Profiles…"
               : selectedProfile
@@ -186,8 +194,8 @@ export function ChatControls({
         {canActivate && selectedProfile ? (
           <Button
             type="button"
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="xs"
             disabled={activating}
             onClick={onActivate}
           >
@@ -248,49 +256,58 @@ function ProfileSelect({
   onChange,
 }: ProfileSelectProps) {
   const value = resolved.selection.profile ?? ""
+  const uniqueProfiles = profiles.filter(
+    (profile, index) =>
+      profiles.findIndex((candidate) => candidate.name === profile.name) ===
+      index,
+  )
 
-  if (profiles.length === 0) {
+  if (uniqueProfiles.length === 0) {
     return (
-      <select
+      <NativeSelect
         id="chat-profile"
-        className={selectClass}
+        size="sm"
+        className="max-w-48"
         value={value}
         disabled={loading}
+        aria-label="Runtime Profile"
         onChange={(event) =>
           onChange({ ...resolved.selection, profile: event.target.value })
         }
       >
-        <option value="">
+        <NativeSelectOption value="">
           {loading
             ? "Loading Runtime Profiles…"
             : error
               ? "Worker default (profiles unavailable)"
               : "Worker default"}
-        </option>
+        </NativeSelectOption>
         {value && !loading ? (
-          <option value={value}>{value} · unverified</option>
+          <NativeSelectOption value={value}>{value} · unverified</NativeSelectOption>
         ) : null}
-      </select>
+      </NativeSelect>
     )
   }
 
   return (
-    <select
+    <NativeSelect
       id="chat-profile"
-      className={selectClass}
+      size="sm"
+      className="max-w-48"
       value={value}
+      aria-label="Runtime Profile"
       onChange={(event) =>
         onChange({ ...resolved.selection, profile: event.target.value })
       }
     >
-      {value && !profiles.some((profile) => profile.name === value) ? (
-        <option value={value}>{value} · unavailable</option>
+      {value && !uniqueProfiles.some((profile) => profile.name === value) ? (
+        <NativeSelectOption value={value}>{value} · unavailable</NativeSelectOption>
       ) : null}
-      {profiles.map((profile) => (
-        <option key={profile.name} value={profile.name}>
+      {uniqueProfiles.map((profile) => (
+        <NativeSelectOption key={profile.name} value={profile.name}>
           {profileLabel(profile)}
-        </option>
+        </NativeSelectOption>
       ))}
-    </select>
+    </NativeSelect>
   )
 }

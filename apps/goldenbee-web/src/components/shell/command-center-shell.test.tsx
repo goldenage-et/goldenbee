@@ -165,9 +165,6 @@ function renderApp(options: RenderOptions = {}) {
 }
 
 async function waitForChat(): Promise<void> {
-  expect(
-    (await screen.findAllByRole("heading", { name: "Chat" })).length,
-  ).toBeGreaterThan(0)
   await waitFor(() => {
     expect(screen.getAllByLabelText("Message").length).toBeGreaterThan(0)
   })
@@ -408,7 +405,7 @@ describe("command center shell", () => {
     expect(within(dialog).getByText("0.1.0")).toBeInTheDocument()
     expect(within(dialog).getByText("Read-only")).toBeInTheDocument()
 
-    await user.click(within(dialog).getByRole("button", { name: "Close dialog" }))
+    await user.click(within(dialog).getByRole("button", { name: "Close" }))
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: "Client settings" }),

@@ -1,8 +1,9 @@
 import {
   ArrowDownToLineIcon,
+  Columns2Icon,
   FocusIcon,
   MessageSquareIcon,
-  PlusIcon,
+  PanelRightIcon,
   ScanIcon,
 } from "lucide-react"
 import { useEffect, useLayoutEffect, useMemo, useState } from "react"
@@ -83,6 +84,10 @@ export interface ChatViewProps {
   onSolo?: () => void
   /** True when this panel drives the inspector. */
   focused?: boolean
+  /** Whether the focused-session inspector is open. */
+  inspectorOpen?: boolean
+  /** Workspace action: toggle the focused-session inspector. */
+  onToggleInspector?: () => void
   /** Accessible panel label, e.g. `Session Alpha task`. */
   panelLabel?: string
   /** Publishes durable session facts for the focused-session inspector. */
@@ -103,6 +108,8 @@ export function ChatView({
   onFocus,
   onSolo,
   focused = false,
+  inspectorOpen,
+  onToggleInspector,
   panelLabel,
   inspectionStore,
 }: ChatViewProps) {
@@ -334,103 +341,93 @@ export function ChatView({
         onFocus?.()
       }}
       className={cn(
-        "flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-[10px] border bg-surface/60 p-3",
+        "flex min-h-0 min-w-0 flex-1 flex-col gap-2 rounded-[10px] border bg-surface/60 p-2",
         focused ? "border-gold/70 ring-1 ring-gold/25" : "border-line",
       )}
     >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="truncate text-panel font-semibold tracking-tight">
-              Chat
-            </h1>
-            {title ? (
-              <span className="truncate text-meta text-dim">· {title}</span>
-            ) : null}
-            <Badge
-              variant="outline"
-              className="h-5 rounded-md px-1.5 text-micro tracking-wide"
-            >
-              {chat.state.status}
-            </Badge>
-            {focused ? (
-              <span className="text-micro font-semibold tracking-wide text-gold uppercase">
-                Focused
-              </span>
-            ) : null}
-          </div>
-          <p className="mt-1 max-w-2xl text-meta text-muted-foreground">
-            One Gateway task per local chat. Selection changes apply to the next
-            task, never to one already running.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line/60 pb-2">
+        <h2 className="min-w-0 truncate text-panel font-semibold tracking-tight">
+          {title ?? "Untitled session"}
+        </h2>
+        <Badge
+          variant="outline"
+          className="h-4 shrink-0 rounded px-1 text-micro tracking-wide"
+        >
+          {chat.state.status}
+        </Badge>
+        {focused ? (
+          <span className="shrink-0 text-micro font-semibold tracking-wide text-gold uppercase">
+            Focused
+          </span>
+        ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
           {onFocus && !focused ? (
             <Button
               type="button"
-              size="sm"
+              size="icon-xs"
               variant="ghost"
               aria-label="Focus panel"
+              title="Focus panel"
               onClick={onFocus}
             >
-              <FocusIcon data-icon="inline-start" aria-hidden="true" />
-              Focus
+              <FocusIcon aria-hidden="true" />
             </Button>
           ) : null}
           {onSolo ? (
             <Button
               type="button"
-              size="sm"
+              size="icon-xs"
               variant="ghost"
               aria-label="Solo panel"
+              title="Solo panel"
               onClick={onSolo}
             >
-              <ScanIcon data-icon="inline-start" aria-hidden="true" />
-              Solo
+              <ScanIcon aria-hidden="true" />
             </Button>
           ) : null}
           {onBackground ? (
             <Button
               type="button"
-              size="sm"
+              size="icon-xs"
               variant="ghost"
               aria-label="Background session"
+              title="Background session"
               onClick={onBackground}
             >
-              <ArrowDownToLineIcon data-icon="inline-start" aria-hidden="true" />
-              Background
+              <ArrowDownToLineIcon aria-hidden="true" />
             </Button>
           ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              if (onNewChat) {
-                onNewChat()
-                return
+          {focused && onNewChat ? (
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Split focused session"
+              title="Split panel"
+              onClick={onNewChat}
+            >
+              <Columns2Icon aria-hidden="true" />
+            </Button>
+          ) : null}
+          {focused && onToggleInspector ? (
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label={
+                inspectorOpen
+                  ? "Close session inspector"
+                  : "Open session inspector"
               }
-              chat.newChat()
-            }}
-          >
-            <PlusIcon data-icon="inline-start" aria-hidden="true" />
-            {onNewChat ? "New session" : "New chat"}
-          </Button>
+              aria-pressed={inspectorOpen}
+              title="Inspector"
+              onClick={onToggleInspector}
+            >
+              <PanelRightIcon aria-hidden="true" />
+            </Button>
+          ) : null}
         </div>
       </div>
-
-      <ChatControls
-        workers={workers}
-        resolved={resolved}
-        profiles={profiles ?? []}
-        profilesLoading={profilesLoading}
-        profilesError={profilesError}
-        activating={activation.isPending}
-        activationError={activationError}
-        activationNotice={activationNotice}
-        onChange={changeSelection}
-        onActivate={activateProfile}
-      />
 
       {workers.length === 0 ? (
         <Alert>
@@ -499,9 +496,9 @@ export function ChatView({
       ) : null}
 
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
-        <MessageScroller className="min-h-[20rem] flex-1 rounded-[10px] border bg-card">
+        <MessageScroller className="min-h-0 flex-1 rounded-[10px] border bg-card">
           <MessageScrollerViewport role="log" aria-label="Chat messages">
-            <MessageScrollerContent className="gap-6 p-4">
+            <MessageScrollerContent className="gap-3 p-3">
               {chat.state.messages.length === 0 ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-16 text-center">
                   <MessageSquareIcon
@@ -544,6 +541,20 @@ export function ChatView({
         canSend={canSend}
         busy={busy}
         canStop={canStop}
+        targetControls={
+          <ChatControls
+            workers={workers}
+            resolved={resolved}
+            profiles={profiles ?? []}
+            profilesLoading={profilesLoading}
+            profilesError={profilesError}
+            activating={activation.isPending}
+            activationError={activationError}
+            activationNotice={activationNotice}
+            onChange={changeSelection}
+            onActivate={activateProfile}
+          />
+        }
         hint={
           chat.phase === "loading"
             ? "Restoring local chat history..."

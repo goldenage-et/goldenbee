@@ -1,5 +1,6 @@
 import { ArrowUpIcon, SquareIcon } from "lucide-react"
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
+import { cn } from "cn"
 
 import {
   InputGroup,
@@ -15,6 +16,8 @@ export interface ChatComposerProps {
   onSend(text: string): void
   onStop(): void
   hint?: string
+  /** Worker, agent, and Runtime Profile controls shown in the composer footer. */
+  targetControls?: ReactNode
 }
 
 /** Prompt input. Enter sends; Shift+Enter inserts a newline. */
@@ -25,6 +28,7 @@ export function ChatComposer({
   onSend,
   onStop,
   hint,
+  targetControls,
 }: ChatComposerProps) {
   const [draft, setDraft] = useState("")
 
@@ -38,18 +42,18 @@ export function ChatComposer({
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1.5">
       <form
         onSubmit={(event) => {
           event.preventDefault()
           submit()
         }}
       >
-        <InputGroup className="items-end rounded-2xl border-border bg-card p-1.5">
+        <InputGroup className="flex-col items-stretch rounded-[12px] border-line bg-surface-2 p-0">
           <InputGroupTextarea
             aria-label="Message"
-            placeholder="Send a prompt to the selected Worker…"
-            className="min-h-16 max-h-48"
+            placeholder="Message the selected Worker…"
+            className="min-h-14 max-h-40 px-3 pt-2.5"
             value={draft}
             disabled={busy}
             onChange={(event) => setDraft(event.target.value)}
@@ -60,32 +64,44 @@ export function ChatComposer({
               }
             }}
           />
-          <InputGroupAddon align="inline-end">
-            {canStop ? (
-              <InputGroupButton
-                variant="secondary"
-                size="sm"
-                onClick={onStop}
-                aria-label="Stop task"
-              >
-                <SquareIcon data-icon="inline-start" aria-hidden="true" />
-                Stop
-              </InputGroupButton>
-            ) : (
-              <InputGroupButton
-                type="submit"
-                size="sm"
-                disabled={!canSend || draft.trim().length === 0}
-                aria-label="Send message"
-              >
-                <ArrowUpIcon data-icon="inline-start" aria-hidden="true" />
-                Send
-              </InputGroupButton>
-            )}
+          <InputGroupAddon
+            align="block-end"
+            className="gap-2 border-t border-line/60 px-2 py-1.5"
+          >
+            <div className="min-w-0 flex-1">{targetControls}</div>
+            <div className="flex shrink-0 items-center gap-1">
+              {canStop ? (
+                <InputGroupButton
+                  variant="secondary"
+                  size="icon-sm"
+                  onClick={onStop}
+                  aria-label="Stop task"
+                  title="Stop task"
+                >
+                  <SquareIcon aria-hidden="true" />
+                </InputGroupButton>
+              ) : (
+                <InputGroupButton
+                  type="submit"
+                  size="icon-sm"
+                  disabled={!canSend || draft.trim().length === 0}
+                  aria-label="Send message"
+                  title="Send message"
+                  className="bg-gold text-primary-foreground hover:bg-gold/85"
+                >
+                  <ArrowUpIcon aria-hidden="true" />
+                </InputGroupButton>
+              )}
+            </div>
           </InputGroupAddon>
         </InputGroup>
       </form>
-      <p className="text-xs text-muted-foreground">
+      <p
+        className={cn(
+          "text-micro text-muted-foreground",
+          busy && hint ? "shimmer" : undefined,
+        )}
+      >
         {hint ??
           "Enter sends · Shift+Enter adds a line · Attachments are not supported by this Gateway release."}
       </p>

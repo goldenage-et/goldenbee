@@ -5,6 +5,7 @@ import { routeHref } from "@/app/router"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Item, ItemActions } from "@/components/ui/item"
 import type { ChatApprovalPart } from "@/features/chat/chat-types"
 import {
   isGatewayError,
@@ -194,9 +195,15 @@ export function ApprovalCard({
   }
 
   return (
-    <section
-      aria-label={`Approval ${part.operation ?? part.approvalId}`}
-      className="grid gap-2 rounded-[9px] border border-gold/40 bg-gold/5 p-3"
+    <Item
+      render={
+        <section
+          aria-label={`Approval ${part.operation ?? part.approvalId}`}
+        />
+      }
+      variant="outline"
+      size="sm"
+      className="grid gap-2 border-gold/40 bg-gold/5"
     >
       <div className="flex flex-wrap items-center gap-2">
         <ShieldAlertIcon className="size-4 text-gold" aria-hidden="true" />
@@ -266,7 +273,7 @@ export function ApprovalCard({
         </Alert>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <ItemActions className="flex flex-wrap items-center gap-1.5">
         <Button
           type="button"
           size="sm"
@@ -308,7 +315,7 @@ export function ApprovalCard({
             Open task
           </a>
         ) : null}
-      </div>
+      </ItemActions>
 
       {!taskId ? (
         <p className="text-micro text-muted-foreground">
@@ -316,6 +323,6 @@ export function ApprovalCard({
           decided from this card.
         </p>
       ) : null}
-    </section>
+    </Item>
   )
 }

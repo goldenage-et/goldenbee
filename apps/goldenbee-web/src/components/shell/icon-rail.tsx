@@ -2,6 +2,7 @@ import {
   BellIcon,
   BoxesIcon,
   HexagonIcon,
+  MenuIcon,
   MessageSquareIcon,
   PackageIcon,
   PlugIcon,
@@ -96,10 +97,14 @@ const railItemClass =
 
 export function IconRail({
   route,
+  sidebarOpen,
+  onToggleSidebar,
   onOpenPalette,
   onOpenSettings,
 }: {
   route: AppRoute
+  sidebarOpen: boolean
+  onToggleSidebar(): void
   onOpenPalette(): void
   onOpenSettings(): void
 }) {
@@ -108,6 +113,17 @@ export function IconRail({
       aria-label="Primary navigation"
       className="flex w-[62px] shrink-0 flex-col items-center gap-2 border-r border-line bg-[#0d1219] px-2 py-3 max-[780px]:w-14"
     >
+      <button
+        type="button"
+        aria-label="Open navigation"
+        aria-controls="context-sidebar"
+        aria-expanded={sidebarOpen}
+        onClick={onToggleSidebar}
+        className={cn(railItemClass, "hidden max-[780px]:grid")}
+      >
+        <MenuIcon className="size-[18px]" aria-hidden="true" />
+      </button>
+
       <a
         href="#/"
         aria-label="Goldenbee overview"

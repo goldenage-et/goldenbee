@@ -4,7 +4,9 @@ import type { GatewayApproval } from "@goldenbee/sdk"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Message, MessageContent } from "@/components/ui/message"
+import { Spinner } from "@/components/ui/spinner"
 import {
   ApprovalCard,
   type ApprovalGateway,
@@ -163,10 +165,22 @@ export function ChatMessageView({
         ))}
 
         {waiting && streaming ? (
-          <p className="text-sm text-muted-foreground">Waiting for the Worker…</p>
+          <Marker role="status">
+            <MarkerIcon>
+              <Spinner />
+            </MarkerIcon>
+            <MarkerContent className="shimmer">
+              Waiting for the Worker…
+            </MarkerContent>
+          </Marker>
         ) : null}
         {message.parts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Sending task…</p>
+          <Marker role="status">
+            <MarkerIcon>
+              <Spinner />
+            </MarkerIcon>
+            <MarkerContent className="shimmer">Sending task…</MarkerContent>
+          </Marker>
         ) : null}
 
         {approvals.map((part) => (
