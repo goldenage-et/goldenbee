@@ -1,21 +1,17 @@
 import type { ReactNode } from "react"
 
 import { StatusBadge } from "./status-badge"
-import { routeHref, useRoute } from "@/app/router"
 import type { ConnectionStore } from "@/features/connection/connection-store"
-import { useConnection } from "@/features/connection/connection-store"
-import { cn } from "@/lib/utils"
 
 export function AppShell({
   children,
   store,
+  nav,
 }: {
   children: ReactNode
   store: ConnectionStore
+  nav?: ReactNode
 }) {
-  const route = useRoute()
-  const connected = useConnection((state) => state.status === "connected", store)
-
   return (
     <div className="flex min-h-dvh flex-col bg-background">
       <header className="sticky top-0 z-10 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
@@ -43,25 +39,9 @@ export function AppShell({
               <p className="text-xs text-muted-foreground">Gateway Client</p>
             </div>
           </div>
-
-          {connected ? (
-            <nav aria-label="Primary" className="flex items-center gap-1">
-              {(["overview", "chat"] as const).map((target) => (
-                <a
-                  key={target}
-                  href={routeHref(target)}
-                  aria-current={route === target ? "page" : undefined}
-                  className={cn(
-                    "rounded-lg px-2.5 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground",
-                    route === target && "bg-muted font-medium text-foreground",
-                  )}
-                >
-                  {target === "overview" ? "Overview" : "Chat"}
-                </a>
-              ))}
-            </nav>
+          {nav ? (
+            <div className="order-3 w-full sm:order-none sm:w-auto">{nav}</div>
           ) : null}
-
           <div className="ml-auto flex items-center gap-2">
             <StatusBadge store={store} />
           </div>

@@ -1,39 +1,63 @@
 import { useSyncExternalStore } from "react"
 
-export type AppRoute = "overview" | "chat"
+export type AppRoute =
+  | { name: "overview" }
+  | { name: "chat" }
+  | { name: "providers" }
+  | { name: "provider"; id: string }
 
-const routeHashes: Record<AppRoute, string> = {
-  overview: "#/overview",
-  chat: "#/chat",
-}
-
-export function routeFromHash(hash: string): AppRoute {
-  return hash.startsWith("#/chat") ? "chat" : "overview"
+/**
+ * Hash routing keeps the static build free of a server route handler.
+ *
+ * The Gateway serves no SPA fallback, so a `#/...` fragment is the only route
+ * that survives a reload without a reverse-proxy rewrite.
+ */
+export function parseRoute(hash: string): AppRoute {
+  const raw = hash.replace(/^#/, "").replace(/^\/+/, "")
+  if (raw.length === 0) {
+    return { name: "overview" }
+  }
+  const [section, id] = raw.split("/")
+  if (section === "chat") {
+    return { name: "chat" }
+  }
+  if (section === "providers") {
+    return id ? { name: "provider", id: decodeURIComponent(id) } : { name: "providers" }
+  }
+  return { name: "overview" }
 }
 
 export function routeHref(route: AppRoute): string {
-  return routeHashes[route]
+  switch (route.name) {
+    case "overview":
+      return "#/"
+    case "chat":
+      return "#/chat"
+    case "providers":
+      return "#/providers"
+    case "provider":
+      return `#/providers/${encodeURIComponent(route.id)}`
+  }
 }
 
-function subscribe(listener: () => void): () => void {
-  window.addEventListener("hashchange", listener)
-  return () => window.removeEventListener("hashchange", listener)
+export function navigate(route: AppRoute): void {
+  window.location.hash = routeHref(route)
 }
 
-function snapshot(): AppRoute {
-  return routeFromHash(window.location.hash)
+function subscribe(onChange: () => void): () => void {
+  window.addEventListener("hashchange", onChange)
+  window.addEventListener("popstate", onChange)
+  return () => {
+    window.removeEventListener("hashchange", onChange)
+    window.removeEventListener("popstate", onChange)
+  }
 }
 
-function serverSnapshot(): AppRoute {
-  return "overview"
+function snapshot(): string {
+  return window.location.hash
 }
 
-/**
- * Minimal same-document routing.
- *
- * The first release is a single static bundle behind a same-origin reverse
- * proxy, so hash routes need no server rewrite and no routing dependency.
- */
-export function useRoute(): AppRoute {
-  return useSyncExternalStore(subscribe, snapshot, serverSnapshot)
+export function useAppRoute(): AppRoute {
+  const hash = useSyncExternalStore(subscribe, snapshot, () => "")
+  return parseRoute(hash)
 }
