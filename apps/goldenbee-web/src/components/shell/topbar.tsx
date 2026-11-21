@@ -24,6 +24,10 @@ const routeLabels: Partial<Record<AppRoute["name"], string>> = {
   providers: "Providers",
   provider: "Provider detail",
   task: "Task detail",
+  teams: "Teams",
+  team: "Team detail",
+  profiles: "Runtime Profiles",
+  profile: "Profile detail",
 }
 
 export interface TopbarProps {

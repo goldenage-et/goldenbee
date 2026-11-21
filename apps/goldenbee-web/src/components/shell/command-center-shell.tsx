@@ -319,6 +319,8 @@ export function CommandCenterShell({
       ["attention", "Open attention queue", { name: "attention" }],
       ["diagnostics", "Open diagnostics", { name: "diagnostics" }],
       ["audit", "Open audit", { name: "audit" }],
+      ["teams", "Open teams", { name: "teams" }],
+      ["profiles", "Open Runtime Profiles", { name: "profiles" }],
       ["packages", "Open packages", { name: "packages" }],
       ["instances", "Open instances", { name: "instances" }],
       ["providers", "Open providers", { name: "providers" }],
