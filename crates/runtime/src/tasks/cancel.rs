@@ -109,6 +109,17 @@ impl Runtime {
             )
             .await?;
             self.notify_parent_terminal(&updated).await;
+            if let Some(parent_id) = updated.parent_task_id.clone() {
+                let _ = self
+                    .notify_subagent_stop(
+                        &parent_id,
+                        &updated.id,
+                        &updated.agent,
+                        &updated.session_id,
+                        "cancelled",
+                    )
+                    .await;
+            }
         }
         self.audit(
             caller,

@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod fixture;
 
@@ -797,6 +797,7 @@ async fn subagent_stop_hook_fires_through_the_runtime() {
             token_scopes: vec!["*".into()],
         },
     );
+    fixture::set_agent_tools(&fixture, "general", &["spawn_subagent"]);
     write_plugin(
         &data.path().join("plugins"),
         &PluginSpec {
@@ -828,7 +829,7 @@ async fn subagent_stop_hook_fires_through_the_runtime() {
                 namespace: Some("local".into()),
                 agent: "general".into(),
                 session_id: "subagent-session".into(),
-                input: "sandbox:printf parent".into(),
+                input: "call:spawn_subagent {\"definition\":\"helper\",\"input\":\"child\"}".into(),
                 idempotency_key: "subagent-parent".into(),
                 profile: None,
                 team: None,
@@ -839,16 +840,22 @@ async fn subagent_stop_hook_fires_through_the_runtime() {
         .await
         .expect("parent task");
     wait_terminal(&runtime, &task.task_id).await;
-    runtime
-        .notify_subagent_stop(
-            &task.task_id,
-            "child-1",
-            "general",
-            "child-session",
-            "succeeded",
-        )
-        .await
-        .expect("subagent stop accepted");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let child_finished = runtime.all_tasks().await.into_iter().any(|candidate| {
+            candidate.parent_task_id.as_deref() == Some(task.task_id.as_str())
+                && candidate.state.is_terminal()
+        });
+        if child_finished && hook_log(&log).iter().any(|entry| entry == "subagent_stop|") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child did not finish or subagent_stop hook did not run: {:?}",
+            hook_log(&log)
+        );
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
     let events: Vec<String> = runtime
         .events_since(&task.task_id, 0, 10_000)
         .await

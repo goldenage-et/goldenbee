@@ -19,6 +19,15 @@ test = false
 bench = false
 doc = false
 
+# Test-support Worker that composes the shared runtime mechanism surface for
+# the end-to-end acceptance scenario. It is not a product capability.
+[[bin]]
+name = "acceptance-fixture"
+path = "tests/support/acceptance_fixture.rs"
+test = false
+bench = false
+doc = false
+
 [dependencies]
 common = { path = "../../crates/common" }
 runtime = { path = "../../crates/runtime", features = ["launcher-cli"] }
