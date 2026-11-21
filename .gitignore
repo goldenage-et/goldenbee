@@ -23,9 +23,14 @@ docs/evidence/
 # Generated Worker Instance state from local examples
 config/*/state/
 
-# Browser Client build output and dependencies
+# JavaScript workspace dependencies and build output
+node_modules/
 apps/goldenbee-web/node_modules/
 apps/goldenbee-web/dist/
 apps/goldenbee-web/coverage/
 apps/goldenbee-web/*.tsbuildinfo
 apps/goldenbee-web/node_modules/.tmp/
+packages/*/node_modules/
+packages/goldenbee-sdk/dist/
+packages/goldenbee-sdk/coverage/
+packages/goldenbee-sdk/*.tsbuildinfo

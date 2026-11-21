@@ -9,7 +9,7 @@ import {
   type GatewayErrorKind,
   type GatewayHealth,
   type GatewayWorker,
-} from "@/sdk"
+} from "@goldenbee/sdk"
 
 import { createTokenStore, type TokenStore } from "./token-store"
 
@@ -253,7 +253,13 @@ function defaultCreateClient(options: {
   baseUrl: string
   token: string
 }): ConnectionClient {
-  return createGatewayClient(options)
+  return createGatewayClient({
+    ...options,
+    // The SDK is platform-neutral; the browser supplies its own fetch and
+    // WebSocket implementations.
+    fetch: (input, init) => fetch(input, init),
+    webSocket: (url) => new WebSocket(url),
+  })
 }
 
 export const connectionStore = createConnectionStore({
