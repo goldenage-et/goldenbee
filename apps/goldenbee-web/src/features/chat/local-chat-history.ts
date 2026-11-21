@@ -585,6 +585,12 @@ export function createChatHistory(
           task.taskId === chatValue.activeTaskId &&
           task.assistantMessageId === chatValue.activeAssistantId,
       ) ?? null
+    if (chatValue.activeTaskId !== null && !activeTask) {
+      throw new LocalHistoryError(
+        "corrupt",
+        "The active chat points at a task record that is missing.",
+      )
+    }
     return {
       chat: chatValue,
       messages,

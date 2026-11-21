@@ -255,6 +255,37 @@ describe("local chat history", () => {
     await reloaded.close()
   })
 
+  it("fails closed when the active task record is missing", async () => {
+    const factory = new IDBFactory()
+    const history = createChatHistory({
+      factory,
+      databaseName: "history-missing-task",
+    })
+    await history.saveChat(
+      createChatSnapshot({ chatId: "chat-1", state: populatedState() }),
+    )
+    await history.close()
+
+    const database = await rawDatabase(factory, "history-missing-task")
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction("tasks", "readwrite")
+      transaction.objectStore("tasks").delete("exec-1")
+      transaction.onerror = () => reject(transaction.error)
+      transaction.oncomplete = () => resolve()
+    })
+    database.close()
+
+    const reloaded = createChatHistory({
+      factory,
+      databaseName: "history-missing-task",
+    })
+    await expect(reloaded.loadLastChat()).rejects.toMatchObject({
+      code: "corrupt",
+      recoverable: true,
+    })
+    await reloaded.close()
+  })
+
   it("recovers from a database version mismatch through reset", async () => {
     const factory = new IDBFactory()
     await new Promise<void>((resolve, reject) => {
