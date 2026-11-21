@@ -4,8 +4,8 @@ An independent browser Client for a Goldenbee Gateway. React, TypeScript, and
 Vite build static assets only: there is no Node BFF, server-side rendering, or
 embedded Gateway asset.
 
-Ticket 01 covers the connection shell. Chat, approvals, task detail, Worker
-management, and other Gateway routes start in later tickets.
+Ticket 01 covers the connection shell. Chat streaming, target selection, and
+the management pages are added by later tickets.
 
 ## Routes
 
@@ -14,6 +14,7 @@ Routing is hash-based so the static build needs no server SPA fallback:
 | Route | Screen |
 | --- | --- |
 | `#/` | Connection overview and visible Workers |
+| `#/chat` | Chat, Worker/agent/Runtime Profile selection, and task streaming |
 | `#/packages` | Installed packages and verified package install |
 | `#/instances` | Local instance list and deployment |
 | `#/instances/<name>` | Instance detail, lifecycle controls, and logs |
@@ -83,6 +84,10 @@ because it needs jsdom; the SDK does not depend on Vitest.
 - `src/features/connection/` owns connection state, token persistence, and the
   connection screen. Zustand holds in-memory connection state; the token store
   is the only module that touches sessionStorage.
+- `src/features/chat/` owns the task stream, the reduced chat state, and target
+  selection. `chat-selection.ts` resolves the Worker, agent, and Runtime Profile
+  for the next task; `chat-selection-store.ts` persists only those three names
+  in localStorage and never stores a token.
 - `src/features/host/` owns package sources, package install, local instance
   deployment, lifecycle controls, and instance logs. It passes one stable
   operation id through a provision, upgrade, or rollback retry and treats a
@@ -93,9 +98,9 @@ because it needs jsdom; the SDK does not depend on Vitest.
   components. `src/components/ai-elements/` holds app-local presentational
   compositions. Sources are recorded in
   [docs/ai-elements.md](docs/ai-elements.md).
-- TanStack Query owns package, instance, and provider collections and detail
-  queries. It is deliberately unused by the connection handshake, which is
-  connection state rather than a cached server collection.
+- TanStack Query owns package, instance, provider, and Worker Runtime Profile
+  collections and detail queries. It is deliberately unused by the connection
+  handshake, which is connection state rather than a cached server collection.
 - All authored source and configuration in this app is TypeScript/TSX. The
   workspace check `bun run check:ts-only` fails if authored JavaScript appears
   outside generated output.
@@ -106,7 +111,9 @@ because it needs jsdom; the SDK does not depend on Vitest.
   `Authorization: Bearer ...` and never placed in a URL.
 - "Remember token for this tab" writes to `sessionStorage`. Closing the tab
   clears it.
-- `localStorage` is never read or written.
+- The caller token is never read from or written to `localStorage`.
+  `localStorage` holds only non-secret preferences, such as the last Worker,
+  agent, and Runtime Profile names.
 - A token is written to sessionStorage only after Gateway accepts it. A failed
   or unreachable connection clears the attempted token.
 - Error messages come from typed `GatewayError` values and never include the
@@ -129,7 +136,9 @@ because it needs jsdom; the SDK does not depend on Vitest.
 
 The `@goldenbee/sdk` suite covers the full typed Gateway surface against a fake
 fetch transport. The app suite covers token persistence, connection state
-transitions, connection screen states, package install (URL and Gateway-host
+transitions, connection screen states, chat streaming and stop/retry, target
+selection (no Worker, no agent, unreachable Worker, missing profile, profile
+activation, selection persistence), package install (URL and Gateway-host
 folder), deployment, lifecycle controls, operation-id retry, denied scopes, and
 an unconfigured local host. Run both with `bun run test` from the repository
 root. The repository-level Playwright seam against a real Gateway is a later

@@ -1,5 +1,5 @@
 import { MessageSquareIcon, PlusIcon } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import {
   MessageScroller,
@@ -14,8 +14,21 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ChatComposer } from "@/features/chat/chat-composer"
 import { ChatControls } from "@/features/chat/chat-controls"
-import { effectiveSelection } from "@/features/chat/chat-selection"
 import { ChatMessageView } from "@/features/chat/chat-message"
+import {
+  latestRevisionNumber,
+  resolveSelection,
+} from "@/features/chat/chat-selection"
+import {
+  chatSelectionStore,
+  type ChatSelectionStore,
+} from "@/features/chat/chat-selection-store"
+import {
+  profileErrorView,
+  useActivateProfile,
+  useWorkerProfiles,
+  type SelectionGateway,
+} from "@/features/chat/chat-profiles"
 import type { ChatSelection } from "@/features/chat/chat-types"
 import { useChat } from "@/features/chat/use-chat"
 import {
@@ -31,6 +44,8 @@ const busyStatuses = new Set([
   "stopping",
   "recovering",
 ])
+
+const emptySelection: ChatSelection = { worker: "", agent: "", profile: "" }
 
 function useGatewayChatClient(store: ConnectionStore): GatewayClient | null {
   const connected = useConnection((state) => state.status === "connected", store)
@@ -49,32 +64,122 @@ function useGatewayChatClient(store: ConnectionStore): GatewayClient | null {
   }, [connected, gatewayUrl, token])
 }
 
-function initialSelection(): ChatSelection {
-  return { worker: "", agent: "", profile: "default" }
-}
-
 export interface ChatViewProps {
   store: ConnectionStore
   /** Test seam; production builds the client from the connection store. */
   client?: ChatGateway | null
+  /** Test seam for the Worker-owned Runtime Profile catalog. */
+  profileClient?: SelectionGateway | null
+  /** Test seam for the non-secret local selection preference. */
+  selectionStore?: ChatSelectionStore
 }
 
-export function ChatView({ store, client }: ChatViewProps) {
+export function ChatView({
+  store,
+  client,
+  profileClient,
+  selectionStore,
+}: ChatViewProps) {
   const gatewayClient = useGatewayChatClient(store)
   const workers = useConnection((state) => state.workers, store)
-  const [selection, setSelection] = useState<ChatSelection>(initialSelection)
+  const preferences = selectionStore ?? chatSelectionStore
+  const [selection, setSelection] = useState<ChatSelection>(
+    () => preferences.read() ?? emptySelection,
+  )
   const chat = useChat({ client: client ?? gatewayClient })
 
-  const effective = useMemo(
-    () => effectiveSelection(workers, selection),
+  const profilesClient =
+    profileClient !== undefined ? profileClient : gatewayClient
+
+  // Resolve the Worker first so its profile catalog is fetched exactly once for
+  // that Worker. Profile names are Worker-owned and never reused across Workers.
+  const target = useMemo(
+    () => resolveSelection({ workers, selection }),
     [workers, selection],
   )
+  const profileQuery = useWorkerProfiles(
+    profilesClient,
+    target.worker?.id ?? "",
+  )
+  const profiles = profileQuery.isSuccess ? profileQuery.data : null
+  const profilesLoading = profileQuery.isLoading
+  const profilesError =
+    profilesClient === null
+      ? "Runtime Profiles are unavailable for this connection."
+      : profileQuery.isError
+        ? profileErrorView(profileQuery.error).message
+        : null
+
+  const resolved = useMemo(
+    () =>
+      resolveSelection({
+        workers,
+        selection,
+        profiles,
+        profileError: profilesError,
+      }),
+    [workers, selection, profiles, profilesError],
+  )
+
+  const activation = useActivateProfile(profilesClient)
+  const activationMatches =
+    activation.variables !== undefined &&
+    activation.variables.worker === resolved.worker?.id &&
+    activation.variables.name === resolved.profile?.name
+  const activationError =
+    activation.isError && activationMatches
+      ? profileErrorView(activation.error)
+      : null
+  const activationNotice =
+    activation.isSuccess && activationMatches
+      ? `Activated ${activation.data.name} revision ${activation.data.active_revision}.`
+      : null
+
   const busy = busyStatuses.has(chat.state.status)
   const canStop =
     chat.state.activeTaskId !== null && chat.state.status === "streaming"
-  const hasTarget = Boolean(effective.worker && effective.agent)
-  const canSend = hasTarget && !busy
+  const canSend = resolved.ready && !busy
   const gap = chat.state.gap
+
+  // Persist the effective names only. An unresolved target is not written so a
+  // temporary Gateway outage cannot erase the operator's last choice.
+  useEffect(() => {
+    if (!resolved.worker || !resolved.selection.agent || profiles === null) {
+      return
+    }
+    preferences.write({
+      worker: resolved.selection.worker,
+      agent: resolved.selection.agent,
+      profile: resolved.selection.profile ?? "",
+    })
+  }, [
+    preferences,
+    profiles,
+    resolved.worker,
+    resolved.selection.worker,
+    resolved.selection.agent,
+    resolved.selection.profile,
+  ])
+
+  function changeSelection(next: ChatSelection): void {
+    if (next.worker !== resolved.selection.worker) {
+      // A profile belongs to one Worker, so a Worker change invalidates both
+      // the agent and profile choices.
+      setSelection({ worker: next.worker, agent: "", profile: "" })
+      return
+    }
+    setSelection(next)
+  }
+
+  function activateProfile(): void {
+    const profile = resolved.profile
+    const worker = resolved.worker
+    const revision = profile ? latestRevisionNumber(profile) : 0
+    if (!profile || !worker || revision < 1 || activation.isPending) {
+      return
+    }
+    activation.mutate({ worker: worker.id, name: profile.name, revision })
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -89,18 +194,12 @@ export function ChatView({ store, client }: ChatViewProps) {
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
             Submit a task to the selected Worker and stream its events.
             Reasoning, tools, plans, usage, and task evidence appear in the
-            trace; approvals arrive in a later screen.
+            trace; approvals arrive in a later screen. Selection changes apply
+            to the next task, never to one already running.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              setSelection(initialSelection())
-              chat.newChat()
-            }}
-          >
+          <Button type="button" variant="outline" onClick={() => chat.newChat()}>
             <PlusIcon data-icon="inline-start" aria-hidden="true" />
             New chat
           </Button>
@@ -109,21 +208,16 @@ export function ChatView({ store, client }: ChatViewProps) {
 
       <ChatControls
         workers={workers}
-        selection={effective}
-        disabled={busy}
-        onChange={(next) => setSelection(next)}
+        resolved={resolved}
+        profiles={profiles ?? []}
+        profilesLoading={profilesLoading}
+        profilesError={profilesError}
+        activating={activation.isPending}
+        activationError={activationError}
+        activationNotice={activationNotice}
+        onChange={changeSelection}
+        onActivate={activateProfile}
       />
-
-      {workers.length === 0 ? (
-        <Alert>
-          <MessageSquareIcon />
-          <AlertTitle>No Worker is visible to this caller</AlertTitle>
-          <AlertDescription>
-            The caller token may only allow specific Workers. Reconnect with a
-            token that can read at least one Worker before chatting.
-          </AlertDescription>
-        </Alert>
-      ) : null}
 
       {gap ? (
         <Alert>
@@ -180,11 +274,16 @@ export function ChatView({ store, client }: ChatViewProps) {
         busy={busy}
         canStop={canStop}
         hint={
-          !hasTarget && workers.length > 0
-            ? "Choose a Worker and agent before sending."
+          !resolved.ready && resolved.issues.length > 0
+            ? "Resolve the target selection before sending."
             : undefined
         }
-        onSend={(text) => chat.send(text, effective)}
+        onSend={(text) => {
+          if (!resolved.ready) {
+            return
+          }
+          chat.send(text, resolved.selection)
+        }}
         onStop={() => chat.stop()}
       />
     </div>
