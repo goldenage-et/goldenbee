@@ -9,8 +9,13 @@ import { defineConfig, loadEnv } from "vite"
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "")
   // Server-side only: the browser never receives the Gateway address through
-  // this variable. Development traffic uses the same-origin /v1 proxy.
-  const proxyTarget = env.GOLDENBEE_GATEWAY_URL || "http://127.0.0.1:8080"
+  // this variable. Development traffic uses the same-origin /v1 proxy. Bun's
+  // process environment wins so a spawned E2E stack can target its own Gateway
+  // without writing a `.env` file.
+  const proxyTarget =
+    process.env.GOLDENBEE_GATEWAY_URL ||
+    env.GOLDENBEE_GATEWAY_URL ||
+    "http://127.0.0.1:8080"
 
   return {
     plugins: [react(), tailwindcss()],

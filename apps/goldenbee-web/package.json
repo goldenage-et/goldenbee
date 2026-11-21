@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "bun run --filter @goldenbee/sdk build && vite",
-    "build": "bun run --filter @goldenbee/sdk build && tsc -b && vite build",
+    "build": "bun run --filter @goldenbee/sdk build && tsc -b && vite build && bun ../../scripts/check-static-build.ts",
     "typecheck": "bun run --filter @goldenbee/sdk build && tsc -b --pretty false",
     "lint": "oxlint",
     "test": "bun run --filter @goldenbee/sdk build && bunx vitest run",
     "test:watch": "bunx vitest",
+    "e2e": "bun run --filter @goldenbee/sdk build && bunx playwright test",
+    "e2e:install": "bunx playwright install --with-deps chromium",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -30,6 +32,7 @@
     "zustand": "^5.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/vite": "^4.3.5",
     "@testing-library/jest-dom": "^8.0.0",
     "@testing-library/react": "^16.3.3",
