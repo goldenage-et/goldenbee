@@ -76,6 +76,8 @@ pub(super) struct Capabilities {
     installed_capabilities: Vec<common::CapabilityDescriptor>,
     /// Discoverable runtime and Worker-defined commands.
     commands: Vec<common::CommandDescriptor>,
+    /// Trusted plugin bundles active for this revision.
+    plugins: Vec<crate::plugins::PluginView>,
     /// Package-declared browser capability, when installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     browser: Option<BrowserCapability>,
@@ -135,6 +137,7 @@ pub(super) async fn capabilities(
             Some(commands) => commands.descriptors().to_vec(),
             None => Vec::new(),
         },
+        plugins: state.plugins.clone(),
         browser,
     }))
 }

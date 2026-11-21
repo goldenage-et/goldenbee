@@ -29,7 +29,11 @@ pub use config::{
     FileConfig, GatewayConfig, ModelsConfig, PathsConfig, ResolvedModels, StorageConfig,
     TokenConfig, WorkerSettings,
 };
-pub use hooks::{TaskHookContext, WorkerHooks};
+pub use hooks::{
+    CompactHookContext, CompactHookOutcome, HookDecision, HookFailure, HookFailureKind, HookPolicy,
+    HookReporter, SessionHookContext, StopHookContext, SubagentStopHookContext, TaskHookContext,
+    ToolHookContext, ToolHookOutcome, WorkerHooks,
+};
 pub use instance::{ShutdownReport, WorkerContext, WorkerInstance};
 
 use crate::agents::graph::{build_graphs, GraphRegistration, GraphRuntime};
@@ -683,8 +687,17 @@ impl Worker {
             } else {
                 vec![
                     "startup".into(),
+                    "session_start".into(),
+                    "prompt_submit".into(),
                     "before_task".into(),
+                    "pre_tool".into(),
+                    "post_tool".into(),
+                    "pre_compact".into(),
+                    "post_compact".into(),
+                    "stop".into(),
+                    "subagent_stop".into(),
                     "after_task".into(),
+                    "session_end".into(),
                     "shutdown".into(),
                 ]
             },
@@ -702,6 +715,10 @@ impl Worker {
         }
         let config_path = canonical_config(config_path.as_ref())?;
         let mut settings = WorkerSettings::load(&config_path)?;
+        // Plugins are operator-selected data. Trust, asset containment, and
+        // tool resolution are checked before any component is activated.
+        let plugins = crate::plugins::load(&settings)?;
+        settings.apply_plugins(&plugins)?;
         if let Some(name) = &settings.file.name {
             if name != &self.name {
                 return Err(ApiError::new(
@@ -897,6 +914,15 @@ impl Worker {
                 format!("package registration and a generic file tool both claim id '{id}'"),
             ));
         }
+        // Every plugin tool declaration must resolve to a compiled tool or a
+        // declared MCP server before the bundle is recorded as active.
+        let mcp_ids: BTreeSet<String> = settings.file.mcp.servers.keys().cloned().collect();
+        plugins.validate_tools(&self.tools, &mcp_ids)?;
+        let plugin_views = plugins.views.clone();
+        let base_hooks = std::mem::take(&mut self.hooks);
+        let hook_policy = settings.hook_policy();
+        let mut effective_hooks = base_hooks.clone();
+        effective_hooks.extend(plugins.hooks.iter().cloned());
         let browser = match &self.browser {
             Some(id) => {
                 Some(BrowserController::start(id.clone(), browser_settings(&settings)?).await)
@@ -974,6 +1000,10 @@ impl Worker {
             &providers,
             graph.as_ref(),
         )?;
+        // Activation evidence is written only after plugin assets resolved
+        // against the Worker's own catalog, so a rejected bundle leaves no
+        // half-active record.
+        let plugin_changes = plugins.commit()?;
         let local_mcp = Arc::new(McpRegistry::new(
             &settings.file.grants,
             Some(self.kernel.clone()),
@@ -1017,8 +1047,37 @@ impl Worker {
         // startup code cannot be mistaken for a ready Worker.
         runtime.close_admission().await;
         runtime.set_phase(common::LifecyclePhase::Recovering).await;
-        let hooks = composite_hooks(std::mem::take(&mut self.hooks));
+        let hooks = composite_hooks(
+            effective_hooks,
+            hook_policy,
+            Some(Arc::new(runtime.clone())),
+        );
         runtime.set_hooks(hooks.clone()).await;
+        for change in &plugin_changes {
+            let detail = match change.action {
+                "removed" => {
+                    "bundle is no longer present in the operator plugin directory".to_string()
+                }
+                action => plugin_views
+                    .iter()
+                    .find(|view| view.name == change.name)
+                    .map(|view| {
+                        format!(
+                            "{action} version={} trust={} signer={} digest={} components={}",
+                            view.version,
+                            view.trust,
+                            view.signer,
+                            view.digest,
+                            view.components.join(",")
+                        )
+                    })
+                    .unwrap_or_else(|| action.to_string()),
+            };
+            let operation = format!("plugin.{}", change.action);
+            let _ = runtime
+                .audit("runtime", &operation, &change.name, change.action, &detail)
+                .await;
+        }
 
         let remote_mcp = RemoteMcpRegistry::new(
             settings.file.mcp.clone(),
@@ -1078,7 +1137,9 @@ impl Worker {
                 callbacks: self.callbacks,
                 mcp: local_mcp,
                 remote_mcp,
-                hooks,
+                hooks: RwLock::new(hooks),
+                package_hooks: base_hooks,
+                plugin_views: RwLock::new(plugin_views),
                 plugins,
                 browser,
                 revision,
@@ -1088,7 +1149,7 @@ impl Worker {
             }),
         };
 
-        if let Some(hooks) = &instance.inner.hooks {
+        if let Some(hooks) = instance.inner.hooks.read().await.clone() {
             if let Err(error) = hooks.startup(&instance).await {
                 instance.inner.mcp.shutdown().await;
                 executor.close().await;
@@ -1236,10 +1297,14 @@ pub(crate) fn browser_settings(settings: &WorkerSettings) -> WorkerResult<Browse
     }
 }
 
-fn composite_hooks(hooks: Vec<Arc<dyn WorkerHooks>>) -> Option<Arc<dyn WorkerHooks>> {
-    match hooks.len() {
-        0 => None,
-        1 => hooks.into_iter().next(),
-        _ => Some(Arc::new(CompositeHooks(hooks))),
+fn composite_hooks(
+    hooks: Vec<Arc<dyn WorkerHooks>>,
+    policy: crate::worker::HookPolicy,
+    reporter: Option<Arc<dyn crate::worker::HookReporter>>,
+) -> Option<Arc<dyn WorkerHooks>> {
+    if hooks.is_empty() {
+        None
+    } else {
+        Some(Arc::new(CompositeHooks::new(hooks, policy, reporter)))
     }
 }

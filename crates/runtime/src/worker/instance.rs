@@ -69,7 +69,11 @@ pub(super) struct WorkerInner {
     pub(super) callbacks: Option<Arc<dyn Fn() -> AgentCallbacks + Send + Sync>>,
     pub(super) mcp: Arc<McpRegistry>,
     pub(super) remote_mcp: Arc<crate::mcp::RemoteMcpRegistry>,
-    pub(super) hooks: Option<Arc<dyn WorkerHooks>>,
+    pub(super) hooks: RwLock<Option<Arc<dyn WorkerHooks>>>,
+    /// Package-registered hooks in declaration order, without plugin handlers.
+    pub(super) package_hooks: Vec<Arc<dyn WorkerHooks>>,
+    /// Trusted plugin inventory for this revision.
+    pub(super) plugin_views: RwLock<Vec<crate::plugins::PluginView>>,
     pub(super) plugins: Option<Arc<PluginManager>>,
     pub(super) browser: Option<Arc<BrowserController>>,
     pub(super) revision: Arc<AtomicU64>,
@@ -117,6 +121,11 @@ impl WorkerInstance {
     /// Registered run-scope native plugins, when the package supplies them.
     pub fn plugins(&self) -> Option<Arc<PluginManager>> {
         self.inner.plugins.clone()
+    }
+
+    /// Trusted plugin bundles active for this revision.
+    pub async fn plugin_inventory(&self) -> Vec<crate::plugins::PluginView> {
+        self.inner.plugin_views.read().await.clone()
     }
 
     /// Current resolved asset revision.
@@ -199,6 +208,19 @@ impl WorkerInstance {
     pub async fn reload(&self) -> WorkerResult<u64> {
         let mut settings = WorkerSettings::load(&self.inner.config_path)?;
         settings.kernel = Some(self.inner.kernel.clone());
+        let plugins = crate::plugins::load(&settings)?;
+        settings.apply_plugins(&plugins)?;
+        let mcp_ids: BTreeSet<String> = settings.file.mcp.servers.keys().cloned().collect();
+        plugins.validate_tools(&self.inner.tools, &mcp_ids)?;
+        let plugin_views = plugins.views.clone();
+        let hook_policy = settings.hook_policy();
+        let mut effective_hooks = self.inner.package_hooks.clone();
+        effective_hooks.extend(plugins.hooks.iter().cloned());
+        let hooks = crate::worker::composite_hooks(
+            effective_hooks,
+            hook_policy,
+            Some(Arc::new(self.inner.runtime.clone())),
+        );
         if settings.file.skills.disclosure == "progressive"
             && !self
                 .inner
@@ -314,6 +336,37 @@ impl WorkerInstance {
         } else {
             None
         };
+        // Every candidate validation passed. Record plugin activation evidence
+        // and install the new handler set immediately before the revision swap.
+        let plugin_changes = plugins.commit()?;
+        for change in &plugin_changes {
+            let detail = match change.action {
+                "removed" => {
+                    "bundle is no longer present in the operator plugin directory".to_string()
+                }
+                action => plugin_views
+                    .iter()
+                    .find(|view| view.name == change.name)
+                    .map(|view| {
+                        format!(
+                            "{action} version={} trust={} signer={} digest={} components={}",
+                            view.version,
+                            view.trust,
+                            view.signer,
+                            view.digest,
+                            view.components.join(",")
+                        )
+                    })
+                    .unwrap_or_else(|| action.to_string()),
+            };
+            let operation = format!("plugin.{}", change.action);
+            let _ = self
+                .inner
+                .runtime
+                .audit("runtime", &operation, &change.name, change.action, &detail)
+                .await;
+        }
+        self.inner.runtime.set_hooks(hooks.clone()).await;
         let next_revision = self.asset_revision() + 1;
         *self.inner.executor.write().await = executor.clone();
         self.inner
@@ -325,6 +378,8 @@ impl WorkerInstance {
         }
         *self.inner.assets.write().await = Arc::new(assets);
         *self.inner.settings.write().await = settings;
+        *self.inner.hooks.write().await = hooks;
+        *self.inner.plugin_views.write().await = plugin_views;
         self.inner
             .runtime
             .set_settings(self.inner.settings.read().await.file.settings.clone())
@@ -359,8 +414,11 @@ impl WorkerInstance {
         if drained.timed_out {
             self.inner.runtime.record_degraded("drain_timeout").await;
         }
+        // Sessions started in this process end before package shutdown hooks.
+        self.inner.runtime.session_end_hooks().await;
         // The hook cannot replace cleanup. Record its failure and continue.
-        let hook_error = match &self.inner.hooks {
+        let hooks = self.inner.hooks.read().await.clone();
+        let hook_error = match &hooks {
             Some(hooks) => match hooks.shutdown(self).await {
                 Ok(()) => None,
                 Err(error) => {

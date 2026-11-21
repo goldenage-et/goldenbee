@@ -63,6 +63,9 @@ struct Inner {
     approval_notify: Notify,
     session_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     hooks: RwLock<Option<Arc<dyn crate::worker::WorkerHooks>>>,
+    /// Sessions started in this process, keyed by canonical identity. The
+    /// stored context is replayed to `session_end` hooks at shutdown.
+    hooked_sessions: Mutex<BTreeMap<String, crate::worker::SessionHookContext>>,
     settings: RwLock<BTreeMap<String, String>>,
     mcp_credentials: crate::mcp::McpCredentials,
     /// Worker-owned status interfaces for registered protected effects.
@@ -160,6 +163,7 @@ impl Runtime {
                 approval_notify: Notify::new(),
                 session_locks: Mutex::new(BTreeMap::new()),
                 hooks: RwLock::new(None),
+                hooked_sessions: Mutex::new(BTreeMap::new()),
                 settings: RwLock::new(BTreeMap::new()),
                 mcp_credentials,
                 effect_reconcilers: RwLock::new(BTreeMap::new()),
@@ -827,6 +831,31 @@ impl Runtime {
     /// Install compiled Worker hooks used at admission and lifecycle points.
     pub async fn set_hooks(&self, hooks: Option<Arc<dyn crate::worker::WorkerHooks>>) {
         *self.inner.hooks.write().await = hooks;
+    }
+
+    pub(crate) async fn hooks(&self) -> Option<Arc<dyn crate::worker::WorkerHooks>> {
+        self.inner.hooks.read().await.clone()
+    }
+
+    /// Record one started session. Returns `false` when the identity was
+    /// already started in this process, making repeated turns idempotent.
+    pub(crate) async fn track_session(
+        &self,
+        key: String,
+        context: crate::worker::SessionHookContext,
+    ) -> bool {
+        self.inner
+            .hooked_sessions
+            .lock()
+            .await
+            .insert(key, context)
+            .is_none()
+    }
+
+    /// Drain started sessions in stable identity order for `session_end`.
+    pub(crate) async fn drain_sessions(&self) -> Vec<crate::worker::SessionHookContext> {
+        let mut sessions = self.inner.hooked_sessions.lock().await;
+        std::mem::take(&mut *sessions).into_values().collect()
     }
 
     /// Replace the effective package settings exposed to hooks.

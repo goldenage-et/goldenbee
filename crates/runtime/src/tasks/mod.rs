@@ -408,6 +408,17 @@ impl Runtime {
                 .await;
         } else {
             let cancel = tokio_util::sync::CancellationToken::new();
+            self.session_start_hook(&crate::worker::SessionHookContext {
+                task_id: Some(task.id.clone()),
+                namespace: task.namespace.clone(),
+                caller: task.caller.clone(),
+                agent: task.agent.clone(),
+                session_id: task.session_id.clone(),
+                profile: task.profile.clone(),
+                profile_revision: task.profile_revision,
+                asset_revision: task.asset_revision,
+            })
+            .await;
             let hook_ctx = crate::worker::TaskHookContext {
                 task_id: task.id.clone(),
                 namespace: task.namespace.clone(),
@@ -421,7 +432,19 @@ impl Runtime {
                 settings: self.settings().await,
                 cancel: cancel.clone(),
             };
-            if let Err(error) = self.before_task_hook(&hook_ctx).await {
+            if let crate::worker::HookDecision::Deny { reason } =
+                self.prompt_submit_hook(&hook_ctx).await
+            {
+                self.finish_task(
+                    &task.id,
+                    ExecutionOutcome::failure(ApiError::new(
+                        "hook.prompt_blocked",
+                        format!("prompt was blocked by a hook: {}", common::redact(&reason)),
+                    )),
+                )
+                .await;
+                response_state = TaskState::Failed;
+            } else if let Err(error) = self.before_task_hook(&hook_ctx).await {
                 self.finish_task(&task.id, ExecutionOutcome::failure(error))
                     .await;
                 response_state = TaskState::Failed;

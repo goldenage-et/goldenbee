@@ -34,6 +34,8 @@ use tokio_util::sync::CancellationToken;
 /// One native compaction attempt observed by the harness.
 #[derive(Clone)]
 struct CompactionObservation {
+    /// `pre` before native compaction, `post` after it.
+    phase: &'static str,
     strategy: String,
     context_budget: u64,
     preserve_recent: usize,
@@ -65,13 +67,25 @@ struct ObservedTruncation {
 impl CompactionStrategy for ObservedTruncation {
     async fn compact(&self, events: Vec<Event>, budget: usize) -> adk_rust::Result<Vec<Event>> {
         let before = events.len();
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        (self.reporter)(CompactionObservation {
+            phase: "pre",
+            strategy: self.strategy.clone(),
+            context_budget: self.context_budget,
+            preserve_recent: self.preserve_recent,
+            max_retries: self.max_retries,
+            attempt,
+            events_before: before,
+            events_after: before,
+        })
+        .await;
         let compacted = TruncationCompaction {
             preserve_recent: self.preserve_recent,
         }
         .compact(events, budget)
         .await?;
-        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
         (self.reporter)(CompactionObservation {
+            phase: "post",
             strategy: self.strategy.clone(),
             context_budget: self.context_budget,
             preserve_recent: self.preserve_recent,
@@ -748,6 +762,43 @@ impl crate::Executor for NativeExecutor {
                 let provider = reporter_provider.clone();
                 let adapter = reporter_adapter.clone();
                 Box::pin(async move {
+                    let task = runtime.task_unscoped(&task_id).await;
+                    let compact = task.map(|task| crate::worker::CompactHookContext {
+                        task: crate::worker::TaskHookContext {
+                            task_id: task.id.clone(),
+                            namespace: task.namespace.clone(),
+                            caller: task.caller.clone(),
+                            agent: task.agent.clone(),
+                            session_id: task.session_id.clone(),
+                            profile: task.profile.clone(),
+                            profile_revision: task.profile_revision,
+                            asset_revision: task.asset_revision,
+                            input: task.input.clone(),
+                            settings: BTreeMap::new(),
+                            cancel: CancellationToken::new(),
+                        },
+                        strategy: observation.strategy.clone(),
+                        context_budget: observation.context_budget,
+                        preserve_recent: observation.preserve_recent,
+                        attempt: observation.attempt,
+                        events_before: observation.events_before,
+                    });
+                    if observation.phase == "pre" {
+                        if let Some(compact) = compact.as_ref() {
+                            runtime.pre_compact_hook(compact).await;
+                        }
+                        return;
+                    }
+                    if let Some(compact) = compact.as_ref() {
+                        runtime
+                            .post_compact_hook(
+                                compact,
+                                &crate::worker::CompactHookOutcome {
+                                    events_after: observation.events_after,
+                                },
+                            )
+                            .await;
+                    }
                     let attributes = BTreeMap::from([
                         ("strategy".into(), observation.strategy.clone()),
                         (

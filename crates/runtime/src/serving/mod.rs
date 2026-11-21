@@ -49,6 +49,8 @@ pub struct WorkerState {
     pub browser: Option<Arc<BrowserController>>,
     /// Active command registry for this asset revision.
     pub(crate) commands: Option<Arc<crate::commands::CommandRegistry>>,
+    /// Trusted plugin bundles active for this revision.
+    pub plugins: Vec<crate::plugins::PluginView>,
 }
 
 impl WorkerState {
@@ -60,6 +62,7 @@ impl WorkerState {
             a2a_durable: false,
             browser: None,
             commands: None,
+            plugins: Vec::new(),
         }
     }
 
@@ -78,6 +81,12 @@ impl WorkerState {
     /// Attach the active command registry for this asset revision.
     pub(crate) fn with_commands(mut self, commands: Arc<crate::commands::CommandRegistry>) -> Self {
         self.commands = Some(commands);
+        self
+    }
+
+    /// Attach the trusted plugin inventory for this asset revision.
+    pub fn with_plugins(mut self, plugins: Vec<crate::plugins::PluginView>) -> Self {
+        self.plugins = plugins;
         self
     }
 }

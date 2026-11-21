@@ -616,6 +616,45 @@ impl KernelTool {
         }
     }
 
+    fn hook_context(
+        &self,
+        ctx: &dyn ToolContext,
+        task: Option<&common::Task>,
+        request: &crate::policy::PermissionRequest,
+        relative: &[String],
+        permission: &Value,
+    ) -> crate::worker::ToolHookContext {
+        let decision = permission
+            .get("decision")
+            .and_then(Value::as_str)
+            .unwrap_or("allow");
+        crate::worker::ToolHookContext {
+            task_id: task.map(|task| task.id.clone()),
+            namespace: task
+                .map(|task| task.namespace.clone())
+                .unwrap_or_else(|| "local".into()),
+            caller: task
+                .map(|task| task.caller.clone())
+                .unwrap_or_else(|| "local".into()),
+            agent: ctx.agent_name().to_string(),
+            session_id: ctx.session_id().to_string(),
+            invocation: ctx.invocation_id().to_string(),
+            call_id: ctx.function_call_id().to_string(),
+            tool: self.inner.name().to_string(),
+            capability: self.descriptor.capability.clone(),
+            risk: self.descriptor.risk.as_str().to_string(),
+            effect: self.descriptor.effect.as_str().to_string(),
+            arguments_digest: request.arguments_digest.clone(),
+            paths: relative.to_vec(),
+            command: request.command.clone(),
+            domain: request.domain.clone(),
+            sandbox: self.sandbox_profile().to_string(),
+            permission: decision.to_string(),
+            profile: task.map(|task| task.profile.clone()).unwrap_or_default(),
+            profile_revision: task.map(|task| task.profile_revision).unwrap_or(0),
+        }
+    }
+
     fn permission_value(
         &self,
         evaluated: &crate::policy::PolicyDecision,
@@ -1101,6 +1140,44 @@ impl Tool for KernelTool {
             return Ok(error_value(code, message));
         }
 
+        // Hooks run after authorization and sandbox decisions. A hook may only
+        // deny further; a failure or timeout never grants the call.
+        let hook_ctx = self.hook_context(
+            ctx.as_ref(),
+            task.as_ref(),
+            &request,
+            &relative,
+            &permission,
+        );
+        if let Some(runtime) = self.kernel.inner.runtime.get() {
+            if let crate::worker::HookDecision::Deny { reason } =
+                runtime.pre_tool_hook(&hook_ctx).await
+            {
+                if let Some(task) = task.as_ref() {
+                    let _ = runtime
+                        .append_event(
+                            &task.id,
+                            "hook.denied",
+                            json!({
+                                "event": "pre_tool",
+                                "tool": self.inner.name(),
+                                "call_id": ctx.function_call_id(),
+                                "reason": common::redact(&reason),
+                            }),
+                            true,
+                        )
+                        .await;
+                }
+                return Ok(error_value(
+                    "hook.denied",
+                    format!(
+                        "tool '{}' was denied by a pre-tool hook: {reason}",
+                        self.inner.name()
+                    ),
+                ));
+            }
+        }
+
         let queue_started = Instant::now();
         let permit_wait = self.timeout(&effective).unwrap_or(Duration::from_secs(300));
         let permit = tokio::select! {
@@ -1303,6 +1380,21 @@ impl Tool for KernelTool {
             &observation,
         )
         .await;
+        if let Some(runtime) = self.kernel.inner.runtime.get() {
+            runtime
+                .post_tool_hook(
+                    &hook_ctx,
+                    &crate::worker::ToolHookOutcome {
+                        ok: observation.ok,
+                        error_code: observation.error_code.clone(),
+                        duration_ms: observation.duration.as_millis() as u64,
+                        result_digest: observation.result_digest.clone(),
+                        output_bytes: observation.output_bytes,
+                        truncated: observation.truncated,
+                    },
+                )
+                .await;
+        }
         Ok(bounded)
     }
 }

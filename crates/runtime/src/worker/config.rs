@@ -26,6 +26,12 @@ pub struct WorkerSettings {
     pub skills_dir: Option<PathBuf>,
     /// Resolved Worker command asset directory.
     pub commands_dir: Option<PathBuf>,
+    /// Resolved plugin bundle root, when configured.
+    pub plugins_dir: Option<PathBuf>,
+    /// Additional skill roots resolved from trusted plugin bundles.
+    pub(crate) plugin_skills: Vec<PathBuf>,
+    /// Additional command roots resolved from trusted plugin bundles.
+    pub(crate) plugin_commands: Vec<PathBuf>,
     /// Resolved storage directory.
     pub data_dir: PathBuf,
     /// Validated optional browser capability.
@@ -93,6 +99,8 @@ impl WorkerSettings {
         })?;
         validate_peers(&file.peers, file.allow_remote)?;
         validate_skills(&file.skills)?;
+        validate_hooks(&file.hooks)?;
+        validate_plugins(&file.plugins)?;
         Ok(Self {
             config_path: path.to_path_buf(),
             config_dir: config_dir.clone(),
@@ -101,6 +109,9 @@ impl WorkerSettings {
             prompts_dir: file.paths.prompts.as_deref().map(resolve),
             skills_dir: file.paths.skills.as_deref().map(resolve),
             commands_dir: file.paths.commands.as_deref().map(resolve),
+            plugins_dir: file.plugins.directory.as_deref().map(resolve),
+            plugin_skills: Vec::new(),
+            plugin_commands: Vec::new(),
             browser: match &file.browser {
                 Some(options) => Some(options.resolve(&config_dir)?),
                 None => None,
@@ -152,6 +163,35 @@ impl WorkerSettings {
             .iter()
             .map(|(id, server)| (id.clone(), server.policy()))
             .collect()
+    }
+
+    /// Resolved hook deadline policy.
+    pub(crate) fn hook_policy(&self) -> crate::worker::HookPolicy {
+        self.file.hooks.policy()
+    }
+
+    /// Merge trusted plugin assets into this revision.
+    ///
+    /// Plugin MCP ids and asset roots never replace a Worker-owned definition;
+    /// the loader rejects collisions before this method runs.
+    pub(crate) fn apply_plugins(
+        &mut self,
+        plugins: &crate::plugins::LoadedPlugins,
+    ) -> WorkerResult<()> {
+        self.plugin_skills = plugins.skills.clone();
+        self.plugin_commands = plugins.commands.clone();
+        for (id, server) in &plugins.mcp {
+            if self.file.mcp.servers.contains_key(id) {
+                return Err(ApiError::new(
+                    "plugin.collision",
+                    format!("plugin MCP server '{id}' would overwrite a Worker-owned definition"),
+                ));
+            }
+            self.file.mcp.servers.insert(id.clone(), server.clone());
+        }
+        validate_mcp(&self.file.mcp)?;
+        self.file.mcp.validate()?;
+        Ok(())
     }
 
     pub(super) fn runtime_config(&self, name: &str, assets: &Assets) -> RuntimeConfig {
@@ -359,6 +399,93 @@ pub struct FileConfig {
     /// Skill disclosure and bounded skill output.
     #[serde(default)]
     pub skills: SkillsConfig,
+    /// Hook deadline and external-hook output bounds.
+    #[serde(default)]
+    pub hooks: HooksConfig,
+    /// Operator-selected plugin bundles and trust roots.
+    #[serde(default)]
+    pub plugins: crate::plugins::PluginsConfig,
+}
+
+/// Hook handler bounds.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HooksConfig {
+    /// Maximum time one hook handler may run.
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Maximum bytes retained from one external hook's stdout or stderr.
+    #[serde(default = "default_hook_output_bytes")]
+    pub max_output_bytes: usize,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: default_hook_timeout_ms(),
+            max_output_bytes: default_hook_output_bytes(),
+        }
+    }
+}
+
+impl HooksConfig {
+    /// Resolved runtime policy.
+    pub(crate) fn policy(self) -> crate::worker::HookPolicy {
+        crate::worker::HookPolicy {
+            timeout: std::time::Duration::from_millis(self.timeout_ms.max(1)),
+            max_output_bytes: self.max_output_bytes.max(1),
+        }
+    }
+}
+
+fn default_hook_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_hook_output_bytes() -> usize {
+    65_536
+}
+
+fn validate_hooks(hooks: &HooksConfig) -> WorkerResult<()> {
+    if hooks.timeout_ms == 0 || hooks.timeout_ms > 600_000 {
+        return Err(ApiError::new(
+            "config.hooks",
+            "hooks.timeout_ms must be 1-600000",
+        ));
+    }
+    if hooks.max_output_bytes == 0 || hooks.max_output_bytes > 16_777_216 {
+        return Err(ApiError::new(
+            "config.hooks",
+            "hooks.max_output_bytes must be 1-16777216",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_plugins(plugins: &crate::plugins::PluginsConfig) -> WorkerResult<()> {
+    for (name, pin) in &plugins.allow {
+        if name.trim().is_empty() {
+            return Err(ApiError::new(
+                "config.plugins",
+                "plugins.allow contains an empty plugin id",
+            ));
+        }
+        if pin != "*" && !pin.starts_with("sha256:") {
+            return Err(ApiError::new(
+                "config.plugins",
+                format!("plugins.allow['{name}'] must be '*' or a sha256 content digest"),
+            ));
+        }
+    }
+    for signer in plugins.trusted_signers.keys() {
+        if signer.trim().is_empty() {
+            return Err(ApiError::new(
+                "config.plugins",
+                "plugins.trusted_signers contains an empty signer id",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Skill loading policy. Progressive disclosure is a package-declared
