@@ -377,6 +377,7 @@ impl WorkerInstance {
         };
         self.inner.cancel.cancel();
         self.inner.runtime.cancel_all_tasks().await;
+        self.inner.runtime.shutdown_processes().await;
         self.inner.mcp.shutdown().await;
         if let Some(browser) = &self.inner.browser {
             browser.shutdown().await;

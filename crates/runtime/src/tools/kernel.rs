@@ -106,6 +106,13 @@ pub struct ToolDescriptor {
     pub typed_errors: bool,
     /// Whether this descriptor is a package-declared built-in capability.
     pub builtin: bool,
+    /// Whether the tool can reach a network destination.
+    pub network: bool,
+    /// Whether a successful or failed call is audited even without a mutation.
+    pub audit: bool,
+    /// Whether the tool can write inside the workspace even when the exact
+    /// paths are not known before dispatch.
+    pub writes: bool,
     /// Whether this tool owns a stricter exact-operation approval internally.
     ///
     /// The kernel still evaluates deny rules and records the policy decision,
@@ -131,6 +138,9 @@ impl std::fmt::Debug for ToolDescriptor {
             .field("max_output_bytes", &self.max_output_bytes)
             .field("typed_errors", &self.typed_errors)
             .field("builtin", &self.builtin)
+            .field("network", &self.network)
+            .field("audit", &self.audit)
+            .field("writes", &self.writes)
             .field("tool_owned_approval", &self.tool_owned_approval)
             .field("has_paths", &self.paths.is_some())
             .field("has_command", &self.command.is_some())
@@ -151,6 +161,9 @@ impl ToolDescriptor {
             max_output_bytes: None,
             typed_errors: false,
             builtin: false,
+            network: false,
+            audit: false,
+            writes: false,
             tool_owned_approval: false,
             paths: None,
             command: None,
@@ -196,6 +209,24 @@ impl ToolDescriptor {
     /// Mark this descriptor as a package-declared built-in capability.
     pub fn builtin(mut self) -> Self {
         self.builtin = true;
+        self
+    }
+
+    /// Declare that the tool can reach a network destination.
+    pub fn network(mut self) -> Self {
+        self.network = true;
+        self
+    }
+
+    /// Record an audit entry for every call, not only for mutations.
+    pub fn audit(mut self) -> Self {
+        self.audit = true;
+        self
+    }
+
+    /// Declare that the tool can write inside the workspace.
+    pub fn writes(mut self) -> Self {
+        self.writes = true;
         self
     }
 
@@ -443,6 +474,13 @@ impl ToolKernel {
         })
     }
 
+    /// The admitted task that owns the current native invocation, when the call
+    /// runs inside one. Built-in tools use this to attach task-scoped events
+    /// without re-deriving native identity.
+    pub(crate) async fn task_for(&self, ctx: &dyn ToolContext) -> Option<common::Task> {
+        active_task(self, ctx).await
+    }
+
     fn state(&self) -> Option<std::sync::RwLockReadGuard<'_, Option<KernelState>>> {
         // The guard is returned as `Some` only when the state is configured.
         // Callers must check the inner option.
@@ -534,7 +572,7 @@ impl KernelTool {
     }
 
     fn sandbox_profile(&self) -> &'static str {
-        if self.descriptor.effect.is_mutation() {
+        if self.descriptor.effect.is_mutation() || self.descriptor.writes {
             "workspace-write"
         } else {
             "workspace-read"
@@ -611,7 +649,7 @@ impl KernelTool {
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
                 .unwrap_or("workspace"),
-            "network": false,
+            "network": self.descriptor.network,
         })
     }
 
@@ -1480,6 +1518,27 @@ impl KernelTool {
                 attributes,
             )
             .await;
+        if self.descriptor.audit && !self.descriptor.effect.is_mutation() {
+            let outcome = if observation.ok { "ok" } else { "failed" };
+            let detail = format!(
+                "tool={} capability={} ok={} error={} duration_ms={}",
+                self.inner.name(),
+                self.descriptor.capability,
+                observation.ok,
+                observation.error_code.as_deref().unwrap_or(""),
+                observation.duration.as_millis(),
+            );
+            let _ = runtime
+                .audit_with_trace(
+                    &task.caller,
+                    "tool.call",
+                    &task.id,
+                    outcome,
+                    &detail,
+                    &task.trace_id,
+                )
+                .await;
+        }
     }
 
     async fn effect_evidence(

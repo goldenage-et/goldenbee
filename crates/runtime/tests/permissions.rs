@@ -251,6 +251,7 @@ async fn approval_binds_the_exact_action_and_authorizes_only_that_retry() {
             ApprovalDecision {
                 decision: "approved".into(),
                 digest: approval.digest.clone(),
+                answer: None,
             },
         )
         .await
@@ -312,6 +313,7 @@ async fn no_decision_produces_a_truthful_pending_outcome_without_executing() {
             ApprovalDecision {
                 decision: "approved".into(),
                 digest: approval.digest.clone(),
+                answer: None,
             },
         )
         .await
@@ -513,6 +515,7 @@ async fn pending_approvals_survive_restart_and_a_changed_action_needs_a_new_deci
             ApprovalDecision {
                 decision: "approved".into(),
                 digest: recovered.digest.clone(),
+                answer: None,
             },
         )
         .await

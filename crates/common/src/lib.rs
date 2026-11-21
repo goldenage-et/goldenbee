@@ -111,7 +111,9 @@ pub use socket::{
 pub use stream::{
     parse_cursor, parse_limit, StreamEvent, StreamPage, EVENT_SCHEMA_VERSION, MAX_EVENT_PAGE,
 };
-pub use task::{ResolvedModel, SubmitTaskRequest, SubmitTaskResponse, Task, TaskState};
+pub use task::{
+    PlanItem, ResolvedModel, SubmitTaskRequest, SubmitTaskResponse, Task, TaskPlan, TaskState,
+};
 pub use team::{
     CreateTeamRequest, Team, TeamMember, TeamMemberGrant, TeamRoster, TeamSpec, TeamVersionRequest,
     UpdateTeamRequest,

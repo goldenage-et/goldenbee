@@ -247,6 +247,139 @@ agent factories that use `settings.tool_kernel()`. The kernel applies the
 timeout, cancellation, output ceiling, path lock, bounded concurrency, evidence,
 and audit described below.
 
+## Process, web, image, plan, and question tools
+
+These capabilities are opt-in like the file tools. A package that declares
+nothing exposes none of them. Configuration cannot create a tool the package did
+not declare, and a profile can only narrow the selection.
+
+### Process and PTY tools
+
+`.process_tools(policy)` enables all five process tools;
+`.process_tool(tool, policy)` enables one. The policy carries the same explicit
+`SandboxPolicy` the package already supplies for `exec_command`:
+
+```rust
+Worker::new("general", env!("CARGO_PKG_VERSION")).process_tools(
+    runtime::native::ProcessPolicy::new(
+        runtime::native::SandboxPolicy::new(workspace).with_timeout(Duration::from_secs(30)),
+    )
+    .max_processes(4)
+    .max_buffer_bytes(256 * 1024)
+    .max_lifetime(Duration::from_secs(300)),
+)
+```
+
+| Tool | Permission | Behavior |
+| --- | --- | --- |
+| `shell` | `process:execute` | Runs one command to completion and returns exit code plus bounded stdout/stderr. |
+| `background_process` | `process:execute` | Starts one command and returns a stable `process_id` while it runs. |
+| `pty` | `process:execute` | Starts an interactive terminal, or writes `input` and optionally resizes an existing `process_id`. |
+| `process_wait` | `process:read` | Waits up to `timeout_ms` and drains output captured since the last read. |
+| `process_kill` | `process:execute` | Sends the sandbox process-group signal and reports the observed final state. |
+
+A process tool cannot start without an explicit policy: startup fails with
+`config.process_policy`. Missing sandbox mechanisms fail closed per call with
+`sandbox_unavailable`; there is no host fallback. `working_dir` must stay inside
+the sandbox workspace. Every mode executes the same validated
+`prlimit`/`bubblewrap` vector; only the terminal differs, and the PTY omits
+bubblewrap `--new-session` because the PTY layer already creates the controlling
+session.
+
+Process ids are stable for the life of the Worker process. They are not durable
+across restart; a wait or kill after restart returns `process.not_found` because
+the old process no longer exists. Output is bounded per stream by
+`max_buffer_bytes`; dropped bytes and truncation are reported, never silently
+discarded. At most `max_processes` commands may run concurrently, and
+`max_lifetime` bounds a background command that never exits.
+
+Task cancellation cascades: the runtime binds every process to its owning task,
+kills the group when the task token is cancelled, and records
+`process.terminated` with `reason: "cancelled"`. Worker shutdown kills anything
+still running. A kill or wait can only address a process owned by the calling
+task; another task's id is denied with `process.denied`.
+
+Process calls emit `process.started`, `tool.output` (bounded redacted chunks),
+`process.exited`, and `process.terminated` before the terminal task event. The
+kernel still emits `tool.started` and `tool.completed` with the normal timing,
+sandbox, audit, and redaction fields.
+
+### Web tools
+
+`.web_tools(policy)` enables `web_fetch` and `web_search`;
+`.web_tool(tool, policy)` enables one. An empty allowlist denies every
+destination, so there is no implicit public network.
+
+```rust
+Worker::new("research", env!("CARGO_PKG_VERSION")).web_tools(
+    runtime::native::WebPolicy::new()
+        .allow_domain("docs.example.com")
+        .allow_redirects(2)
+        .max_bytes(512 * 1024)
+        .search_url("https://search.example.com/v1?q={query}"),
+)
+```
+
+| Tool | Permission | Behavior |
+| --- | --- | --- |
+| `web_fetch` | `web:fetch` | Fetches one URL and returns the final URL, status, content type, and bounded text. |
+| `web_search` | `web:search` | Calls the configured `{query}` endpoint and returns typed results. |
+
+The policy enforces the scheme (HTTPS unless `allow_http(true)`), an exact or
+wildcard destination allowlist, and manual redirect handling with every hop
+re-checked. Redirects are off unless `allow_redirects(n)` is set. The request
+client ignores proxy environment variables, pins the validated DNS answer for
+the request, and refuses loopback, private, link-local, documentation, and
+unspecified addresses unless `allow_private_network(true)` is set explicitly
+(for an operator-controlled local search service). Response bodies are capped
+at `max_bytes` and marked `truncated`; non-text content types return
+`web.unsupported_content` instead of a binary body. Search results whose URLs
+fall outside the policy are dropped and counted as `filtered`. A Worker with no
+search endpoint returns `web.not_configured`.
+
+A policy with a search URL but no `{query}` placeholder fails startup with
+`config.web_policy`. Stable fetch errors include `web.invalid_url`,
+`web.destination_denied`, `web.private_network_denied`, `web.redirect_denied`,
+`web.timeout`, `web.status`, `web.unsupported_content`, and
+`web.search_invalid_response`.
+
+### Image, plan, and question tools
+
+Enable with `.builtin_tools([BuiltinTool::ViewImage, BuiltinTool::WriteTodos,
+BuiltinTool::AskUser])` or `.builtin_tools(BuiltinTool::INTERACTION)`.
+
+| Tool | Permission | Behavior |
+| --- | --- | --- |
+| `view_image` | `workspace:read` | Returns `{kind, path, media_type, bytes, digest, encoding, data_url}` for a PNG, JPEG, GIF, or WebP inside the workspace. |
+| `write_todos` | `plan:write` | Replaces the durable plan for this task and emits `plan.updated`. |
+| `ask_user` | `user:ask` | Records a question through the existing approval channel and returns a typed answer or a truthful pending status. |
+
+`view_image` rejects non-image content with `image.unsupported` and an image
+above its inline ceiling with `image.too_large`; it never returns a truncated
+data URL. `write_todos` delegates item validation to the pinned
+`adk_agent::coding::TodoTool`, then persists the list per task in the runtime
+store. The plan survives a Worker restart and is removed with the task by
+retention or erasure. The `plan.updated` payload carries the full item list,
+`total`, and `remaining`; a Client renders it without runtime-owned
+presentation.
+
+`ask_user` accepts `question`, optional `options` (at most eight), and
+`ttl_ms`. It records operation `user.ask` in the existing approval store,
+appends a `user.question` event, and waits a bounded time. A Client decides the
+approval with `ApprovalDecision { decision, digest, answer }`; the runtime stores
+the answer only for `user.ask` and only when approved. The result is
+`{status: "answered", answer}`, `{status: "declined"}`, or
+`{status: "pending", error: "user.pending"}` after the deadline. An answer that
+is not one of the offered options returns `user.invalid_answer`.
+
+ADK reuse and gaps for this group are recorded in
+[`adk.md`](adk.md): `TodoTool` supplies plan item semantics; pinned ADK 2.3.0
+has no PTY, background, wait, kill, generic web, image, or ask-user tool, so
+these are Goldenbee adapters over the existing sandbox, approval, event, and
+store mechanisms. The process shape follows the Codex `unified_exec` contract
+(start returns an id, wait drains output, kill is explicit) and the OpenCode
+shell/PTY session model.
+
 ### Tool events and evidence
 
 Mutating calls append durable `tool.started`, `tool.completed`, and `tool.effect`
