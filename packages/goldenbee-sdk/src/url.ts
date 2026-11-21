@@ -1,4 +1,4 @@
-import { GatewayError } from "./errors"
+import { GatewayError } from "./errors.js"
 
 /**
  * Validate and normalize an operator-entered Gateway address.

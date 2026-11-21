@@ -9,15 +9,17 @@ management, and other Gateway routes start in later tickets.
 
 ## Requirements
 
-- Node.js 22.12 or newer
+- Bun 1.2 or newer
 - A reachable Goldenbee Gateway and a caller token from its configuration
 
 ## Run
 
+From the repository root (Bun workspaces resolve `@goldenbee/sdk`):
+
 ```bash
-npm install
-cp .env.example .env
-npm run dev
+bun install --frozen-lockfile
+cp apps/goldenbee-web/.env.example apps/goldenbee-web/.env
+bun run --filter goldenbee-web dev
 ```
 
 `.env` supports:
@@ -33,24 +35,34 @@ Gateway CORS is optional and only needed for an explicitly separate origin.
 
 ## Scripts
 
+Run from the repository root:
+
 ```bash
-npm run dev        # Vite development server with /v1 proxy
-npm run typecheck  # TypeScript project build, no emit
-npm run lint       # oxlint
-npm run test       # Vitest unit and component tests
-npm run build      # typecheck plus static production bundle in dist/
-npm run preview    # Serve the production bundle locally
+bun run --filter goldenbee-web dev        # Vite dev server with /v1 proxy
+bun run --filter goldenbee-web typecheck  # build SDK, then TypeScript check
+bun run --filter goldenbee-web lint       # oxlint
+bun run --filter goldenbee-web test       # build SDK, then app Vitest via Bun
+bun run --filter goldenbee-web build      # SDK build, typecheck, static bundle
+bun run --filter goldenbee-web preview    # Serve the production bundle locally
 ```
 
-`package-lock.json` is committed. npm is the package manager.
+From the root, `bun test` runs the `@goldenbee/sdk` suite on Bun's native test
+runner. `bun run test` runs that suite plus the app DOM tests.
+
+`bun.lock` is committed at the repository root. Bun is the package manager,
+JavaScript runtime, and script runner. The browser bundle stays static; Bun is
+not a deployed Node server. The app's React DOM suite invokes Vitest through Bun
+because it needs jsdom; the SDK does not depend on Vitest.
+
 
 ## Boundaries
 
-- `src/sdk/` is the single Gateway client boundary. UI and state code import
-  from `@/sdk`, never from a transport or HTTP helper directly. It owns URL
-  validation, bearer headers, bounded timeouts, error decoding, health, and
-  caller-scoped discovery. Later tickets extend this module with tasks,
-  approvals, SSE, and sockets.
+- `@goldenbee/sdk` (`packages/goldenbee-sdk`) is the single Gateway client
+  boundary for every TypeScript Client. UI and state code import from
+  `@goldenbee/sdk`, never from a transport or HTTP helper directly. It owns URL
+  validation, bearer headers, bounded timeouts, error decoding, retries, tasks,
+  approvals, SSE, and sockets. It has no React, UI state, token storage, or
+  hard-coded platform runtime; the app injects browser `fetch` and WebSocket.
 - `src/features/connection/` owns connection state, token persistence, and the
   connection screen. Zustand holds in-memory connection state; the token store
   is the only module that touches sessionStorage.
@@ -61,6 +73,9 @@ npm run preview    # Serve the production bundle locally
 - TanStack Query is the server-state boundary for later collection and detail
   queries. It is deliberately unused by the connection handshake, which is
   connection state rather than a cached server collection.
+- All authored source and configuration in this app is TypeScript/TSX. The
+  workspace check `bun run check:ts-only` fails if authored JavaScript appears
+  outside generated output.
 
 ## Token policy
 
@@ -89,9 +104,11 @@ npm run preview    # Serve the production bundle locally
 
 ## Verification
 
-The unit suite covers the SDK against a fake fetch transport, token
-persistence, connection state transitions, and the connection screen states.
-The repository-level Playwright seam against a real Gateway is a later ticket.
+The `@goldenbee/sdk` suite covers the full typed Gateway surface against a fake
+fetch transport. The app suite covers token persistence, connection state
+transitions, and connection screen states. Run both with `bun run test` from the
+repository root. The repository-level Playwright seam against a real Gateway is
+a later ticket.
 
 ## Dependencies
 

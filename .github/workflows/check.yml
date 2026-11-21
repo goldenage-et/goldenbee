@@ -30,3 +30,27 @@ jobs:
           sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Check deterministic surface
         run: make check-ci
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install web workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Check TypeScript-only authored source
+        run: bun run check:ts-only
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Lint
+        run: bun run lint
+      - name: Test SDK with Bun
+        run: bun test
+      - name: Test web app with Vitest via Bun
+        run: bun run --filter goldenbee-web test
+      - name: Build static web bundle
+        run: bun run build

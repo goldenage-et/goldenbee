@@ -1,14 +1,14 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, mock } from "bun:test"
 
 import {
   GatewayError,
   createGatewayClient,
   normalizeGatewayUrl,
-  type GatewayFetch,
-} from "@/sdk"
+  type GatewayWorker,
+} from "./index.js"
 
 const healthBody = { status: "ok", workers: 3, reachable: 2 }
-const workerBody = [
+const workerBody: GatewayWorker[] = [
   {
     id: "worker-1",
     instance: "default",
@@ -29,8 +29,8 @@ function json(body: unknown, status = 200): Response {
 
 function fakeFetch(
   handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
-): GatewayFetch {
-  return vi.fn(async (url: string, init?: RequestInit) => handler(url, init))
+) {
+  return mock(async (url: string, init?: RequestInit) => handler(url, init))
 }
 
 describe("normalizeGatewayUrl", () => {
@@ -74,7 +74,7 @@ describe("gateway health", () => {
 
     await expect(client.health()).resolves.toEqual(healthBody)
 
-    const [url, init] = vi.mocked(fetch).mock.calls[0]
+    const [url, init] = fetch.mock.calls[0]
     expect(url).toBe("http://gateway.test/v1/health")
     expect(init?.headers).not.toHaveProperty("Authorization")
     expect(url).not.toContain("secret-token")
@@ -112,7 +112,7 @@ describe("authenticated discovery", () => {
 
     await expect(client.listWorkers()).resolves.toEqual(workerBody)
 
-    const [url, init] = vi.mocked(fetch).mock.calls[0]
+    const [url, init] = fetch.mock.calls[0]
     expect(url).toBe("http://gateway.test/v1/workers")
     expect(url).not.toContain("caller-token")
     expect(new Headers(init?.headers).get("authorization")).toBe(
@@ -271,23 +271,21 @@ describe("checkConnection", () => {
 
 describe("timeouts", () => {
   it("aborts a request that exceeds the configured deadline", async () => {
-    vi.useFakeTimers()
-    const fetch: GatewayFetch = (_url, init) =>
-      new Promise((_resolve, reject) => {
+    const fetch = mock((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
           reject(new DOMException("aborted", "AbortError"))
         })
-      })
+      }),
+    )
     const client = createGatewayClient({
       baseUrl: "http://gateway.test",
       fetch,
-      timeoutMs: 50,
+      timeoutMs: 10,
+      retry: { maxAttempts: 3, initialDelayMs: 1, maxDelayMs: 1 },
     })
 
-    const pending = client.health().catch((cause: unknown) => cause)
-    await vi.advanceTimersByTimeAsync(60)
-
-    await expect(pending).resolves.toMatchObject({ kind: "timeout" })
-    vi.useRealTimers()
+    await expect(client.health()).rejects.toMatchObject({ kind: "timeout" })
+    expect(fetch).toHaveBeenCalledTimes(3)
   })
 })

@@ -5,7 +5,7 @@ import {
   type ConnectionClient,
 } from "@/features/connection/connection-store"
 import { createTokenStore } from "@/features/connection/token-store"
-import { GatewayError, type ConnectionResult } from "@/sdk"
+import { GatewayError, type ConnectionResult } from "@goldenbee/sdk"
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>()

@@ -34,6 +34,29 @@ cargo run --locked -p goldenbee-client-cli -- --version
 
 Rust dependencies are pinned by `Cargo.lock`. Offline builds require their sources to be cached. Validation commands describe the checks to run; they do not assert that another agent's in-progress migration already passes.
 
+### Web workspace
+
+`apps/goldenbee-web` and `packages/goldenbee-sdk` are a Bun workspace. The web
+app imports the reusable `@goldenbee/sdk`; the SDK has no React, UI state, token
+storage, or hard-coded platform runtime. All authored source and configuration
+is TypeScript/TSX. `bun.lock` is committed at the repository root.
+
+```sh
+bun install --frozen-lockfile
+bun run check:ts-only
+bun run typecheck
+bun run lint
+bun test
+bun run build
+```
+
+CI uses the same commands. The browser bundle remains static; Bun is the package
+manager and JavaScript runtime for build, test, and development only, not a
+deployed Node server. `bun test` runs the `@goldenbee/sdk` contract suite on
+Bun's native runner. The web app's React DOM suite needs jsdom and runs through
+Vitest invoked by Bun.
+
+
 Install the Gateway directly from GitHub:
 
 ```sh

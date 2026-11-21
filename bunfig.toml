@@ -1,0 +1,4 @@
+[test]
+# The SDK uses Bun's native test runner. The web app's React DOM suite needs
+# jsdom and runs through Vitest via `bunx vitest` from apps/goldenbee-web.
+pathIgnorePatterns = ["apps/**", "**/node_modules/**"]
