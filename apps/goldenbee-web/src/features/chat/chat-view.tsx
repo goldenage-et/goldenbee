@@ -87,9 +87,9 @@ export function ChatView({ store, client }: ChatViewProps) {
             <Badge variant="outline">{chat.state.status}</Badge>
           </div>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            Submit a task to the selected Worker and stream its durable events.
-            Reasoning, tools, approvals, and task evidence arrive in later
-            screens.
+            Submit a task to the selected Worker and stream its events.
+            Reasoning, tools, plans, usage, and task evidence appear in the
+            trace; approvals arrive in a later screen.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

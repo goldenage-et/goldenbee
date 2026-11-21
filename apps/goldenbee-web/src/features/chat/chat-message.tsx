@@ -1,94 +1,24 @@
-import { CircleAlertIcon, CircleHelpIcon, LoaderCircleIcon, RotateCcwIcon } from "lucide-react"
+import { CircleAlertIcon, CircleHelpIcon } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Message, MessageContent } from "@/components/ui/message"
 import {
-  Trace,
-  TraceDescription,
-  TraceIcon,
-  TraceLine,
-  TraceTitle,
-} from "@/components/ui/trace"
-import { taskStateView } from "@/features/chat/chat-status"
+  PlanView,
+  ReasoningView,
+  TaskView,
+  ToolView,
+  UsageView,
+} from "@/features/chat/chat-trace"
 import type {
   ChatMessage,
   ChatPart,
-  ChatTaskPart,
   ChatTextPart,
 } from "@/features/chat/chat-types"
 
 function textParts(message: ChatMessage): ChatTextPart[] {
   return message.parts.filter(
     (part): part is ChatTextPart => part.type === "text",
-  )
-}
-
-function taskPart(message: ChatMessage): ChatTaskPart | undefined {
-  return message.parts.find(
-    (part): part is ChatTaskPart => part.type === "task",
-  )
-}
-
-function TaskView({
-  task,
-  busy,
-  onRetry,
-}: {
-  task: ChatTaskPart
-  busy: boolean
-  onRetry?: () => void
-}) {
-  const view = taskStateView(task.state)
-  const status =
-    view.tone === "working"
-      ? "running"
-      : view.tone === "warning"
-        ? "pending"
-        : view.tone === "error"
-          ? "error"
-          : undefined
-
-  return (
-    <Trace>
-      <TraceLine status={status}>
-        <TraceIcon>
-          {view.tone === "working" ? (
-            <LoaderCircleIcon className="animate-spin" />
-          ) : view.tone === "error" || view.tone === "warning" ? (
-            <CircleAlertIcon />
-          ) : null}
-        </TraceIcon>
-        <TraceTitle>{view.label}</TraceTitle>
-        {task.attempt > 1 ? (
-          <TraceDescription>attempt {task.attempt}</TraceDescription>
-        ) : null}
-      </TraceLine>
-      {view.guidance ? (
-        <p className="pl-6 text-xs text-muted-foreground">{view.guidance}</p>
-      ) : null}
-      {task.error ? (
-        <p className="pl-6 text-xs text-destructive">
-          {task.error.message}
-          {task.error.recovery ? ` ${task.error.recovery}` : ""}
-        </p>
-      ) : null}
-      {view.retryable && onRetry ? (
-        <div className="pl-6">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={onRetry}
-          >
-            <RotateCcwIcon data-icon="inline-start" aria-hidden="true" />
-            Retry
-          </Button>
-        </div>
-      ) : null}
-    </Trace>
   )
 }
 
@@ -159,8 +89,24 @@ export function ChatMessageView({
     )
   }
 
-  const task = taskPart(message)
+  const task = message.parts.find(
+    (part): part is Extract<ChatPart, { type: "task" }> => part.type === "task",
+  )
   const texts = textParts(message)
+  const reasoning = message.parts.filter(
+    (part): part is Extract<ChatPart, { type: "reasoning" }> =>
+      part.type === "reasoning",
+  )
+  const tools = message.parts.filter(
+    (part): part is Extract<ChatPart, { type: "tool" }> => part.type === "tool",
+  )
+  const plans = message.parts.filter(
+    (part): part is Extract<ChatPart, { type: "plan" }> => part.type === "plan",
+  )
+  const usages = message.parts.filter(
+    (part): part is Extract<ChatPart, { type: "usage" }> =>
+      part.type === "usage",
+  )
   const errors = message.parts.filter(
     (part): part is Extract<ChatPart, { type: "error" }> => part.type === "error",
   )
@@ -178,6 +124,20 @@ export function ChatMessageView({
   return (
     <Message>
       <MessageContent>
+        {reasoning.length > 0 || tools.length > 0 || plans.length > 0 ? (
+          <div className="flex flex-col gap-2">
+            {reasoning.map((part, index) => (
+              <ReasoningView key={`${message.id}-reasoning-${index}`} part={part} />
+            ))}
+            {tools.map((part) => (
+              <ToolView key={`${message.id}-tool-${part.id}`} part={part} />
+            ))}
+            {plans.map((part) => (
+              <PlanView key={`${message.id}-plan-${part.planId}`} part={part} />
+            ))}
+          </div>
+        ) : null}
+
         {texts.map((part, index) => (
           <div
             key={`${message.id}-text-${index}`}
@@ -230,6 +190,10 @@ export function ChatMessageView({
             }
           />
         ) : null}
+
+        {usages.map((part, index) => (
+          <UsageView key={`${message.id}-usage-${index}`} part={part} />
+        ))}
       </MessageContent>
     </Message>
   )
