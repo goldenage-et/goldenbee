@@ -13,6 +13,11 @@ const items: Array<{
     active: (route) => route.name === "overview",
   },
   {
+    route: { name: "chat" },
+    label: "Chat",
+    active: (route) => route.name === "chat",
+  },
+  {
     route: { name: "packages" },
     label: "Packages",
     active: (route) => route.name === "packages",

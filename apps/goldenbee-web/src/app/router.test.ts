@@ -9,12 +9,14 @@ describe("app hash routes", () => {
     expect(parseRoute("#/unknown")).toEqual({ name: "overview" })
   })
 
-  it("round-trips catalog and provider routes", () => {
+  it("round-trips catalog, chat, and provider routes", () => {
     expect(parseRoute("#/providers")).toEqual({ name: "providers" })
     expect(parseRoute("#/providers/openrouter")).toEqual({
       name: "provider",
       id: "openrouter",
     })
+    expect(parseRoute("#/chat")).toEqual({ name: "chat" })
+    expect(routeHref({ name: "chat" })).toBe("#/chat")
     expect(parseRoute(routeHref({ name: "provider", id: "team alpha" }))).toEqual({
       name: "provider",
       id: "team alpha",

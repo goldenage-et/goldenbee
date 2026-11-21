@@ -39,7 +39,9 @@ export function AppShell({
               <p className="text-xs text-muted-foreground">Gateway Client</p>
             </div>
           </div>
-          {nav ? <div className="order-3 w-full sm:order-none sm:w-auto">{nav}</div> : null}
+          {nav ? (
+            <div className="order-3 w-full sm:order-none sm:w-auto">{nav}</div>
+          ) : null}
           <div className="ml-auto flex items-center gap-2">
             <StatusBadge store={store} />
           </div>

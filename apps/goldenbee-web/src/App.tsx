@@ -3,6 +3,7 @@ import { useMemo, useState } from "react"
 import { useAppRoute } from "@/app/router"
 import { AppShell } from "@/components/shell/app-shell"
 import { AppNav } from "@/components/shell/app-nav"
+import { ChatView } from "@/features/chat/chat-view"
 import { ConnectedView } from "@/features/connection/connected-view"
 import {
   connectionStore,
@@ -54,20 +55,23 @@ export function App({ store = connectionStore, createProviderClient }: AppProps)
   )
 
   function connectedContent() {
-    if (!providerClient || !hostClient) {
-      return null
-    }
     switch (route.name) {
+      case "chat":
+        return <ChatView store={store} />
       case "packages":
-        return <PackagesPage client={hostClient} />
+        return hostClient ? <PackagesPage client={hostClient} /> : null
       case "instances":
-        return <InstancesPage client={hostClient} />
+        return hostClient ? <InstancesPage client={hostClient} /> : null
       case "instance":
-        return <InstanceDetailPage client={hostClient} instance={route.instance} />
+        return hostClient ? (
+          <InstanceDetailPage client={hostClient} instance={route.instance} />
+        ) : null
       case "providers":
-        return <ProvidersScreen client={providerClient} />
+        return providerClient ? <ProvidersScreen client={providerClient} /> : null
       case "provider":
-        return <ProviderDetailScreen client={providerClient} id={route.id} />
+        return providerClient ? (
+          <ProviderDetailScreen client={providerClient} id={route.id} />
+        ) : null
       case "overview":
         return <ConnectedView store={store} />
     }
