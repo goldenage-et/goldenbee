@@ -10,6 +10,7 @@
 pub mod artifact;
 pub mod backup;
 pub mod checkpoint;
+pub mod command;
 pub mod control;
 pub mod delegation;
 pub mod diagnostics;
@@ -45,6 +46,10 @@ pub use backup::{
 pub use checkpoint::{
     CheckpointDiff, CheckpointFileView, CheckpointRestoreOutcome, CheckpointRestoreRequest,
     CheckpointView, DiffHunk, DiffLine, FileDiff,
+};
+pub use command::{
+    kinds as command_kinds, CommandArgument, CommandDescriptor, CommandRequest, CommandResponse,
+    SkillDescriptor,
 };
 pub use control::{
     ControlAuditEntry, ControlCommand, ControlCommandRequest, ControlCommandResponse,
@@ -83,8 +88,8 @@ pub use plan::{
     PlanControlRequest, PlanCriterion,
 };
 pub use profile::{
-    Approval, ApprovalDecision, ContextCompaction, CreateProfileRequest, DeletedProfile, Profile,
-    ProfileRevision, ProfileVersionRequest, ReviseProfileRequest,
+    Approval, ApprovalAction, ApprovalDecision, ContextCompaction, CreateProfileRequest,
+    DeletedProfile, Profile, ProfileRevision, ProfileVersionRequest, ReviseProfileRequest,
 };
 pub use providers::{
     adapter_discovers_models, CreatePairCodeRequest, CreateProviderRequest, PairCodeResponse,

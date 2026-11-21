@@ -21,7 +21,7 @@ launcher-cli = ["adk-rust/cli", "dep:adk-cli"]
 adk-cli = { version = "=2.3.0", default-features = false, optional = true }
 common = { path = "../common" }
 provider-crypto = { path = "../provider-crypto" }
-adk-rust = { version = "=2.3.0", default-features = false, features = ["agents", "runner", "sessions", "openrouter", "ollama", "openai", "skills", "plugin", "server", "a2a"] }
+adk-rust = { version = "=2.3.0", default-features = false, features = ["agents", "runner", "sessions", "openrouter", "ollama", "openai", "skills", "skills-progressive-disclosure", "plugin", "server", "a2a"] }
 # Delegate team relationships lower to native AgentTools. The facade's `tools`
 # feature would also add unrelated toolsets, so enable the narrower upstream
 # feature on the pinned agent crate directly.

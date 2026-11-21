@@ -55,6 +55,7 @@ stream_keepalive_ms = 15000         # optional SSE keepalive interval
 agents = "./agents"
 prompts = "./prompts"
 skills = "./skills"
+commands = "./commands"
 
 [storage]
 directory = "./state"
@@ -307,6 +308,112 @@ optional = false                 # a missing file fails startup
   no public immediate-compaction method, so the response reports
   `applies_on = "next_model_turn"`; canonical session events are retained.
 
+## Permission modes and rules
+
+The operator selects one mode and may add ordered rules. The policy is data in
+the Worker configuration; it is evaluated before every tool dispatch in the
+shared kernel, for package tools, built-in tools, MCP toolset views, and tools
+bound by profile or package agents.
+
+```toml
+[permissions]
+mode = "default"          # default | accept-edits | plan | full-auto
+approval_wait_ms = 30000  # bounded in-tool wait before a truthful pending result
+approval_ttl_ms = 900000  # how long a decision can authorize a retry
+
+[[permissions.rules]]
+id = "allow-git-status"
+decision = "allow"        # allow | deny | ask
+tools = ["exec_command"]
+command_prefix = ["git", "status"]
+priority = 10
+
+[[permissions.rules]]
+id = "deny-secrets"
+decision = "deny"
+paths = ["secrets/*"]
+priority = 100
+
+[[permissions.rules]]
+id = "ask-remote"
+decision = "ask"
+domains = ["*.example.com"]
+```
+
+| Mode | Reads | File writes/edits | Deletes, commands, network, high risk |
+| --- | --- | --- | --- |
+| `default` | allow | ask | ask |
+| `accept-edits` | allow | allow | ask |
+| `plan` | allow | deny | deny |
+| `full-auto` | allow | allow | allow |
+
+A rule matches by tool-name glob (`*` and `?`), command argv prefix, resolved
+workspace-relative path glob, and network host glob. Empty predicates do not
+constrain that dimension. A `paths` rule matches only when at least one resolved
+path matches; a `command_prefix` rule matches only when the call actually
+carries a command; a `domains` rule matches only when the call actually carries
+a host. Matching never trusts a model-supplied label of the tool, path, command,
+or domain.
+
+Rules are ordered data. The highest-priority matching rule group decides; at
+equal priority `deny` outranks `ask`, which outranks `allow`, and the first rule
+in configuration order wins an exact tie. A mode is a ceiling: an `allow` rule
+can upgrade a default ask, but it cannot widen `plan`. An explicit `deny` always
+wins, including in `full-auto`; `full-auto` auto-approves `ask` rules because the
+mode exists to remove prompts.
+
+### Approval identity
+
+An ask creates one durable approval bound to the exact tool, canonical argument
+digest, resolved paths, command, network domain, sandbox profile, requesting
+principal, and pinned profile revision. The canonical digest of that action is
+the approval digest. Repeating the same action finds the recorded decision; any
+changed field produces a new digest and therefore a new decision. Argument
+content appears as a digest, not as plaintext in events or audit. The
+`approval.requested` event and the approval record carry the exact action, the
+mode, and the matching rule, so a Client can render why work paused.
+
+An approval can be approved or rejected through the existing approval routes.
+Only the task caller or an administrator in the task namespace may decide, and
+the decision must carry the digest the approver saw.
+
+### Ask behavior
+
+A decision is requested inside the tool call and waits up to
+`approval_wait_ms`. The turn releases its execution permit while it waits, as
+with any native approval.
+
+- If a decision arrives in time, an approval allows that exact call and a
+  rejection or expiry returns `permission.denied` without executing.
+- If no decision arrives, the call returns a typed `approval.pending` result,
+  appends an `approval.pending` event, and the native turn continues. The
+  approval stays durable for a later decision, but a later retry is a new call
+  and must produce the same exact action to reuse it.
+- Ordinary, non-graph tasks are not resumable from a pending approval. The
+  runtime does not claim that continuing the turn authorizes the action, and it
+  does not claim checkpoint-based resume for a non-graph task.
+
+### Evidence and audit
+
+Every decision appends a `permission.decision` event before dispatch with the
+final `decision`, the evaluated `evaluated` value, `mode`, `rule`, `reason`,
+`paths`, `command`, `domain`, `action_digest`, the sandbox profile, and a
+`policy` snapshot (`revision`, `digest`, `mode`, `rule_count`). `tool.started`
+and `tool.completed` carry the same decision under `permission`.
+
+Protected effect tools keep their own exact operation approval. When the mode
+would ask for an effect tool, the kernel records the handoff through
+`tool.started`/`tool.completed` and does not create a second approval; the
+effect tool's `approval.requested` remains the decision evidence. An explicit
+ask rule is still enforced by the kernel.
+
+Denied calls do not execute. They append the same event and a redacted
+`permission.decision` audit record whose detail names the matching rule and
+decision without argument or command plaintext. An operator policy change
+advances the policy revision and records a `permission.policy` audit entry.
+Each tool call snapshots the policy when it starts, so a change applies only to
+later calls and earlier evidence keeps the revision that actually decided it.
+
 ## Agent definitions
 
 Agent files live in the configured `agents` directory. Each `*.toml` is one
@@ -468,10 +575,59 @@ fallback = "deny"                        # deny | deterministic
 `skills/<name>/SKILL.md` files are parsed by the pinned native
 `adk_skill::parse_skill_markdown` parser. The catalog is exposed through Worker
 context and resolved by agent definitions and profile revisions. A resolved
-agent receives a native `SkillIndex` containing only its selected skills; the
-pinned native selector chooses the relevant skill for each user turn and injects
-that prompt block. Loading a catalog never inserts every skill into every
-agent prompt, and skill text is instructional data, not executable code.
+agent receives a native `SkillIndex` containing only its selected skills.
+
+Two disclosure modes exist:
+
+```toml
+[skills]
+disclosure = "inherit"      # default: eager selection/injection
+max_instruction_chars = 8000
+max_resource_chars = 16000
+```
+
+- `inherit` keeps `LlmAgentBuilder::with_skills`: the pinned selector chooses
+  the relevant skill for each user turn and injects that prompt block.
+- `progressive` is available only when the package declares
+  `Worker::progressive_skills()`. The agent receives `list_skills` (names and
+  descriptions), `load_skill` (one body), and `load_skill_resource` (one file
+  under `references/`, `assets/`, or `scripts/`). Bodies are never injected up
+  front.
+
+Pinned gap: `adk_skill::SkillToolset` records activation in session state, but
+the Runner's `ToolContext::state()` returns `None` in ADK 2.3.0, so native L3
+always rejects an activated skill. The runtime adapter uses the pinned
+`adk_skill::build_skill_system_instruction` and `SkillIndex` but reads the
+immutable index directly. It never adds a tool: `allowed-tools` is validated
+against tools already bound to that agent. Scripts are readable resources only;
+they are never executed by the skill surface. To run one, the model must call
+the ordinary sandboxed command tool under its normal approval policy.
+
+`commands/*.toml` files define Worker slash commands and are loaded only from
+the operator-selected `paths.commands` directory. The file stem is the command
+name; subdirectories use Gemini-style namespacing (`review/security.toml` becomes
+`review:security`). Unknown fields, duplicate names, malformed placeholders, and
+`!{...}` shell interpolation fail startup.
+
+```toml
+description = "Summarize a topic"
+prompt = "Summarize {{args}} for an operator audience."
+allowed_tools = ["read_file"]
+model = "fast"                 # must be a model the Worker already declares
+agent = "general"              # must be a loaded (file-defined) agent
+
+[[arguments]]
+name = "audience"
+default = "operator"
+```
+
+Declared arguments are parsed as `--name value` or `--name=value`. Missing,
+unknown, duplicate, positional, and unclosed-quote inputs fail with
+`command.*` errors before task admission. A command may only narrow the target
+agent: `allowed_tools` must be a subset of the tools that agent already binds,
+and the command model must be a model already declared by an agent or the
+default model. A command with `allowed_tools` drops dynamic toolsets, MCP
+servers, and skill binding because those surfaces cannot be proven narrower.
 
 Asset files must resolve inside their configured directory. A prompt, agent, or
 `SKILL.md` symlink that escapes the configured root fails `asset.path_denied`
@@ -760,7 +916,11 @@ Known gaps:
 - Enhanced plugins (`adk_agent::LlmAgentBuilder::enhanced_plugin`) are not used;
   they overlap the per-agent callback surface and are not needed for this slice.
 - Skill binding uses the pinned native `SkillIndex`/`LlmAgentBuilder::with_skills`
-  selection path. A filesystem watcher is not installed; operators explicitly
-  validate and activate a candidate with `reload`/SIGHUP.
+  selection path, or `adk_skill::build_skill_system_instruction` with a bounded
+  runtime L1/L2/L3 adapter when the package and operator select progressive
+  disclosure. `adk_skill::SkillToolset` activation checks cannot be used because
+  the Runner's `ToolContext::state()` is `None`; that gap is documented above.
+  A filesystem watcher is not installed; operators explicitly validate and
+  activate a candidate with `reload`/SIGHUP.
 - `before_task` runs after durable admission, so a rejected task has a durable
   `failed` record rather than disappearing.

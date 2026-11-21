@@ -30,7 +30,9 @@ revision store and never create a second profile loader or authority.
 | `/a2a`, `/a2a/stream` | Native | ADK A2A JSON-RPC transport. |
 | `/v1/health` | New | Minimal public liveness. |
 | `/v1/status` | New | Authenticated health, readiness, lifecycle, and capacity projection. |
-| `/v1/capabilities` | New | Authenticated manifest and durability disclosure. |
+| `/v1/capabilities` | New | Authenticated manifest, command inventory, and durability disclosure. |
+| `/v1/commands` | New | List runtime and Worker-defined commands. Requires `task:read`. |
+| `/v1/commands/{name}` | New | Read one command descriptor, or invoke it with `POST`. Invocation requires `task:submit`. |
 | `/v1/drain` | New | Authorized bounded drain. Requires `instance:admin`. |
 | `/v1/tasks` | New | Durable task admission with caller-scoped idempotency. |
 | `/v1/tasks/{id}` | New | Durable task projection. |
@@ -152,6 +154,27 @@ revision, and asset revision provenance.
   child authority. `POST .../cancel` addresses each exact remote task id.
 - Gateway is not required for dispatch or recovery. A team task that already
   reached its Master continues over native A2A while Gateway is down.
+## Commands
+
+`GET /v1/commands` returns the same inventory the CLI prints: neutral
+`session.*`, `context.info`, `permissions.info`, `skills.list`, and
+`commands.list` entries plus Worker commands loaded from `paths.commands`.
+
+- `GET /v1/commands/{name}` requires `task:read`.
+- `POST /v1/commands/{name}` requires `task:submit` and accepts
+  `{"input": "...", "session_id": "...", "idempotency_key": "...",
+  "agent": "...", "limits": {...}}`.
+- Neutral commands return `{"command", "kind": "neutral", "result"}`.
+- Worker commands return `{"command", "kind": "worker", "result", "task"}` and
+  admit a normal durable task for the prebuilt narrowed command agent.
+- Malformed arguments, an agent override that differs from the command target,
+  and an undeclared model or tool fail before task admission.
+
+Worker commands can only narrow their target agent. Their `allowed_tools` must
+be a subset of tools the target agent already binds, and their `model` must be a
+model the Worker already declares. Command assets are resolved against the
+operator-selected configuration directory.
+
 ## Runtime Profile management
 
 Profiles remain Worker-owned configuration. Product Clients reach these routes
@@ -435,6 +458,26 @@ worker = worker.effect_tool(id, tool, reconciler, policy);
   approval never widens the effect policy, tool set, namespace, or caller.
 - Waiting releases the execution slot; only the per-session writing order is
   retained.
+
+### Permission approvals
+
+Permission rules reuse the same durable approval record and routes. An `ask`
+rule or mode decision creates a request whose action binds the tool, canonical
+argument digest, resolved workspace paths, command, network domain, sandbox
+profile, requesting principal, and pinned profile revision. The digest of that
+action is the approval digest, so a changed retry creates a new request.
+
+- The `approval.requested` event and the approval record carry the exact
+  `action`, the permission `mode`, and the matching `rule`.
+- The tool call waits up to `permissions.approval_wait_ms`. The task is
+  `waiting_approval` during the wait and the execution slot is released.
+- If no decision arrives, the call returns a typed `approval.pending` result and
+  appends `approval.pending`. The native turn continues; the runtime does not
+  claim that this authorizes the action and does not claim non-graph resume.
+- A later decision is durable and may authorize an identical retry. A rejected,
+  revoked, or expired approval returns `permission.denied`.
+- Every decision emits `permission.decision` and writes a redacted
+  `permission.decision` audit record naming the rule, mode, and outcome.
 
 ## Task event streams
 

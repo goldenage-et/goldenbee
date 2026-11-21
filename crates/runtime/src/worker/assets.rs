@@ -33,6 +33,14 @@ pub(super) struct Assets {
     pub(super) agent_requirements: BTreeMap<String, AgentRequirement>,
     /// Configured memory files for this immutable asset revision.
     pub(super) context: ContextBundle,
+    /// Discoverable commands and their prepared inventory.
+    pub(super) commands: Arc<crate::commands::CommandRegistry>,
+    /// Prebuilt narrowed agents for Worker-defined commands.
+    pub(super) command_agents: BTreeMap<String, Arc<dyn Agent>>,
+    /// MCP server declarations for each command route.
+    pub(super) command_mcp: BTreeMap<String, Vec<String>>,
+    /// Resolved skill disclosure behavior for this revision.
+    pub(super) skill_disclosure: crate::agents::skills::SkillDisclosure,
 }
 
 impl Assets {
@@ -55,6 +63,7 @@ impl Assets {
             memory,
             providers,
             graph,
+            &worker.manifest().required_permissions,
         )
     }
 
@@ -78,6 +87,7 @@ impl Assets {
             memory,
             providers,
             graph,
+            &inner.manifest.required_permissions,
         )
     }
 
@@ -93,9 +103,11 @@ impl Assets {
         memory: Option<&Arc<NativeMemory>>,
         providers: &Arc<ProviderRegistry>,
         graph: Option<&Arc<NativeKnowledgeGraph>>,
+        required_permissions: &[String],
     ) -> WorkerResult<Self> {
         let mcp_ids: BTreeSet<String> = settings.file.mcp.servers.keys().cloned().collect();
         let mut tools = tools.clone();
+        let skill_disclosure = settings.skill_disclosure();
         let kernel = settings.tool_kernel();
         if let Some(memory) = memory {
             let tool: Arc<dyn Tool> = Arc::new(RememberMemoryTool::new(memory.clone()));
@@ -182,6 +194,8 @@ impl Assets {
                 mcp_ids: &mcp_ids,
                 prompts: &prompts,
                 skills: &skills,
+                skill_disclosure: &skill_disclosure,
+                kernel: kernel.as_ref(),
                 context: &context,
                 effect_tools: effect_approvals.keys().cloned().collect(),
                 callbacks,
@@ -261,6 +275,35 @@ impl Assets {
             ));
         }
 
+        let mut declared_models: BTreeSet<String> = definitions
+            .iter()
+            .map(|definition| definition.model.clone())
+            .collect();
+        declared_models.extend(agent_providers.values().cloned());
+        declared_models.insert(settings.file.default_model.clone());
+        let command_effect_tools: BTreeSet<String> = effect_approvals.keys().cloned().collect();
+        let loaded_commands = crate::commands::load(crate::commands::CommandInput {
+            settings,
+            specs: &specs,
+            prompts: &prompts,
+            skills: &skills,
+            tools: &tools,
+            toolsets,
+            mcp_ids: &mcp_ids,
+            providers,
+            kernel: kernel.as_ref(),
+            callbacks,
+            memory,
+            catalog: &catalog,
+            effect_tools: &command_effect_tools,
+            declared_models: &declared_models,
+            required_permissions,
+            disclosure: &skill_disclosure,
+            context: &context,
+        })?;
+
+        agent_providers.extend(loaded_commands.providers.clone());
+        agent_requirements.extend(loaded_commands.requirements.clone());
         Ok(Self {
             config: settings.clone(),
             agents,
@@ -271,6 +314,10 @@ impl Assets {
             agent_providers,
             agent_requirements,
             context,
+            commands: loaded_commands.registry,
+            command_agents: loaded_commands.agents,
+            command_mcp: loaded_commands.mcp,
+            skill_disclosure,
         })
     }
 }
@@ -500,7 +547,7 @@ fn load_definitions(dir: Option<&Path>) -> WorkerResult<Vec<AgentDefinition>> {
     Ok(definitions)
 }
 
-fn canonical_dir(dir: &Path, kind: &str) -> WorkerResult<PathBuf> {
+pub(crate) fn canonical_dir(dir: &Path, kind: &str) -> WorkerResult<PathBuf> {
     dir.canonicalize().map_err(|error| {
         ApiError::new(
             format!("asset.{kind}_missing"),
@@ -518,7 +565,7 @@ fn canonical_dir(dir: &Path, kind: &str) -> WorkerResult<PathBuf> {
 /// that resolves outside that root is rejected. This prevents a file or skill
 /// directory symlink from exposing package-source or unrelated host files as
 /// operator assets.
-fn safe_file(path: &Path, root: &Path, kind: &str) -> WorkerResult<PathBuf> {
+pub(crate) fn safe_file(path: &Path, root: &Path, kind: &str) -> WorkerResult<PathBuf> {
     let resolved = path.canonicalize().map_err(|error| {
         ApiError::new(
             format!("asset.{kind}_unreadable"),
@@ -537,7 +584,7 @@ fn safe_file(path: &Path, root: &Path, kind: &str) -> WorkerResult<PathBuf> {
     Ok(resolved)
 }
 
-fn read_dir(dir: &Path, kind: &str) -> WorkerResult<Vec<PathBuf>> {
+pub(crate) fn read_dir(dir: &Path, kind: &str) -> WorkerResult<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dir).map_err(|error| {
         ApiError::new(
             format!("asset.{}_missing", kind),

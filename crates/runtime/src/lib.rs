@@ -8,6 +8,7 @@
 mod agents;
 pub mod browser;
 pub mod checkpoints;
+pub(crate) mod commands;
 pub mod context;
 mod core;
 mod data;
@@ -15,6 +16,7 @@ mod execution;
 pub mod master;
 pub mod mcp;
 pub mod peer;
+pub mod policy;
 mod sandbox;
 pub mod serving;
 mod sessions;
@@ -61,6 +63,10 @@ pub use master::{
     PlanRecovery,
 };
 pub use peer::{DelegateRequest, DelegatedArtifact, PeerConfig, PeerDelegation, PeerRecord};
+pub use policy::{
+    ActionEffect, Decision as PermissionDecision, PermissionMode, PermissionPolicy,
+    PermissionRequest, PermissionRule, PolicyDecision, RuleDecision,
+};
 pub use tasks::Recovery;
 
 pub(crate) use common::ApiError;

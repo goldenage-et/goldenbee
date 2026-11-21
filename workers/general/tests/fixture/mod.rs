@@ -8,6 +8,7 @@ pub struct Fixture {
     pub assets: PathBuf,
     pub agents: PathBuf,
     pub prompts: PathBuf,
+    pub commands: PathBuf,
 }
 
 pub struct Options {
@@ -74,9 +75,11 @@ fn write_inner(
     let assets = data.join("assets");
     let agents = assets.join("agents");
     let prompts = assets.join("prompts");
+    let commands = assets.join("commands");
     let skills = assets.join("skills").join("tone");
     std::fs::create_dir_all(&agents).expect("agent directory");
     std::fs::create_dir_all(&prompts).expect("prompt directory");
+    std::fs::create_dir_all(&commands).expect("command directory");
     std::fs::create_dir_all(&skills).expect("skill directory");
     std::fs::write(
         skills.join("SKILL.md"),
@@ -145,7 +148,7 @@ fn write_inner(
         ));
     }
     config.push_str(
-        "\n[paths]\nagents = \"assets/agents\"\nprompts = \"assets/prompts\"\nskills = \"assets/skills\"\n",
+        "\n[paths]\nagents = \"assets/agents\"\nprompts = \"assets/prompts\"\nskills = \"assets/skills\"\ncommands = \"assets/commands\"\n",
     );
     config.push_str(&format!(
         "\n[storage]\ndirectory = \"{}\"\n",
@@ -173,6 +176,7 @@ fn write_inner(
         assets,
         agents,
         prompts,
+        commands,
     }
 }
 

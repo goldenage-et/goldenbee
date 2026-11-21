@@ -256,6 +256,7 @@ impl Runtime {
                     .capabilities
                     .iter()
                     .any(|capability| capability.id == agent)
+                    && !self.config().routing_agents.contains(&agent)
                     && local_team.is_none()
                 {
                     return Err(ApiError::new(
@@ -287,6 +288,7 @@ impl Runtime {
                         .iter()
                         .any(|capability| capability == "*")
                     && !revision.capabilities.contains(&agent)
+                    && !self.config().routing_agents.contains(&agent)
                 {
                     return Err(ApiError::new(
                         "profile.capability_denied",

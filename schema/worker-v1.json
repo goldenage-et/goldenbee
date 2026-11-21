@@ -343,6 +343,57 @@
         "cursor_expiry": { "type": "integer", "minimum": 0 }
       }
     },
+    "commandArgument": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "required": { "type": "boolean" },
+        "default": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "commandDescriptor": {
+      "type": "object",
+      "required": ["name", "description", "kind", "source"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "kind": { "type": "string", "enum": ["neutral", "worker"] },
+        "source": { "type": "string", "enum": ["runtime", "assets"] },
+        "arguments": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/commandArgument" }
+        },
+        "allowed_tools": { "type": "array", "items": { "type": "string" } },
+        "model": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "commandRequest": {
+      "type": "object",
+      "properties": {
+        "input": { "type": "string" },
+        "arguments": { "type": "object", "additionalProperties": { "type": "string" } },
+        "session_id": { "type": "string" },
+        "idempotency_key": { "type": "string" },
+        "agent": { "type": "string" },
+        "limits": { "$ref": "#/definitions/limits" }
+      },
+      "additionalProperties": false
+    },
+    "commandResponse": {
+      "type": "object",
+      "required": ["command", "kind"],
+      "properties": {
+        "command": { "type": "string" },
+        "kind": { "type": "string", "enum": ["neutral", "worker"] },
+        "result": {},
+        "task": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
     "capabilities": {
       "type": "object",
       "required": ["package", "version", "protocol", "runtime", "adk", "instance", "durable_tasks", "a2a_task_storage", "a2a_durable", "artifact_storage", "artifact_transfer", "artifact_max_bytes", "capabilities"],
@@ -359,6 +410,10 @@
         "artifact_storage": { "type": "string" },
         "artifact_transfer": { "type": "string" },
         "artifact_max_bytes": { "type": "integer", "minimum": 1 },
+        "commands": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/commandDescriptor" }
+        },
         "capabilities": {
           "type": "array",
           "items": {

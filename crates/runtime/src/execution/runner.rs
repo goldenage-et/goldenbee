@@ -229,6 +229,7 @@ pub struct NativeExecutor {
     agent_specs: BTreeMap<String, AgentSpec>,
     /// Canonical session store, when one exposes manual-compaction scheduling.
     file_sessions: Option<Arc<FileSessionService>>,
+    tool_kernel: crate::tools::ToolKernel,
 }
 
 impl NativeExecutor {
@@ -287,6 +288,7 @@ impl NativeExecutor {
             agent_prompts: BTreeMap::new(),
             agent_specs: BTreeMap::new(),
             file_sessions: None,
+            tool_kernel: crate::tools::ToolKernel::new(),
         })
     }
 
@@ -380,6 +382,13 @@ impl NativeExecutor {
     /// compaction can be consumed on the next model turn.
     pub fn with_file_sessions(mut self, sessions: Arc<FileSessionService>) -> Self {
         self.file_sessions = Some(sessions);
+        self
+    }
+
+    /// Attach the process-wide tool kernel so skill toolsets share the same
+    /// bounded execution pipeline.
+    pub fn with_tool_kernel(mut self, kernel: crate::tools::ToolKernel) -> Self {
+        self.tool_kernel = kernel;
         self
     }
 

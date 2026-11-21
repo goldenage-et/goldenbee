@@ -80,6 +80,7 @@ pub(crate) mod definition;
 pub mod graph;
 #[cfg(feature = "graph")]
 pub mod graph;
+pub(crate) mod skills;
 pub(crate) mod workflow;
 
 pub use composition::compose_agent;
