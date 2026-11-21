@@ -130,14 +130,19 @@ impl CommandAsset {
     }
 }
 
-/// Load every command asset under one configured directory.
-pub(crate) fn load(dir: Option<&Path>) -> Result<Vec<CommandAsset>, ApiError> {
-    let Some(dir) = dir else {
-        return Ok(Vec::new());
-    };
+/// Load every command asset under the configured Worker and plugin directories.
+pub(crate) fn load(dirs: &[PathBuf]) -> Result<Vec<CommandAsset>, ApiError> {
+    let mut assets: Vec<CommandAsset> = Vec::new();
+    for dir in dirs {
+        load_into(dir, &mut assets)?;
+    }
+    assets.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(assets)
+}
+
+fn load_into(dir: &Path, assets: &mut Vec<CommandAsset>) -> Result<(), ApiError> {
     let root = canonical_dir(dir, "command")?;
     let mut pending = vec![(root.clone(), Vec::<String>::new())];
-    let mut assets: Vec<CommandAsset> = Vec::new();
     while let Some((directory, namespace)) = pending.pop() {
         for path in read_dir(&directory, "command")? {
             if path.is_dir() {
@@ -215,8 +220,7 @@ pub(crate) fn load(dir: Option<&Path>) -> Result<Vec<CommandAsset>, ApiError> {
             assets.push(resolve(file, name, safe)?);
         }
     }
-    assets.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(assets)
+    Ok(())
 }
 
 fn resolve(file: CommandFile, name: String, _path: PathBuf) -> Result<CommandAsset, ApiError> {
@@ -398,7 +402,7 @@ mod tests {
             "review/security.toml",
             "description = \"Security review\"\nprompt = \"Review {{args}} as {{audience}}\"\n\n[[arguments]]\nname = \"audience\"\ndefault = \"operator\"\n",
         );
-        let assets = load(Some(temp.path())).expect("commands load");
+        let assets = load(&[temp.path().to_path_buf()]).expect("commands load");
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].name, "review:security");
         assert_eq!(assets[0].arguments[0].name, "audience");
@@ -413,12 +417,12 @@ mod tests {
             "one.toml",
             "name = \"same\"\nprompt = \"{{unknown}}\"",
         );
-        let error = load(Some(temp.path())).expect_err("unknown placeholder");
+        let error = load(&[temp.path().to_path_buf()]).expect_err("unknown placeholder");
         assert_eq!(error.code, "asset.command_placeholder_unknown");
 
         write(temp.path(), "one.toml", "name = \"same\"\nprompt = \"ok\"");
         write(temp.path(), "two.toml", "name = \"same\"\nprompt = \"ok\"");
-        let error = load(Some(temp.path())).expect_err("duplicate name");
+        let error = load(&[temp.path().to_path_buf()]).expect_err("duplicate name");
         assert_eq!(error.code, "asset.command_duplicate");
     }
 
@@ -430,7 +434,7 @@ mod tests {
             "run.toml",
             "prompt = \"!{touch canary}\\n{{args}}\"",
         );
-        let error = load(Some(temp.path())).expect_err("shell interpolation");
+        let error = load(&[temp.path().to_path_buf()]).expect_err("shell interpolation");
         assert_eq!(error.code, "asset.command_shell_rejected");
     }
 
@@ -438,7 +442,7 @@ mod tests {
     fn unknown_fields_and_invalid_arguments_are_rejected() {
         let temp = tempfile::tempdir().expect("tempdir");
         write(temp.path(), "bad.toml", "prompt = \"ok\"\nunknown = true");
-        let error = load(Some(temp.path())).expect_err("unknown field");
+        let error = load(&[temp.path().to_path_buf()]).expect_err("unknown field");
         assert_eq!(error.code, "asset.command_malformed");
 
         write(
@@ -446,7 +450,7 @@ mod tests {
             "bad.toml",
             "prompt = \"{{style}}\"\n\n[[arguments]]\nname = \"style\"\nrequired = true\ndefault = \"brief\"",
         );
-        let error = load(Some(temp.path())).expect_err("required default");
+        let error = load(&[temp.path().to_path_buf()]).expect_err("required default");
         assert_eq!(error.code, "asset.command_argument_invalid");
     }
 
@@ -459,7 +463,7 @@ mod tests {
         std::fs::write(&target, "prompt = \"escaped\"").expect("outside command");
         std::os::unix::fs::symlink(&target, temp.path().join("escape.toml"))
             .expect("command symlink");
-        let error = load(Some(temp.path())).expect_err("escaping command");
+        let error = load(&[temp.path().to_path_buf()]).expect_err("escaping command");
         assert_eq!(error.code, "asset.path_denied");
     }
 }

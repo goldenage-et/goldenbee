@@ -130,9 +130,9 @@ pub use telemetry::{
 };
 pub use worker::{
     AddWorkerRequest, AddWorkerResponse, AdminWorkerSummary, BrowserCapabilityInventory,
-    CapabilityDescriptor, CapabilityInventory, RegistryAuditEntry, UpdateWorkerRequest,
-    WorkerDescriptor, WorkerDiscoveryFilter, WorkerIncarnation, WorkerLease, WorkerLeaseRequest,
-    WorkerRegistrationRequest, WorkerSummary, LOCALITY_LOCAL, LOCALITY_REMOTE,
+    CapabilityDescriptor, CapabilityInventory, PluginCapabilityInventory, RegistryAuditEntry,
+    UpdateWorkerRequest, WorkerDescriptor, WorkerDiscoveryFilter, WorkerIncarnation, WorkerLease,
+    WorkerLeaseRequest, WorkerRegistrationRequest, WorkerSummary, LOCALITY_LOCAL, LOCALITY_REMOTE,
 };
 
 /// Wire protocol version implemented by this crate.

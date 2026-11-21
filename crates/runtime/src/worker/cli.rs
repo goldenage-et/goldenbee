@@ -1247,7 +1247,8 @@ impl Worker {
                     .with_durable_a2a(a2a.durable())
                     .with_browser(instance.browser())
                     .with_default_agent(default_agent)
-                    .with_commands(instance.command_registry().await);
+                    .with_commands(instance.command_registry().await)
+                    .with_plugins(instance.plugin_inventory().await);
                 let app = crate::serving::api_router(state.clone())
                     .merge(native)
                     .merge(a2a.router());

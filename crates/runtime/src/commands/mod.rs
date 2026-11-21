@@ -147,7 +147,12 @@ pub(crate) struct LoadedCommands {
 /// Load command assets, validate their narrowing against declared assets, and
 /// build one bounded agent per command.
 pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
-    let assets = asset::load(input.settings.commands_dir.as_deref())?;
+    let mut command_dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(directory) = input.settings.commands_dir.as_ref() {
+        command_dirs.push(directory.clone());
+    }
+    command_dirs.extend(input.settings.plugin_commands.iter().cloned());
+    let assets = asset::load(&command_dirs)?;
     let mut commands = BTreeMap::new();
     let mut agents = BTreeMap::new();
     let mut mcp = BTreeMap::new();

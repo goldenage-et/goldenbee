@@ -372,6 +372,43 @@ pub struct BrowserCapabilityInventory {
     pub terminal_control: bool,
 }
 
+/// Installed plugin bundle projected by `/v1/capabilities`.
+///
+/// It carries inventory metadata only: no host path and no credential value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginCapabilityInventory {
+    /// Plugin identity.
+    pub name: String,
+    /// Bundle version.
+    pub version: String,
+    /// Operator-facing description.
+    pub description: String,
+    /// Trust source: `signature` or `allowlist`.
+    pub trust: String,
+    /// Signer identity, or `operator`.
+    pub signer: String,
+    /// Content digest.
+    pub digest: String,
+    /// Resolved component summary.
+    #[serde(default)]
+    pub components: Vec<String>,
+    /// Declared tool ids.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// External hook labels.
+    #[serde(default)]
+    pub hooks: Vec<String>,
+    /// Bundled MCP server ids.
+    #[serde(default)]
+    pub mcp: Vec<String>,
+    /// Number of bundled skills.
+    #[serde(default)]
+    pub skills: usize,
+    /// Number of bundled commands.
+    #[serde(default)]
+    pub commands: usize,
+}
+
 /// Shared capability inventory returned by a Worker management surface.
 ///
 /// The Worker, Gateway, SDK, and CLI use this one shape so a capability is not
@@ -417,6 +454,9 @@ pub struct CapabilityInventory {
     /// Discoverable runtime and Worker-defined commands.
     #[serde(default)]
     pub commands: Vec<crate::command::CommandDescriptor>,
+    /// Trusted plugin bundles active for this revision.
+    #[serde(default)]
+    pub plugins: Vec<PluginCapabilityInventory>,
     /// Package-declared browser capability, when installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserCapabilityInventory>,

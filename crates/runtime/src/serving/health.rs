@@ -99,6 +99,7 @@ pub(super) async fn capabilities(
             Some(commands) => commands.descriptors().to_vec(),
             None => Vec::new(),
         },
+        plugins: state.plugins.iter().cloned().map(Into::into).collect(),
         browser,
     }))
 }

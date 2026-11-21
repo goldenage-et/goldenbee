@@ -235,6 +235,27 @@ impl Runtime {
             settings: self.settings().await,
             cancel: cancel.clone(),
         };
+        let state = match committed.state {
+            Some(TaskState::Accepted) => "accepted",
+            Some(TaskState::Queued) => "queued",
+            Some(TaskState::Running) => "running",
+            Some(TaskState::WaitingApproval) => "waiting_approval",
+            Some(TaskState::Cancelling) => "cancelling",
+            Some(TaskState::Succeeded) => "succeeded",
+            Some(TaskState::Failed) => "failed",
+            Some(TaskState::Cancelled) => "cancelled",
+            Some(TaskState::Recovering) => "recovering",
+            Some(TaskState::Unknown) => "unknown",
+            None if committed.error.is_some() => "failed",
+            None => "succeeded",
+        };
+        self.stop_hook(&crate::worker::StopHookContext {
+            task: hook_ctx.clone(),
+            state: state.to_string(),
+            error_code: committed.error.as_ref().map(|error| error.code.clone()),
+            uncertainty: committed.uncertainty.clone(),
+        })
+        .await;
         if let Some(error) = self.after_task_hook(&hook_ctx, &committed).await {
             let _ = self
                 .append_event(

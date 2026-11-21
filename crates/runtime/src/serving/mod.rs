@@ -52,6 +52,8 @@ pub struct WorkerState {
     pub(crate) commands: Option<Arc<crate::commands::CommandRegistry>>,
     /// Configured default agent for a run that omits one.
     pub default_agent: Option<String>,
+    /// Trusted plugin bundles active for this revision.
+    pub plugins: Vec<crate::plugins::PluginView>,
 }
 
 impl WorkerState {
@@ -64,6 +66,7 @@ impl WorkerState {
             browser: None,
             commands: None,
             default_agent: None,
+            plugins: Vec::new(),
         }
     }
 
@@ -88,6 +91,12 @@ impl WorkerState {
     /// Attach the configured default agent for agent-omitted headless runs.
     pub fn with_default_agent(mut self, agent: impl Into<String>) -> Self {
         self.default_agent = Some(agent.into());
+        self
+    }
+
+    /// Attach the trusted plugin inventory for this asset revision.
+    pub fn with_plugins(mut self, plugins: Vec<crate::plugins::PluginView>) -> Self {
+        self.plugins = plugins;
         self
     }
 }

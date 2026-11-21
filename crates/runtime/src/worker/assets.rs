@@ -157,7 +157,7 @@ impl Assets {
         }
         let prompts = load_prompts(settings.prompts_dir.as_deref())?;
         let context = ContextBundle::load(&settings.file.context, &settings.config_dir)?;
-        let skills = load_skills(settings.skills_dir.as_deref())?;
+        let skills = load_skills(settings.skills_dir.as_deref(), &settings.plugin_skills)?;
         let definitions = load_definitions(settings.agents_dir.as_deref())?;
         let ManualResolution {
             agents: manual_agents,
@@ -435,58 +435,67 @@ fn load_prompts(dir: Option<&Path>) -> WorkerResult<BTreeMap<String, String>> {
     Ok(prompts)
 }
 
-fn load_skills(dir: Option<&Path>) -> WorkerResult<Vec<SkillAsset>> {
-    let Some(dir) = dir else {
-        return Ok(Vec::new());
-    };
-    let root = canonical_dir(dir, "skills")?;
+fn load_skills(dir: Option<&Path>, extra: &[PathBuf]) -> WorkerResult<Vec<SkillAsset>> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = dir {
+        roots.push(canonical_dir(dir, "skills")?);
+    }
+    for root in extra {
+        let root = canonical_dir(root, "skill")?;
+        if roots.iter().any(|existing| existing == &root) {
+            continue;
+        }
+        roots.push(root);
+    }
     let mut skills = Vec::new();
-    for entry in read_dir(&root, "skill")? {
-        if !entry.is_dir() {
-            continue;
+    for root in roots {
+        for entry in read_dir(&root, "skill")? {
+            if !entry.is_dir() {
+                continue;
+            }
+            let path = entry.join("SKILL.md");
+            if !path.is_file() {
+                continue;
+            }
+            let safe = safe_file(&path, &root, "skill")?;
+            let content = std::fs::read_to_string(&safe).map_err(|error| {
+                ApiError::new(
+                    "asset.skill_unreadable",
+                    format!("cannot read skill '{}': {error}", path.display()),
+                )
+            })?;
+            let parsed = parse_skill_markdown(&safe, &content).map_err(|error| {
+                ApiError::new(
+                    "asset.skill_malformed",
+                    format!("skill '{}' is invalid: {error}", path.display()),
+                )
+            })?;
+            if skills
+                .iter()
+                .any(|skill: &SkillAsset| skill.name == parsed.name)
+            {
+                return Err(ApiError::new(
+                    "asset.skill_duplicate",
+                    format!("skill '{}' is defined more than once", parsed.name),
+                ));
+            }
+            skills.push(SkillAsset {
+                name: parsed.name,
+                description: parsed.description,
+                version: parsed.version,
+                license: parsed.license,
+                compatibility: parsed.compatibility,
+                tags: parsed.tags,
+                allowed_tools: parsed.allowed_tools,
+                references: parsed.references,
+                trigger: parsed.trigger,
+                hint: parsed.hint,
+                metadata: parsed.metadata.into_iter().collect(),
+                triggers: parsed.triggers,
+                path: safe,
+                body: parsed.body,
+            });
         }
-        let path = entry.join("SKILL.md");
-        if !path.is_file() {
-            continue;
-        }
-        let safe = safe_file(&path, &root, "skill")?;
-        let content = std::fs::read_to_string(&safe).map_err(|error| {
-            ApiError::new(
-                "asset.skill_unreadable",
-                format!("cannot read skill '{}': {error}", path.display()),
-            )
-        })?;
-        let parsed = parse_skill_markdown(&safe, &content).map_err(|error| {
-            ApiError::new(
-                "asset.skill_malformed",
-                format!("skill '{}' is invalid: {error}", path.display()),
-            )
-        })?;
-        if skills
-            .iter()
-            .any(|skill: &SkillAsset| skill.name == parsed.name)
-        {
-            return Err(ApiError::new(
-                "asset.skill_duplicate",
-                format!("skill '{}' is defined more than once", parsed.name),
-            ));
-        }
-        skills.push(SkillAsset {
-            name: parsed.name,
-            description: parsed.description,
-            version: parsed.version,
-            license: parsed.license,
-            compatibility: parsed.compatibility,
-            tags: parsed.tags,
-            allowed_tools: parsed.allowed_tools,
-            references: parsed.references,
-            trigger: parsed.trigger,
-            hint: parsed.hint,
-            metadata: parsed.metadata.into_iter().collect(),
-            triggers: parsed.triggers,
-            path: safe,
-            body: parsed.body,
-        });
     }
     skills.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(skills)

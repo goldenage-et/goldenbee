@@ -17,6 +17,7 @@ pub mod headless;
 pub mod master;
 pub mod mcp;
 pub mod peer;
+pub mod plugins;
 pub mod policy;
 mod process;
 mod sandbox;
