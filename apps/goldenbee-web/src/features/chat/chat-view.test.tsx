@@ -421,6 +421,91 @@ describe("chat view", () => {
     expect(gateway.submits[1]?.input).toBe("retry me")
   })
 
+  it("renders reasoning, tools, plan, and reported usage around the answer", async () => {
+    const gateway = new ChatGatewayDouble()
+    gateway.streams = [
+      [
+        event(1, "task.accepted", { state: "accepted" }),
+        event(
+          2,
+          "model.thinking",
+          { text: "Check ", author: "general" },
+          false,
+        ),
+        event(
+          3,
+          "model.thinking.complete",
+          { text: "Check the log.", author: "general" },
+          false,
+        ),
+        event(4, "tool.call", {
+          id: "call-1",
+          name: "exec_command",
+          agent: "general",
+          server: "mcp",
+        }),
+        event(5, "tool.result", {
+          id: "call-1",
+          name: "exec_command",
+          agent: "general",
+          server: "mcp",
+          ok: false,
+          error_code: "tool.failed",
+        }),
+        event(6, "master.plan_created", {
+          plan_id: "plan-1",
+          children: [
+            { id: "c1", target: "general-a", capability: "general" },
+            { id: "c2", target: "echo-a", capability: "echo" },
+          ],
+          criteria: [],
+        }),
+        event(7, "master.child_observed", {
+          plan_id: "plan-1",
+          child: "c1",
+          binding: "b1",
+          remote_task_id: "exec-2",
+          state: "succeeded",
+          artifact_digests: ["sha256:abc"],
+        }),
+        event(8, "task.succeeded", {
+          state: "succeeded",
+          output: "Done",
+          usage: {
+            prompt_tokens: 10,
+            candidate_tokens: 5,
+            estimated_cost_micros: 42,
+            model_calls: 1,
+            tool_calls: 0,
+          },
+        }),
+      ],
+    ]
+    const user = userEvent.setup()
+    renderChat(gateway)
+
+    await sendPrompt(user, "inspect the trace")
+
+    expect(await screen.findByText("Done")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Thought/ })).toBeInTheDocument()
+    expect(
+      screen.getByText(/Reasoning is live-only; reconnecting will not replay it\./),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: /Thought/ }))
+    expect(await screen.findByText("Check the log.")).toBeInTheDocument()
+
+    expect(screen.getByText("Failed to run exec_command")).toBeInTheDocument()
+    expect(screen.getByText("general · mcp")).toBeInTheDocument()
+    expect(screen.getByText("Error code: tool.failed")).toBeInTheDocument()
+    expect(screen.getByText("1 of 2 done")).toBeInTheDocument()
+    expect(screen.getByText("Prompt tokens")).toBeInTheDocument()
+    expect(screen.getByText("10")).toBeInTheDocument()
+    expect(
+      screen.getByText("42 micro-units (operator estimate)"),
+    ).toBeInTheDocument()
+  })
+
   it("shows a 202 unknown submission as uncertainty with no retry action", async () => {
     const gateway = new ChatGatewayDouble()
     gateway.submitError = new GatewayError({

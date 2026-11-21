@@ -505,6 +505,318 @@ describe("chat reducer stop and retry", () => {
   })
 })
 
+describe("chat reducer reasoning trace", () => {
+  it("streams reasoning into its own part and never treats it as durable", () => {
+    let state = started()
+    state = streamed(
+      state,
+      event(1, "model.thinking", { text: "Check ", author: "general" }, false),
+    )
+    state = streamed(
+      state,
+      event(2, "model.thinking", { text: "the log.", author: "general" }, false),
+    )
+    state = streamed(
+      state,
+      event(3, "model.thinking.complete", {
+        text: "Check the log.",
+        author: "general",
+      }, false),
+    )
+    state = streamed(state, event(4, "model.delta", { text: "Answer" }, false))
+
+    expect(partsOf(state, "reasoning")).toHaveLength(1)
+    expect(partsOf(state, "reasoning")[0]).toMatchObject({
+      type: "reasoning",
+      text: "Check the log.",
+      author: "general",
+      streaming: false,
+      complete: true,
+    })
+    expect(textOf(state)).toBe("Answer")
+    expect(state.lastDurableSeq).toBe(0)
+  })
+
+  it("closes a reasoning run when the task reaches a terminal state", () => {
+    let state = started()
+    state = streamed(
+      state,
+      event(1, "model.thinking", { text: "Working", author: "general" }, false),
+    )
+    state = streamed(
+      state,
+      event(2, "task.succeeded", { state: "succeeded", output: "done" }),
+    )
+
+    expect(partsOf(state, "reasoning")[0]).toMatchObject({
+      text: "Working",
+      streaming: false,
+      complete: true,
+    })
+  })
+})
+
+describe("chat reducer tool trace", () => {
+  it("deduplicates tool calls by id and records the truthful error code", () => {
+    let state = started()
+    state = streamed(
+      state,
+      event(1, "tool.call", {
+        id: "call-1",
+        name: "exec_command",
+        agent: "general",
+        server: "mcp",
+      }),
+    )
+    expect(partsOf(state, "tool")[0]).toMatchObject({
+      id: "call-1",
+      status: "running",
+    })
+
+    state = streamed(
+      state,
+      event(2, "tool.result", {
+        id: "call-1",
+        name: "exec_command",
+        agent: "general",
+        server: "mcp",
+        ok: false,
+        error_code: "tool.failed",
+      }),
+    )
+    state = streamed(state, event(3, "model.delta", { text: "x" }, false))
+    // A replay may carry the same identity at a different sequence.
+    state = streamed(
+      state,
+      event(4, "tool.result", {
+        id: "call-1",
+        name: "exec_command",
+        agent: "general",
+        server: "mcp",
+        ok: false,
+        error_code: "tool.failed",
+      }),
+    )
+
+    expect(partsOf(state, "tool")).toEqual([
+      {
+        type: "tool",
+        id: "call-1",
+        name: "exec_command",
+        agent: "general",
+        server: "mcp",
+        status: "error",
+        errorCode: "tool.failed",
+      },
+    ])
+  })
+
+  it("does not invent tool data for malformed or outcome-unknown events", () => {
+    let state = started()
+    state = streamed(state, event(1, "tool.call", { name: "exec_command" }))
+    state = streamed(
+      state,
+      event(2, "tool.outcome_unknown", { reason: "lost the result" }),
+    )
+
+    expect(partsOf(state, "tool")).toHaveLength(0)
+    expect(partsOf(state, "diagnostic").map((part) => part.detail)).toEqual([
+      "Ignored malformed tool.call event without a tool id.",
+      "Tool outcome unknown: lost the result.",
+    ])
+  })
+})
+
+describe("chat reducer plan trace", () => {
+  it("deduplicates plan steps by plan and child id", () => {
+    let state = started()
+    state = streamed(
+      state,
+      event(1, "master.plan_created", {
+        plan_id: "plan-1",
+        children: [
+          { id: "c1", target: "general-a", capability: "general" },
+          { id: "c2", target: "echo-a", capability: "echo" },
+        ],
+        criteria: [],
+      }),
+    )
+    state = streamed(
+      state,
+      event(2, "master.child_observed", {
+        plan_id: "plan-1",
+        child: "c1",
+        binding: "b1",
+        remote_task_id: "exec-2",
+        state: "running",
+        artifact_digests: [],
+      }),
+    )
+    state = streamed(
+      state,
+      event(3, "master.child_observed", {
+        plan_id: "plan-1",
+        child: "c1",
+        binding: "b1",
+        remote_task_id: "exec-2",
+        state: "succeeded",
+        artifact_digests: ["sha256:abc"],
+      }),
+    )
+    state = streamed(
+      state,
+      event(4, "master.plan_created", {
+        plan_id: "plan-1",
+        children: [
+          { id: "c1", target: "general-a", capability: "general" },
+          { id: "c2", target: "echo-a", capability: "echo" },
+        ],
+        criteria: [],
+      }),
+    )
+
+    expect(partsOf(state, "plan")).toHaveLength(1)
+    expect(partsOf(state, "plan")[0]).toEqual({
+      type: "plan",
+      planId: "plan-1",
+      steps: [
+        {
+          id: "c1",
+          target: "general-a",
+          capability: "general",
+          status: "done",
+        },
+        {
+          id: "c2",
+          target: "echo-a",
+          capability: "echo",
+          status: "pending",
+        },
+      ],
+      observed: [
+        {
+          child: "c1",
+          binding: "b1",
+          remoteTaskId: "exec-2",
+          state: "succeeded",
+          artifactDigests: ["sha256:abc"],
+        },
+      ],
+    })
+  })
+})
+
+describe("chat reducer usage trace", () => {
+  it("adds usage only when the Gateway reports it and marks cost as an estimate", () => {
+    let state = started()
+    state = streamed(
+      state,
+      event(1, "task.succeeded", {
+        state: "succeeded",
+        output: "done",
+        usage: {
+          prompt_tokens: 10,
+          candidate_tokens: 5,
+          estimated_cost_micros: 42,
+          model_calls: 1,
+          tool_calls: 0,
+        },
+      }),
+    )
+
+    expect(partsOf(state, "usage")).toEqual([
+      {
+        type: "usage",
+        source: "terminal",
+        usage: {
+          prompt_tokens: 10,
+          candidate_tokens: 5,
+          estimated_cost_micros: 42,
+          model_calls: 1,
+          tool_calls: 0,
+        },
+      },
+    ])
+  })
+
+  it("does not fabricate usage when the terminal payload omits it", () => {
+    let state = started()
+    state = streamed(
+      state,
+      event(1, "task.succeeded", { state: "succeeded", output: "done" }),
+    )
+
+    expect(partsOf(state, "usage")).toHaveLength(0)
+  })
+
+  it("keeps one usage part when budget and terminal events repeat", () => {
+    let state = started()
+    state = streamed(
+      state,
+      event(1, "budget.exhausted", {
+        kind: "tokens",
+        limit: 100,
+        used: 120,
+        usage: { estimated_tokens: 120, model_calls: 1, tool_calls: 0 },
+        limits: {},
+        enforcement: "after_reported_usage",
+        uncertainty: "token counts may be incomplete",
+        partial_output: true,
+        recovery: "Retry with a larger token budget.",
+      }),
+    )
+    expect(partsOf(state, "usage")[0]).toMatchObject({ source: "budget" })
+
+    state = streamed(
+      state,
+      event(2, "task.failed", {
+        state: "failed",
+        usage: { model_calls: 1, tool_calls: 0 },
+        error: {
+          code: "budget.tokens_exhausted",
+          message: "The token budget was exhausted.",
+          retryable: false,
+          recovery: "Retry with a larger token budget.",
+        },
+      }),
+    )
+    state = streamed(
+      state,
+      event(3, "task.failed", {
+        state: "failed",
+        usage: { model_calls: 2, tool_calls: 1 },
+        error: {
+          code: "budget.tokens_exhausted",
+          message: "The token budget was exhausted.",
+          retryable: false,
+          recovery: "Retry with a larger token budget.",
+        },
+      }),
+    )
+
+    expect(partsOf(state, "usage")).toHaveLength(1)
+    expect(partsOf(state, "usage")[0]).toEqual({
+      type: "usage",
+      source: "terminal",
+      usage: { model_calls: 2, tool_calls: 1 },
+    })
+  })
+})
+
+describe("chat reducer unknown events", () => {
+  it("surfaces unknown event kinds as diagnostics without breaking the stream", () => {
+    let state = started()
+    state = streamed(state, event(1, "future.event", { anything: true }))
+    state = streamed(state, event(2, "model.delta", { text: "still here" }, false))
+
+    expect(partsOf(state, "diagnostic")[0]).toMatchObject({
+      eventKind: "future.event",
+    })
+    expect(textOf(state)).toBe("still here")
+    expect(state.lastDurableSeq).toBe(1)
+  })
+})
+
 describe("chat reducer task guidance", () => {
   it("gives failed, cancelled, unknown, and recovering states distinct guidance", () => {
     const views = {
