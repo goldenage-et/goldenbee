@@ -646,6 +646,43 @@ impl Tool for KernelTool {
         )
         .await;
 
+        // Snapshot the files this mutation is about to touch. A capture failure
+        // is fail-closed: an unreversible edit must not be presented as a
+        // checkpointed one.
+        let checkpoint = match self
+            .checkpoint_before(&effective, ctx.as_ref(), task.as_ref(), &relative)
+            .await
+        {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                let code = error.code.clone();
+                self.observe(
+                    &effective,
+                    ctx.as_ref(),
+                    &args,
+                    task.as_ref(),
+                    ToolObservation {
+                        ok: false,
+                        error_code: Some(code.clone()),
+                        duration: started.elapsed(),
+                        queue_wait,
+                        truncated: false,
+                        output_bytes: 0,
+                        result_digest: String::new(),
+                        post_digest: String::new(),
+                        diff: Value::Null,
+                        effect: Some(json!({
+                            "kind": self.descriptor.effect.as_str(),
+                            "paths": relative,
+                        })),
+                        permission: self.permission(),
+                    },
+                )
+                .await;
+                return Ok(error_value(&code, error.message));
+            }
+        };
+
         let deadline = self.timeout(&effective);
         let timeout = async {
             match deadline {
@@ -673,35 +710,40 @@ impl Tool for KernelTool {
             result = &mut execution => Outcome::Complete(result),
         };
         let duration = started.elapsed();
+        self.checkpoint_after(&effective, checkpoint.as_deref(), &relative)
+            .await;
         let result = match outcome {
             Outcome::Cancelled(value) | Outcome::TimedOut(value) => value,
             Outcome::Complete(Ok(value)) => value,
-            Outcome::Complete(Err(error)) if self.descriptor.typed_errors => typed_error(&error),
             Outcome::Complete(Err(error)) => {
-                self.observe(
-                    &effective,
-                    ctx.as_ref(),
-                    &args,
-                    task.as_ref(),
-                    ToolObservation {
-                        ok: false,
-                        error_code: Some(error.code.to_string()),
-                        duration,
-                        queue_wait,
-                        truncated: false,
-                        output_bytes: 0,
-                        result_digest: String::new(),
-                        post_digest: String::new(),
-                        diff: Value::Null,
-                        effect: self.descriptor.effect.is_mutation().then_some(json!({
-                            "kind": self.descriptor.effect.as_str(),
-                            "paths": relative,
-                        })),
-                        permission: self.permission(),
-                    },
-                )
-                .await;
-                return Err(error);
+                if self.descriptor.typed_errors {
+                    typed_error(&error)
+                } else {
+                    self.observe(
+                        &effective,
+                        ctx.as_ref(),
+                        &args,
+                        task.as_ref(),
+                        ToolObservation {
+                            ok: false,
+                            error_code: Some(error.code.to_string()),
+                            duration,
+                            queue_wait,
+                            truncated: false,
+                            output_bytes: 0,
+                            result_digest: String::new(),
+                            post_digest: String::new(),
+                            diff: Value::Null,
+                            effect: self.descriptor.effect.is_mutation().then_some(json!({
+                                "kind": self.descriptor.effect.as_str(),
+                                "paths": relative,
+                            })),
+                            permission: self.permission(),
+                        },
+                    )
+                    .await;
+                    return Err(error);
+                }
             }
         };
 
@@ -934,6 +976,49 @@ impl KernelTool {
                 &detail,
                 &task.trace_id,
             )
+            .await;
+    }
+
+    async fn checkpoint_before(
+        &self,
+        effective: &EffectiveConfig,
+        ctx: &dyn ToolContext,
+        task: Option<&common::Task>,
+        relative: &[String],
+    ) -> crate::Result<Option<String>> {
+        if !self.descriptor.effect.is_mutation() {
+            return Ok(None);
+        }
+        let (Some(task), Some(workspace)) = (task, effective.config.workspace.as_deref()) else {
+            return Ok(None);
+        };
+        let Some(runtime) = self.kernel.inner.runtime.get() else {
+            return Ok(None);
+        };
+        runtime
+            .checkpoint_before(task, ctx.invocation_id(), workspace, relative)
+            .await
+            .map(Some)
+    }
+
+    async fn checkpoint_after(
+        &self,
+        effective: &EffectiveConfig,
+        checkpoint: Option<&str>,
+        relative: &[String],
+    ) {
+        let (Some(checkpoint), Some(workspace)) =
+            (checkpoint, effective.config.workspace.as_deref())
+        else {
+            return;
+        };
+        let Some(runtime) = self.kernel.inner.runtime.get() else {
+            return;
+        };
+        // A post-capture failure leaves the manifest `partial` and is reported
+        // through `checkpoint.committed`; it must not rewrite the tool result.
+        let _ = runtime
+            .checkpoint_after(checkpoint, workspace, relative)
             .await;
     }
 

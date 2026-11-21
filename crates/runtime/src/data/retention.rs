@@ -186,6 +186,56 @@ impl Runtime {
             }
         }
 
+        // Turn-boundary file snapshots. They share the checkpoint window and
+        // are removed only after their manifest records are gone; the owning
+        // store then collects unreferenced blobs. An unfinished task keeps its
+        // snapshots so recovery and rewind remain possible.
+        if policy.checkpoints_days > 0 && !job.completed.contains(&"checkpoints.files".into()) {
+            let preserve = self
+                .store()
+                .read(|state| {
+                    state
+                        .tasks
+                        .values()
+                        .filter(|task| !task.state.is_terminal())
+                        .map(|task| task.id.clone())
+                        .collect::<BTreeSet<_>>()
+                })
+                .await;
+            match self
+                .checkpoint_retention(cutoff(policy.checkpoints_days), &preserve)
+                .await
+            {
+                Ok((records, blobs)) => {
+                    if records > 0 {
+                        report
+                            .removed
+                            .entry("checkpoint_files".into())
+                            .and_modify(|value| *value += records)
+                            .or_insert(records);
+                    }
+                    if blobs > 0 {
+                        report
+                            .removed
+                            .entry("checkpoint_blobs".into())
+                            .and_modify(|value| *value += blobs)
+                            .or_insert(blobs);
+                    }
+                    self.complete_stage(
+                        &mut job,
+                        "checkpoints.files",
+                        records + blobs,
+                        &mut report,
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    self.block_stage(&mut job, "checkpoint.files", &error, &mut report)
+                        .await?;
+                }
+            }
+        }
+
         // Task metadata. Only terminal work past the window is removed; this is
         // the same set whose checkpoints and events are already eligible.
         if policy.tasks_days > 0 && !job.completed.contains(&"tasks".into()) {
@@ -774,6 +824,56 @@ impl Runtime {
             if !blocked {
                 self.complete_stage(&mut job, "checkpoints", removed, &mut report)
                     .await?;
+            }
+        }
+
+        // Turn-boundary file snapshots for the erased principal. An unfinished
+        // task keeps them as a retained obligation, matching native graph
+        // checkpoints. Terminal tasks remove manifest records and then their
+        // now-unreferenced blobs.
+        if !job.completed.contains(&"checkpoints.files".into()) {
+            let (erase, preserve) = self
+                .store()
+                .read(|state| {
+                    let mut erase = BTreeSet::new();
+                    let mut preserve = Vec::new();
+                    for task in state
+                        .tasks
+                        .values()
+                        .filter(|task| task.namespace == namespace && task.caller == target)
+                    {
+                        if task.state.is_terminal() {
+                            erase.insert(task.id.clone());
+                        } else {
+                            preserve.push(task.id.clone());
+                        }
+                    }
+                    (erase, preserve)
+                })
+                .await;
+            for task_id in preserve {
+                let obligation = RetainedObligation {
+                    class: "checkpoint-file".into(),
+                    id: task_id,
+                    reason: "unfinished-task".into(),
+                };
+                job.retained.push(obligation.clone());
+                report.retained.push(obligation);
+            }
+            match self.checkpoint_erase_tasks(&erase).await {
+                Ok((records, blobs)) => {
+                    self.complete_stage(
+                        &mut job,
+                        "checkpoints.files",
+                        records + blobs,
+                        &mut report,
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    self.block_stage(&mut job, "checkpoint.files", &error, &mut report)
+                        .await?;
+                }
             }
         }
 

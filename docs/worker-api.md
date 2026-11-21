@@ -36,6 +36,16 @@ revision store and never create a second profile loader or authority.
 | `/v1/tasks/{id}` | New | Durable task projection. |
 | `/v1/tasks/{id}/events` | New | Retained task event page. |
 | `/v1/tasks/{id}/events/stream` | New | Replays retained events, then follows the live broadcast. Uses a bounded cursor contract; model token deltas are non-durable. |
+| `/v1/tasks/{id}/checkpoints` | New | Turn-boundary file checkpoints for one visible task. Requires `task:read`. |
+| `/v1/checkpoints/{id}` | New | One checkpoint manifest with workspace-relative paths and content digests. Requires `task:read`. |
+| `/v1/checkpoints/{id}/diff` | New | Typed `FileDiff`/hunk preview. Never exposes host paths or blob names. |
+| `/v1/checkpoints/{id}/restore` | New | Rewind/undo/restore one turn or file set. Requires `task:submit` and is idempotent. |
+| `/v1/sessions` | New | List the caller's canonical native sessions. Requires `session:read`. |
+| `/v1/sessions/latest` | New | Continue target: the caller's newest canonical session. |
+| `/v1/sessions/{session}` | New | Resume one canonical session by identity. |
+| `/v1/sessions/{session}/fork` | New | Create an independent branch. Requires `session:write`. |
+| `/v1/sessions/{session}/rename` | New | Set a durable session title. Requires `session:write`. |
+| `/v1/sessions/{session}/transcript` | New | `GET` reads or `POST` creates a durable transcript export. |
 | `/v1/tasks/{id}/artifacts` | New | Artifact metadata for one visible task. |
 | `/v1/tasks/{id}/cancel` | New | Precise task cancellation. |
 | `/v1/approvals` | New | Exact-protected-operation requests visible in the caller's namespace. Requires `approval:read`. |
@@ -500,12 +510,64 @@ invocation id, attempt, version, content type, size, and SHA-256 digest.
 - Gateway may keep only metadata or controlled relay state. It does not store
   artifact bytes and does not expose a second artifact service.
 
+## Sessions and transcripts
+
+The native ADK event sequence in `FileSessionService` remains the only
+canonical conversation history. Harness session management never stores a
+second role/text transcript and never adopts a reference thread store.
+
+- Identity is the authenticated `(namespace, principal)` pair plus the session
+  id, encoded through the existing unambiguous native user identity. A
+  colliding session id under another caller or namespace is reported as
+  `session.not_found`, not disclosed.
+- `GET /v1/sessions/latest` is the continue target; `GET /v1/sessions/{id}` is
+  resume. Both require `session:read` and return the same canonical turns.
+- `POST .../fork` copies state and events into a new session id, records
+  `forked_from`, and never mutates the source. `POST .../rename` sets a durable
+  title (1-200 printable characters).
+- `POST .../transcript` writes a content-addressed transcript export below the
+  session store and records its digest. Re-exporting an unchanged history is
+  idempotent; `GET .../transcript` returns the newest export after verifying
+  its digest. Titles, fork lineage, and export records survive a Worker
+  restart.
+- Session metadata schema 2 adds only `#[serde(default)]` fields. A schema-1
+  store opens, keeps every event and state value, and is upgraded in place.
+
+## File checkpoints
+
+A checkpoint records one turn boundary at the mutating-tool dispatch point.
+The canonical manifest lives in the runtime metadata store; snapshot bytes are
+content-addressed files below the Worker data directory.
+
+- Capture happens before dispatch and again after the tool returns. A
+  pre-capture failure is fail-closed and the mutation is not dispatched. A
+  post-capture failure leaves the checkpoint `partial`: rewind evidence stays
+  valid, while diff and post-state restore fail closed.
+- Paths are workspace-relative and rejected if they are absolute, contain
+  `..`, or resolve through a symlink outside the workspace. A file larger than
+  the snapshot ceiling is refused before the tool runs.
+- Diff preview returns typed `FileDiff` hunks and additions/deletions; binary
+  files are marked `binary` with no hunks.
+- `POST /v1/checkpoints/{id}/restore` accepts `mode: rewind|undo|restore` and
+  an optional workspace-relative `files` selection. Every selected blob is
+  verified before the first write, so corruption fails closed without touching
+  the workspace. Retrying converges on the same content and reports
+  `already_applied` when nothing changed.
+- Each create, commit, and restore emits durable task events and a redacted
+  audit entry. Restore never exposes a raw host path.
+- File snapshots use the configured `checkpoints_days` window. Retention
+  removes expired manifests first, then collects unreferenced blobs, and
+  reports a blocked stage instead of claiming completion if collection fails.
+  An unfinished task keeps its snapshots as a retained obligation, and
+  principal erasure removes terminal-task snapshots.
+
 ## Retention and authorized erasure
 
 Retention is not one universal TTL. Each owning store applies its own window:
-conversations (native sessions), native graph checkpoints, task metadata,
-durable events, artifacts, native long-term memory, ingested documents and
-derived graph facts, security audit, and telemetry traces.
+conversations (native sessions), native graph checkpoints, turn-boundary file
+snapshots, task metadata, durable events, artifacts, native long-term memory,
+ingested documents and derived graph facts, security audit, and telemetry
+traces.
 
 - `POST /v1/retention` requires `instance:admin` and returns a
   `LifecycleReport`. Stages persist progress before moving on. An unfinished

@@ -46,6 +46,10 @@ struct Inner {
     memory: RwLock<Option<Arc<crate::data::memory::NativeMemory>>>,
     graph: RwLock<Option<Arc<crate::data::graph::NativeKnowledgeGraph>>>,
     sessions: RwLock<Option<Arc<crate::sessions::FileSessionService>>>,
+    /// Turn-boundary file snapshot bytes, content-addressed below `data_dir`.
+    checkpoint_files: Arc<crate::checkpoints::CheckpointStore>,
+    /// Workspace root registered for checkpoint restore.
+    tool_workspace: RwLock<Option<PathBuf>>,
     checkpoints: RwLock<BTreeMap<String, Arc<crate::agents::graph::DefinitionCheckpointer>>>,
     lifecycle: RwLock<Vec<Arc<dyn crate::LifecycleOwner>>>,
     slots: Arc<Semaphore>,
@@ -122,6 +126,8 @@ impl Runtime {
         let artifacts = Arc::new(crate::data::artifacts::NativeArtifactStore::open(
             config.data_dir.clone(),
         )?);
+        let checkpoint_files =
+            Arc::new(crate::checkpoints::CheckpointStore::open(&config.data_dir)?);
         let (live, _) = broadcast::channel(config.stream_buffer.max(1));
         let slots = Arc::new(Semaphore::new(config.max_active.max(1)));
         let streams = Arc::new(Semaphore::new(config.max_streams.max(1)));
@@ -137,6 +143,8 @@ impl Runtime {
                 memory: RwLock::new(None),
                 graph: RwLock::new(None),
                 sessions: RwLock::new(None),
+                checkpoint_files,
+                tool_workspace: RwLock::new(None),
                 checkpoints: RwLock::new(BTreeMap::new()),
                 lifecycle: RwLock::new(Vec::new()),
                 slots,
@@ -260,6 +268,14 @@ impl Runtime {
     /// Canonical native session store, when composed by the Worker package.
     pub async fn sessions(&self) -> Option<Arc<crate::sessions::FileSessionService>> {
         self.inner.sessions.read().await.clone()
+    }
+
+    pub(crate) fn checkpoint_store_ref(&self) -> &Arc<crate::checkpoints::CheckpointStore> {
+        &self.inner.checkpoint_files
+    }
+
+    pub(crate) fn tool_workspace_ref(&self) -> &RwLock<Option<PathBuf>> {
+        &self.inner.tool_workspace
     }
 
     /// Install the definition-bound native checkpoint owners for lifecycle
