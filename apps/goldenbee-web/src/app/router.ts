@@ -4,6 +4,8 @@ export type AppRoute =
   | { name: "overview" }
   | { name: "chat" }
   | { name: "attention" }
+  | { name: "diagnostics" }
+  | { name: "audit" }
   | { name: "packages" }
   | { name: "instances" }
   | { name: "instance"; instance: string }
@@ -32,6 +34,12 @@ export function parseRoute(hash: string): AppRoute {
   }
   if (section === "attention") {
     return { name: "attention" }
+  }
+  if (section === "diagnostics") {
+    return { name: "diagnostics" }
+  }
+  if (section === "audit") {
+    return { name: "audit" }
   }
   if (section === "packages") {
     return { name: "packages" }
@@ -70,6 +78,10 @@ export function routeHref(route: AppRoute): string {
       return "#/chat"
     case "attention":
       return "#/attention"
+    case "diagnostics":
+      return "#/diagnostics"
+    case "audit":
+      return "#/audit"
     case "packages":
       return "#/packages"
     case "instances":

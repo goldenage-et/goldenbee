@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { ConnectionSettingsPanel } from "@/features/connection/connection-settings"
 import {
   useConnection,
   type ConnectionStore,
@@ -23,10 +24,11 @@ import {
   type GatewayProfilesStore,
 } from "@/features/workspace/gateway-profiles"
 
-export type SettingsTab = "client" | "gateway" | "worker"
+export type SettingsTab = "client" | "connection" | "gateway" | "worker"
 
 const tabs: Array<{ id: SettingsTab; label: string }> = [
   { id: "client", label: "Client" },
+  { id: "connection", label: "Connection" },
   { id: "gateway", label: "Gateway" },
   { id: "worker", label: "Worker" },
 ]
@@ -212,6 +214,10 @@ export function SettingsDialog({
                 Gateway policy or Worker configuration.
               </p>
             </section>
+          ) : null}
+
+          {tab === "connection" ? (
+            <ConnectionSettingsPanel store={store} />
           ) : null}
 
           {tab === "gateway" ? (

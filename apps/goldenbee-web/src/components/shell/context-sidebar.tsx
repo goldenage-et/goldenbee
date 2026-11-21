@@ -1,12 +1,15 @@
 import {
   PlusIcon,
   RotateCcwIcon,
+  ScrollTextIcon,
   ServerIcon,
+  StethoscopeIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react"
 import { cn } from "cn"
 
+import { routeHref, type AppRoute } from "@/app/router"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { StatusDot } from "@/components/shell/status-dot"
@@ -26,6 +29,7 @@ const sectionLabel =
 
 export interface ContextSidebarProps {
   store: ConnectionStore
+  route: AppRoute
   profiles: GatewayProfilesStore
   defaultProfileId: string | null
   backgroundSessions: BackgroundSession[]
@@ -40,6 +44,7 @@ export interface ContextSidebarProps {
 
 export function ContextSidebar({
   store,
+  route,
   profiles,
   defaultProfileId,
   backgroundSessions,
@@ -125,6 +130,26 @@ export function ContextSidebar({
               : "Gateway health is unavailable."}
           </p>
         </div>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-0.5 px-2.5">
+        <span className={sectionLabel}>Operator evidence</span>
+        <a
+          href={routeHref({ name: "diagnostics" })}
+          aria-current={route.name === "diagnostics" ? "page" : undefined}
+          className="density-row flex items-center gap-2 rounded-[7px] px-1 py-1.5 text-meta text-muted-foreground hover:bg-surface-3 hover:text-foreground aria-[current=page]:bg-gold/10 aria-[current=page]:text-gold"
+        >
+          <StethoscopeIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          Diagnostics
+        </a>
+        <a
+          href={routeHref({ name: "audit" })}
+          aria-current={route.name === "audit" ? "page" : undefined}
+          className="density-row flex items-center gap-2 rounded-[7px] px-1 py-1.5 text-meta text-muted-foreground hover:bg-surface-3 hover:text-foreground aria-[current=page]:bg-gold/10 aria-[current=page]:text-gold"
+        >
+          <ScrollTextIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          Audit
+        </a>
       </div>
 
       <div className="mt-3 flex flex-col gap-1 px-2.5">
