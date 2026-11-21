@@ -21,6 +21,7 @@ npx shadcn@latest init -b base -p rhea
 npx shadcn@latest add button card input label badge alert separator tooltip \
   spinner empty field input-group message bubble message-scroller trace \
   collapsible attachment code-block scroll-area checkbox
+npx shadcn@latest add table dialog
 ```
 
 ## Vendored components
@@ -38,6 +39,8 @@ npx shadcn@latest add button card input label badge alert separator tooltip \
 | `src/components/ui/tooltip.tsx` | <https://ui.shadcn.com/docs/components/base/tooltip> |
 | `src/components/ui/scroll-area.tsx` | <https://ui.shadcn.com/docs/components/base/scroll-area> |
 | `src/components/ui/button.tsx` | <https://ui.shadcn.com/docs/components/base/button> |
+| `src/components/ui/table.tsx` | <https://ui.shadcn.com/docs/components/base/table> |
+| `src/components/ui/dialog.tsx` | <https://ui.shadcn.com/docs/components/base/dialog> |
 | `src/components/ui/card.tsx` | <https://ui.shadcn.com/docs/components/base/card> |
 | `src/components/ui/input.tsx` | <https://ui.shadcn.com/docs/components/base/input> |
 | `src/components/ui/label.tsx` | <https://ui.shadcn.com/docs/components/base/label> |

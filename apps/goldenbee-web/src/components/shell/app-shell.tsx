@@ -1,7 +1,11 @@
 import type { ReactNode } from "react"
 
+import { AppNav } from "./app-nav"
 import { StatusBadge } from "./status-badge"
-import type { ConnectionStore } from "@/features/connection/connection-store"
+import {
+  useConnection,
+  type ConnectionStore,
+} from "@/features/connection/connection-store"
 
 export function AppShell({
   children,
@@ -10,6 +14,8 @@ export function AppShell({
   children: ReactNode
   store: ConnectionStore
 }) {
+  const connected = useConnection((state) => state.status === "connected", store)
+
   return (
     <div className="flex min-h-dvh flex-col bg-background">
       <header className="sticky top-0 z-10 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
@@ -38,6 +44,7 @@ export function AppShell({
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {connected ? <AppNav /> : null}
             <StatusBadge store={store} />
           </div>
         </div>

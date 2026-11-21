@@ -1,5 +1,7 @@
+import { BrowserRouter } from "react-router-dom"
+
 import { AppShell } from "@/components/shell/app-shell"
-import { ConnectedView } from "@/features/connection/connected-view"
+import { ConnectedRoutes } from "@/components/shell/connected-routes"
 import {
   connectionStore,
   useConnection,
@@ -15,13 +17,15 @@ export function App({ store = connectionStore }: AppProps) {
   const connected = useConnection((state) => state.status === "connected", store)
 
   return (
-    <AppShell store={store}>
-      {connected ? (
-        <ConnectedView store={store} />
-      ) : (
-        <ConnectionScreen store={store} />
-      )}
-    </AppShell>
+    <BrowserRouter>
+      <AppShell store={store}>
+        {connected ? (
+          <ConnectedRoutes store={store} />
+        ) : (
+          <ConnectionScreen store={store} />
+        )}
+      </AppShell>
+    </BrowserRouter>
   )
 }
 
