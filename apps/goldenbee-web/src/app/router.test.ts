@@ -36,4 +36,15 @@ describe("app hash routes", () => {
       parseRoute(routeHref({ name: "instance", instance: "general b" })),
     ).toEqual({ name: "instance", instance: "general b" })
   })
+
+  it("round-trips the task detail route", () => {
+    expect(parseRoute("#/tasks/exec-1")).toEqual({
+      name: "task",
+      taskId: "exec-1",
+    })
+    expect(routeHref({ name: "task", taskId: "exec 1" })).toBe("#/tasks/exec%201")
+    expect(
+      parseRoute(routeHref({ name: "task", taskId: "exec 1" })),
+    ).toEqual({ name: "task", taskId: "exec 1" })
+  })
 })

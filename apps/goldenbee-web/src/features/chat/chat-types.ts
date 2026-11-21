@@ -1,4 +1,6 @@
 import type {
+  ApprovalStatus,
+  GatewayApproval,
   GatewayTask,
   StreamEvent,
   TaskError,
@@ -9,9 +11,9 @@ import type {
 /**
  * Chat state is the reduced projection of Gateway task events.
  *
- * Text, reasoning, tools, task state, plans, usage, errors, and diagnostics are
- * explicit parts. Approvals are added by ticket 05; their event kinds are
- * intentionally ignored here instead of being turned into invented parts.
+ * Text, reasoning, tools, approvals, task state, plans, usage, errors, and
+ * diagnostics are explicit parts. Approval parts only carry values the Gateway
+ * reported; a decision event without a prior request never invents a target.
  */
 export interface ChatSelection {
   worker: string
@@ -86,6 +88,28 @@ export type ChatPlanPart = {
   observed: ChatChildObservation[]
 }
 
+/**
+ * One Gateway approval, keyed by its approval id.
+ *
+ * `digest` is the exact value the operator must decide. If a later observation
+ * reports a different digest, `digestChanged` stays true so no earlier decision
+ * can be reused for the changed target.
+ */
+export type ChatApprovalPart = {
+  type: "approval"
+  approvalId: string
+  operation?: string
+  target?: string
+  digest: string
+  risk?: string
+  requestedBy?: string
+  expiresAt?: number
+  status: ApprovalStatus
+  decidedBy?: string
+  receipt?: string
+  digestChanged: boolean
+}
+
 export type ChatTaskPart = {
   type: "task"
   state: TaskState
@@ -136,6 +160,7 @@ export type ChatPart =
   | ChatReasoningPart
   | ChatToolPart
   | ChatPlanPart
+  | ChatApprovalPart
   | ChatTaskPart
   | ChatUsagePart
   | ChatErrorPart
@@ -272,6 +297,11 @@ export type ChatAction =
       type: "task-projection"
       assistantMessageId: string
       task: GatewayTask
+    }
+  | {
+      type: "approval-snapshot"
+      taskId: string
+      approval: GatewayApproval
     }
   | {
       type: "task-detached"

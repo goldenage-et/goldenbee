@@ -23,6 +23,7 @@ import {
   type ProviderClientFactory,
 } from "@/features/providers/provider-gateway"
 import { ProvidersScreen } from "@/features/providers/providers-screen"
+import { TaskDetailPage } from "@/features/tasks/task-detail-page"
 import {
   clientSettingsStore,
   type ClientSettingsStore,
@@ -114,6 +115,8 @@ export function App({
         return providerClient ? (
           <ProviderDetailScreen client={providerClient} id={route.id} />
         ) : null
+      case "task":
+        return <TaskDetailPage client={hostClient} taskId={route.taskId} />
       case "overview":
         return <ConnectedView store={store} />
     }

@@ -1,6 +1,13 @@
-import type { StreamEvent, TaskError, TaskState } from "@goldenbee/sdk"
+import type {
+  ApprovalStatus,
+  GatewayApproval,
+  StreamEvent,
+  TaskError,
+  TaskState,
+} from "@goldenbee/sdk"
 
 import type {
+  ChatApprovalPart,
   ChatChildObservation,
   ChatDiagnosticPart,
   ChatErrorInfo,
@@ -33,19 +40,22 @@ const taskStates: readonly TaskState[] = [
   "cancelled",
 ]
 
-/**
- * Approval kinds are owned by ticket 05. They are ignored rather than rendered
- * as invented content, but durable kinds still advance the cursor.
- */
-const ignoredKinds = new Set([
+const approvalEventKinds = new Set([
   "approval.requested",
   "approval.approved",
   "approval.rejected",
   "approval.revoked",
   "approval.expired",
   "approval.receipt",
-  "approval.resume_unavailable",
 ])
+
+const approvalStatuses: readonly ApprovalStatus[] = [
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+  "revoked",
+]
 
 const textKinds = new Set([
   "model.delta",
@@ -353,6 +363,209 @@ function applyToolEvent(
     status,
     errorCode,
   })
+}
+
+function approvalStatusField(value: unknown): ApprovalStatus | undefined {
+  return typeof value === "string" &&
+    approvalStatuses.includes(value as ApprovalStatus)
+    ? (value as ApprovalStatus)
+    : undefined
+}
+
+function findApproval(
+  message: ChatMessage,
+  approvalId: string,
+): ChatApprovalPart | undefined {
+  return message.parts.find(
+    (part): part is ChatApprovalPart =>
+      part.type === "approval" && part.approvalId === approvalId,
+  )
+}
+
+function upsertApproval(
+  message: ChatMessage,
+  next: ChatApprovalPart,
+): ChatMessage {
+  const current = findApproval(message, next.approvalId)
+  if (!current) {
+    return appendPart(message, next)
+  }
+  const index = message.parts.lastIndexOf(current)
+  const parts = message.parts.map((part, position) =>
+    position === index ? next : part,
+  )
+  return { ...message, parts }
+}
+
+function isTerminalApproval(status: ApprovalStatus): boolean {
+  return status !== "pending"
+}
+
+function applyApprovalRequest(
+  message: ChatMessage,
+  payload: Record<string, unknown>,
+): ChatMessage {
+  const approvalId = textField(payload.approval_id)
+  if (!approvalId) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: "approval.requested",
+      detail: "Ignored malformed approval.requested event without an approval id.",
+    })
+  }
+  const digest = textField(payload.digest)
+  const current = findApproval(message, approvalId)
+  if (!digest) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: "approval.requested",
+      detail: `Ignored approval.requested event for ${approvalId} without a digest.`,
+    })
+  }
+
+  const changed = current !== undefined && current.digest !== digest
+  const next: ChatApprovalPart = {
+    type: "approval",
+    approvalId,
+    operation: textField(payload.operation) ?? current?.operation,
+    target: textField(payload.target) ?? current?.target,
+    digest,
+    risk: textField(payload.risk) ?? current?.risk,
+    requestedBy: textField(payload.requested_by) ?? current?.requestedBy,
+    expiresAt: numberField(payload.expires_at) ?? current?.expiresAt,
+    // A replay must not reopen a decision the Gateway already recorded.
+    status:
+      current && isTerminalApproval(current.status) ? current.status : "pending",
+    decidedBy: current?.decidedBy,
+    receipt: current?.receipt,
+    digestChanged: changed || current?.digestChanged === true,
+  }
+  return upsertApproval(message, next)
+}
+
+function applyApprovalDecision(
+  message: ChatMessage,
+  event: StreamEvent,
+  payload: Record<string, unknown>,
+): ChatMessage {
+  const approvalId = textField(payload.approval_id)
+  if (!approvalId) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: event.kind,
+      detail: `Ignored malformed ${event.kind} event without an approval id.`,
+    })
+  }
+  const status = approvalStatusField(
+    event.kind === "approval.approved"
+      ? "approved"
+      : event.kind === "approval.rejected"
+        ? "rejected"
+        : event.kind === "approval.revoked"
+          ? "revoked"
+          : event.kind === "approval.expired"
+            ? "expired"
+            : undefined,
+  )
+  if (!status) {
+    return message
+  }
+
+  const current = findApproval(message, approvalId)
+  const digest = textField(payload.digest)
+  const decidedBy =
+    textField(payload.decided_by) ??
+    textField(payload.revoked_by) ??
+    current?.decidedBy
+  const next: ChatApprovalPart = {
+    type: "approval",
+    approvalId,
+    operation: textField(payload.operation) ?? current?.operation,
+    target: textField(payload.target) ?? current?.target,
+    // Keep the digest already shown unless this is the first observation. A
+    // decision event cannot silently replace a newer request digest.
+    digest: current?.digest || digest || "",
+    risk: textField(payload.risk) ?? current?.risk,
+    requestedBy: textField(payload.requested_by) ?? current?.requestedBy,
+    expiresAt: numberField(payload.expires_at) ?? current?.expiresAt,
+    // The first recorded outcome wins. An out-of-order replay cannot flip it.
+    status:
+      current && isTerminalApproval(current.status) ? current.status : status,
+    decidedBy,
+    receipt: current?.receipt,
+    digestChanged:
+      current?.digestChanged === true ||
+      (digest !== undefined && current !== undefined && current.digest !== digest),
+  }
+  return upsertApproval(message, next)
+}
+
+function applyApprovalReceipt(
+  message: ChatMessage,
+  payload: Record<string, unknown>,
+): ChatMessage {
+  const approvalId = textField(payload.approval_id)
+  if (!approvalId) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: "approval.receipt",
+      detail: "Ignored malformed approval.receipt event without an approval id.",
+    })
+  }
+  const current = findApproval(message, approvalId)
+  if (!current) {
+    return appendDiagnostic(message, {
+      type: "diagnostic",
+      eventKind: "approval.receipt",
+      detail: `Ignored approval.receipt for ${approvalId} before its request was observed.`,
+    })
+  }
+  const receipt = textField(payload.receipt)
+  if (!receipt) {
+    return message
+  }
+  return upsertApproval(message, { ...current, receipt })
+}
+
+function applyApprovalEvent(
+  message: ChatMessage,
+  event: StreamEvent,
+): ChatMessage {
+  const payload = isRecord(event.payload) ? event.payload : {}
+  switch (event.kind) {
+    case "approval.requested":
+      return applyApprovalRequest(message, payload)
+    case "approval.receipt":
+      return applyApprovalReceipt(message, payload)
+    default:
+      return applyApprovalDecision(message, event, payload)
+  }
+}
+
+/** Apply the authoritative approval returned by a decision or revoke route. */
+export function applyApprovalSnapshot(
+  message: ChatMessage,
+  approval: GatewayApproval,
+): ChatMessage {
+  const record = approval.approval
+  const current = findApproval(message, record.id)
+  const next: ChatApprovalPart = {
+    type: "approval",
+    approvalId: record.id,
+    operation: record.operation || current?.operation,
+    target: record.target || current?.target,
+    digest: record.digest || current?.digest || "",
+    risk: record.risk || current?.risk,
+    requestedBy: record.requested_by || current?.requestedBy,
+    expiresAt: record.expires_at ?? current?.expiresAt,
+    status: record.status,
+    decidedBy: record.decided_by ?? current?.decidedBy,
+    receipt: record.receipt ?? current?.receipt,
+    digestChanged:
+      current?.digestChanged === true ||
+      (current !== undefined && record.digest !== current.digest),
+  }
+  return upsertApproval(message, next)
 }
 
 function planStatusForState(state: string | undefined): ChatPlanStepStatus {
@@ -984,8 +1197,26 @@ export function applyStreamEvent(
     return { message, gap }
   }
 
-  if (ignoredKinds.has(event.kind) || event.kind.startsWith("stream.")) {
+  if (event.kind.startsWith("stream.")) {
     return { message, gap: null }
+  }
+
+  if (approvalEventKinds.has(event.kind)) {
+    return { message: applyApprovalEvent(message, event), gap: null }
+  }
+
+  if (event.kind === "approval.resume_unavailable") {
+    const payload = isRecord(event.payload) ? event.payload : {}
+    const code = textField(payload.code)
+    const detail = textField(payload.message)
+    return {
+      message: appendDiagnostic(message, {
+        type: "diagnostic",
+        eventKind: event.kind,
+        detail: `Approval resume unavailable${code ? ` (${code})` : ""}${detail ? `: ${detail}` : "."}`,
+      }),
+      gap: null,
+    }
   }
 
   if (textKinds.has(event.kind)) {

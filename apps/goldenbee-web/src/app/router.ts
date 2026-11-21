@@ -9,6 +9,7 @@ export type AppRoute =
   | { name: "instance"; instance: string }
   | { name: "providers" }
   | { name: "provider"; id: string }
+  | { name: "task"; taskId: string }
 
 /**
  * Hash routing keeps the static build free of a server route handler.
@@ -39,6 +40,9 @@ export function parseRoute(hash: string): AppRoute {
   if (section === "providers") {
     return id ? { name: "provider", id: decodeURIComponent(id) } : { name: "providers" }
   }
+  if (section === "tasks" && id) {
+    return { name: "task", taskId: decodeURIComponent(id) }
+  }
   return { name: "overview" }
 }
 
@@ -60,6 +64,8 @@ export function routeHref(route: AppRoute): string {
       return "#/providers"
     case "provider":
       return `#/providers/${encodeURIComponent(route.id)}`
+    case "task":
+      return `#/tasks/${encodeURIComponent(route.taskId)}`
   }
 }
 

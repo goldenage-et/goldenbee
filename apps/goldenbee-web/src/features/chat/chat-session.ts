@@ -1,4 +1,8 @@
-import { newIdempotencyKey, isGatewayError } from "@goldenbee/sdk"
+import {
+  isGatewayError,
+  newIdempotencyKey,
+  type GatewayApproval,
+} from "@goldenbee/sdk"
 
 import {
   ChatRunner,
@@ -53,6 +57,8 @@ export interface ChatSession {
   updateSelection(selection: ChatSelection): void
   stop(): void
   retry(userMessageId: string): void
+  /** Apply the Gateway response for an approval decision or revocation. */
+  applyApproval(approval: GatewayApproval): void
   /** Reconcile the last active task with the Gateway after a reload. */
   recover(): Promise<void>
   newChat(): void
@@ -381,6 +387,17 @@ export function createChatSession(options: ChatSessionOptions): ChatSession {
     },
 
     retry,
+
+    applyApproval(approval) {
+      if (disposed) {
+        return
+      }
+      dispatch({
+        type: "approval-snapshot",
+        taskId: approval.task_id,
+        approval,
+      })
+    },
 
     recover,
 
