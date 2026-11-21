@@ -9,6 +9,7 @@ export type AppRoute =
   | { name: "instance"; instance: string }
   | { name: "providers" }
   | { name: "provider"; id: string }
+  | { name: "task"; taskId: string }
   | { name: "teams" }
   | { name: "team"; team: string }
   | { name: "profiles"; worker?: string }
@@ -43,6 +44,9 @@ export function parseRoute(hash: string): AppRoute {
   if (section === "providers") {
     return id ? { name: "provider", id: decodeURIComponent(id) } : { name: "providers" }
   }
+  if (section === "tasks" && id) {
+    return { name: "task", taskId: decodeURIComponent(id) }
+  }
   if (section === "teams") {
     return id ? { name: "team", team: decodeURIComponent(id) } : { name: "teams" }
   }
@@ -76,6 +80,8 @@ export function routeHref(route: AppRoute): string {
       return "#/providers"
     case "provider":
       return `#/providers/${encodeURIComponent(route.id)}`
+    case "task":
+      return `#/tasks/${encodeURIComponent(route.taskId)}`
     case "teams":
       return "#/teams"
     case "team":

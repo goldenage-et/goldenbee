@@ -1,5 +1,6 @@
 import {
   appendPart,
+  applyApprovalSnapshot,
   applyStreamEvent,
   ensureTaskPart,
   isTerminalStatus,
@@ -244,6 +245,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           detail: "The task was reconciled with the Gateway after reload.",
         },
       }
+    }
+
+    case "approval-snapshot": {
+      const message = state.messages.find(
+        (candidate) => candidate.taskId === action.taskId,
+      )
+      if (!message) {
+        return state
+      }
+      return messageWithParts(state, message.id, (current) =>
+        applyApprovalSnapshot(current, action.approval),
+      )
     }
 
     case "task-detached": {

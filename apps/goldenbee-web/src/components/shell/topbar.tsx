@@ -21,6 +21,7 @@ const routeLabels: Partial<Record<AppRoute["name"], string>> = {
   instance: "Instance detail",
   providers: "Providers",
   provider: "Provider detail",
+  task: "Task detail",
   teams: "Teams",
   team: "Team detail",
   profiles: "Runtime Profiles",
