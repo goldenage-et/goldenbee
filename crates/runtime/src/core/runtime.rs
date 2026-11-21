@@ -46,6 +46,10 @@ struct Inner {
     memory: RwLock<Option<Arc<crate::data::memory::NativeMemory>>>,
     graph: RwLock<Option<Arc<crate::data::graph::NativeKnowledgeGraph>>>,
     sessions: RwLock<Option<Arc<crate::sessions::FileSessionService>>>,
+    /// Turn-boundary file snapshot bytes, content-addressed below `data_dir`.
+    checkpoint_files: Arc<crate::checkpoints::CheckpointStore>,
+    /// Workspace root registered for checkpoint restore.
+    tool_workspace: RwLock<Option<PathBuf>>,
     checkpoints: RwLock<BTreeMap<String, Arc<crate::agents::graph::DefinitionCheckpointer>>>,
     lifecycle: RwLock<Vec<Arc<dyn crate::LifecycleOwner>>>,
     slots: Arc<Semaphore>,
@@ -124,6 +128,8 @@ impl Runtime {
         let artifacts = Arc::new(crate::data::artifacts::NativeArtifactStore::open(
             config.data_dir.clone(),
         )?);
+        let checkpoint_files =
+            Arc::new(crate::checkpoints::CheckpointStore::open(&config.data_dir)?);
         let (live, _) = broadcast::channel(config.stream_buffer.max(1));
         let slots = Arc::new(Semaphore::new(config.max_active.max(1)));
         let streams = Arc::new(Semaphore::new(config.max_streams.max(1)));
@@ -139,6 +145,8 @@ impl Runtime {
                 memory: RwLock::new(None),
                 graph: RwLock::new(None),
                 sessions: RwLock::new(None),
+                checkpoint_files,
+                tool_workspace: RwLock::new(None),
                 checkpoints: RwLock::new(BTreeMap::new()),
                 lifecycle: RwLock::new(Vec::new()),
                 slots,
@@ -263,6 +271,14 @@ impl Runtime {
     /// Canonical native session store, when composed by the Worker package.
     pub async fn sessions(&self) -> Option<Arc<crate::sessions::FileSessionService>> {
         self.inner.sessions.read().await.clone()
+    }
+
+    pub(crate) fn checkpoint_store_ref(&self) -> &Arc<crate::checkpoints::CheckpointStore> {
+        &self.inner.checkpoint_files
+    }
+
+    pub(crate) fn tool_workspace_ref(&self) -> &RwLock<Option<PathBuf>> {
+        &self.inner.tool_workspace
     }
 
     /// Install the definition-bound native checkpoint owners for lifecycle
@@ -826,6 +842,62 @@ impl Runtime {
     /// Current resolved configuration/asset revision.
     pub fn config_revision(&self) -> u64 {
         self.inner.config_revision.load(Ordering::SeqCst)
+    }
+
+    /// Immutable snapshot of the effective permission policy.
+    pub fn permission_snapshot(&self) -> crate::policy::PolicySnapshot {
+        self.inner
+            .config
+            .permissions
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot()
+    }
+
+    /// Shared permission policy handle.
+    pub fn permission_handle(&self) -> crate::policy::PolicyHandle {
+        self.inner.config.permissions.clone()
+    }
+
+    /// Replace the permission policy for subsequent tool calls.
+    ///
+    /// The change is an operator action. It never rewrites decisions already
+    /// recorded for earlier calls, and it does not retroactively authorize an
+    /// action whose approval was denied. Each later call records the new policy
+    /// revision and digest in its permission evidence.
+    pub async fn set_permission_policy(
+        &self,
+        principal: &Principal,
+        policy: crate::policy::PermissionPolicy,
+    ) -> Result<crate::policy::PolicySnapshot> {
+        principal.require(common::scopes::INSTANCE_ADMIN)?;
+        policy
+            .validate()
+            .map_err(|message| Error::new("validation.permissions", message))?;
+        let previous = self.permission_snapshot();
+        let snapshot = self
+            .inner
+            .config
+            .permissions
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(policy);
+        self.audit(
+            &principal.id,
+            "permission.policy",
+            &format!("policy-{}", snapshot.revision),
+            "applied",
+            &format!(
+                "previous_revision={} revision={} digest={} mode={} rule_count={}",
+                previous.revision,
+                snapshot.revision,
+                snapshot.digest,
+                snapshot.mode().as_str(),
+                snapshot.summary()["rule_count"],
+            ),
+        )
+        .await?;
+        Ok(snapshot)
     }
 
     /// Set the current resolved configuration/asset revision.

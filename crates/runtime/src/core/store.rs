@@ -25,7 +25,12 @@ use tokio::sync::Mutex;
 /// owner. Observations persisted under schema 3 are quarantined next to the
 /// state file, never silently discarded.
 ///
-pub const DATA_SCHEMA: u32 = 4;
+/// Schema 5 adds the file-checkpoint manifest for turn-boundary snapshots.
+/// Snapshot bytes remain content-addressed files below the data directory; the
+/// manifest records only digests, sizes, workspace-relative paths, and restore
+/// evidence. The field is `#[serde(default)]`, so a schema-4 store opens with
+/// an empty manifest and no canonical data is migrated or dropped.
+pub const DATA_SCHEMA: u32 = 5;
 
 /// Audit record. Contains no secret values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +162,73 @@ pub struct OperationRecord {
     pub policy: String,
 }
 
+/// One content-addressed snapshot blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobRef {
+    /// `sha256:<hex>` content digest. Empty when the file was absent.
+    pub digest: String,
+    /// Byte length.
+    pub bytes: u64,
+    /// Whether the file existed at capture time.
+    pub present: bool,
+}
+
+/// One file captured by a turn-boundary checkpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointFileRecord {
+    /// Workspace-relative path. Never an absolute host path.
+    pub path: String,
+    /// Content before the turn.
+    pub before: BlobRef,
+    /// Content after the turn; absent while the turn is open or when the
+    /// post-image could not be captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<BlobRef>,
+}
+
+/// One applied restore recorded as idempotency and audit evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointRestore {
+    /// Deterministic restore identity for retry convergence.
+    pub id: String,
+    /// `rewind`, `undo`, or `restore`.
+    pub mode: String,
+    /// Selected workspace-relative paths.
+    pub files: Vec<String>,
+    /// Restore time.
+    pub at: i64,
+}
+
+/// Durable manifest entry for one task turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointRecord {
+    /// Stable checkpoint identity derived from task and turn.
+    pub id: String,
+    /// Owning task.
+    pub task_id: String,
+    /// Owning namespace.
+    pub namespace: String,
+    /// Submitting principal.
+    pub caller: String,
+    /// Native session identity.
+    pub session_id: String,
+    /// Native invocation that bounds the turn.
+    pub turn: String,
+    /// Task attempt that produced the checkpoint.
+    pub attempt: u32,
+    /// `open`, `closed`, or `partial`.
+    pub status: String,
+    /// Creation time.
+    pub created_at: i64,
+    /// Last update time.
+    pub updated_at: i64,
+    /// Captured files.
+    pub files: Vec<CheckpointFileRecord>,
+    /// Applied restores, keyed by deterministic restore id.
+    #[serde(default)]
+    pub restores: Vec<CheckpointRestore>,
+}
+
 /// Native scope used to address one immutable artifact version. These values
 /// are internal identifiers, not client-supplied paths or URLs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +315,10 @@ pub struct State {
     /// Per-task plans recorded by the planning tool, keyed by task id.
     #[serde(default)]
     pub task_plans: BTreeMap<String, common::TaskPlan>,
+    /// Turn-boundary file checkpoint manifests. Snapshot bytes live in
+    /// content-addressed files below the data directory.
+    #[serde(default)]
+    pub checkpoints: BTreeMap<String, CheckpointRecord>,
     /// Correlated trace samples.
     pub traces: Vec<TraceSample>,
     /// Security audit.
@@ -289,6 +365,7 @@ impl Default for State {
             peer_delegations: BTreeMap::new(),
             plans: BTreeMap::new(),
             task_plans: BTreeMap::new(),
+            checkpoints: BTreeMap::new(),
             traces: Vec::new(),
             audit: Vec::new(),
             cleanup: BTreeMap::new(),

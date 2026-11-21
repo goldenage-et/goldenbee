@@ -157,6 +157,9 @@ pub fn write(dir: &Path, options: Options) -> Fixture {
         config.push_str(&format!("max_output_bytes = \"{limit}\"\n"));
     }
     config.push_str(&format!("checks = \"{}\"\n", options.checks));
+    // The coding package is an isolated writable worktree agent. Its tests and
+    // development flows run commands and edits without a human approver.
+    config.push_str("\n[permissions]\nmode = \"full-auto\"\n");
     let config_path = dir.join("worker.toml");
     std::fs::write(&config_path, config).unwrap();
     Fixture {

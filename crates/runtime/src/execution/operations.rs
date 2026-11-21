@@ -539,6 +539,39 @@ impl Runtime {
             .await
     }
 
+    /// Find the non-terminal task bound to one native tool call.
+    ///
+    /// A permission ask moves the task to `WaitingApproval` while the native
+    /// turn continues with the tool result and other parallel calls. Those
+    /// calls must still resolve the same task so policy evidence and limits
+    /// stay attached to it. Protected effects keep the stricter
+    /// [`effect_task`](Self::effect_task) lookup.
+    pub async fn task_for_call(
+        &self,
+        session_id: &str,
+        namespace: &str,
+        caller: &str,
+    ) -> Option<Task> {
+        self.store()
+            .read(|state| {
+                state
+                    .tasks
+                    .values()
+                    .filter(|task| {
+                        task.session_id == session_id
+                            && task.namespace == namespace
+                            && task.caller == caller
+                            && matches!(
+                                task.state,
+                                common::TaskState::Running | common::TaskState::WaitingApproval
+                            )
+                    })
+                    .max_by_key(|task| task.updated_at)
+                    .cloned()
+            })
+            .await
+    }
+
     /// Public, read-only evidence projection for one task.
     pub async fn effect_evidence(&self, task_id: &str) -> Option<EffectEvidence> {
         let (task, operations) = self

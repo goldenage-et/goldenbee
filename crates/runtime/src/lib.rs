@@ -7,12 +7,14 @@
 
 mod agents;
 pub mod browser;
+pub mod checkpoints;
 mod core;
 mod data;
 mod execution;
 pub mod master;
 pub mod mcp;
 pub mod peer;
+pub mod policy;
 mod process;
 mod sandbox;
 pub mod serving;
@@ -39,8 +41,9 @@ pub use core::error::Result;
 pub use core::ids::new_id;
 pub use core::runtime::Runtime;
 pub use core::store::{
-    ArtifactRecord, ArtifactScope, AuditRecord, CleanupJob, Counters, DocumentRecord,
-    OperationRecord, ReleaseRecord, RetainedObligation, State, Store, DATA_SCHEMA,
+    ArtifactRecord, ArtifactScope, AuditRecord, BlobRef, CheckpointFileRecord, CheckpointRecord,
+    CheckpointRestore, CleanupJob, Counters, DocumentRecord, OperationRecord, ReleaseRecord,
+    RetainedObligation, State, Store, DATA_SCHEMA,
 };
 pub use core::{config, crypto};
 pub use data::artifacts::ArtifactContent;
@@ -59,6 +62,10 @@ pub use master::{
     PlanRecovery,
 };
 pub use peer::{DelegateRequest, DelegatedArtifact, PeerConfig, PeerDelegation, PeerRecord};
+pub use policy::{
+    ActionEffect, Decision as PermissionDecision, PermissionMode, PermissionPolicy,
+    PermissionRequest, PermissionRule, PolicyDecision, RuleDecision,
+};
 pub use process::{
     ProcessError, ProcessMode, ProcessPolicy, ProcessRuntime, ProcessState, ProcessView,
 };

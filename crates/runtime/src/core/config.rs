@@ -197,6 +197,11 @@ pub struct RuntimeConfig {
     /// Interior mutability lets a validated reload disable a connection for
     /// future admissions without rebuilding the process configuration.
     pub mcp_policies: Arc<RwLock<BTreeMap<String, McpServerPolicy>>>,
+    /// Effective permission policy shared with the tool kernel.
+    ///
+    /// A validated replacement applies to subsequent tool calls and advances
+    /// the recorded policy revision.
+    pub permissions: crate::policy::PolicyHandle,
     /// Authorized MCP servers and owned credential references.
     pub mcp: crate::mcp::McpConfig,
     /// Explicitly authorized static remote peers. Presence is the
@@ -304,6 +309,7 @@ impl RuntimeConfig {
             agent_requirements: BTreeMap::new(),
             agent_providers: BTreeMap::new(),
             mcp_policies: Arc::new(RwLock::new(BTreeMap::new())),
+            permissions: crate::policy::default_handle(),
             mcp: crate::mcp::McpConfig::default(),
             peers: BTreeMap::new(),
             delegation_secret: std::env::var("GOLDENBEE_DELEGATION_SECRET")

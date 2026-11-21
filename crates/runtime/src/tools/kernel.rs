@@ -5,6 +5,8 @@
 //! by ADK, a Worker Package, an MCP connection, or a profile-built agent:
 //!
 //! - capability gating before dispatch;
+//! - permission-mode and ordered-rule authorization before dispatch, with a
+//!   bounded ask that reuses the durable approval record;
 //! - cooperative cancellation and a wall-clock timeout;
 //! - one bounded output ceiling with truncation metadata;
 //! - a per-path write lock so conflicting mutations cannot interleave;
@@ -15,6 +17,12 @@
 //! The pipeline is deliberately shallow. Approval decisions, sandbox profiles,
 //! and permission modes are separate tickets and attach to the same descriptor
 //! and event fields.
+//!
+//! Permission asks block inside the tool call, bounded by the policy's
+//! `approval_wait_ms`, then return a truthful `approval.pending` result. This
+//! mirrors the pinned native confirmation semantics used by protected effects
+//! while covering every tool source uniformly. It does not claim that a
+//! non-graph task resumes from a pending approval.
 
 use crate::execution::runner::decode_native_user_id;
 use crate::Runtime;
@@ -105,8 +113,18 @@ pub struct ToolDescriptor {
     /// Whether the tool can write inside the workspace even when the exact
     /// paths are not known before dispatch.
     pub writes: bool,
+    /// Whether this tool owns a stricter exact-operation approval internally.
+    ///
+    /// The kernel still evaluates deny rules and records the policy decision,
+    /// but an `ask` from the mode is delegated to the tool instead of opening a
+    /// second approval. Protected effect tools use this.
+    pub tool_owned_approval: bool,
     /// Arguments that name workspace paths this call touches.
     pub paths: Option<fn(&Value) -> Vec<String>>,
+    /// Arguments that carry the command this call executes.
+    pub command: Option<fn(&Value) -> Option<String>>,
+    /// Arguments that carry the network host this call reaches.
+    pub domain: Option<fn(&Value) -> Option<String>>,
 }
 
 impl std::fmt::Debug for ToolDescriptor {
@@ -123,7 +141,10 @@ impl std::fmt::Debug for ToolDescriptor {
             .field("network", &self.network)
             .field("audit", &self.audit)
             .field("writes", &self.writes)
+            .field("tool_owned_approval", &self.tool_owned_approval)
             .field("has_paths", &self.paths.is_some())
+            .field("has_command", &self.command.is_some())
+            .field("has_domain", &self.domain.is_some())
             .finish()
     }
 }
@@ -143,7 +164,10 @@ impl ToolDescriptor {
             network: false,
             audit: false,
             writes: false,
+            tool_owned_approval: false,
             paths: None,
+            command: None,
+            domain: None,
         }
     }
 
@@ -206,9 +230,27 @@ impl ToolDescriptor {
         self
     }
 
+    /// Delegate an `ask` decision to this tool's own exact approval.
+    pub fn tool_owned_approval(mut self) -> Self {
+        self.tool_owned_approval = true;
+        self
+    }
+
     /// Read workspace paths from the call arguments.
     pub fn paths(mut self, paths: fn(&Value) -> Vec<String>) -> Self {
         self.paths = Some(paths);
+        self
+    }
+
+    /// Read the command this call executes from its arguments.
+    pub fn command(mut self, command: fn(&Value) -> Option<String>) -> Self {
+        self.command = Some(command);
+        self
+    }
+
+    /// Read the network host this call reaches from its arguments.
+    pub fn domain(mut self, domain: fn(&Value) -> Option<String>) -> Self {
+        self.domain = Some(domain);
         self
     }
 }
@@ -230,6 +272,9 @@ pub struct ToolKernelConfig {
     pub max_parallel: usize,
     /// Package-declared built-in capabilities that are enabled.
     pub enabled: BTreeSet<String>,
+    /// Initial permission policy. Runtime updates replace its contents through
+    /// [`ToolKernel::permission_handle`].
+    pub permissions: crate::policy::PermissionPolicy,
 }
 
 struct KernelState {
@@ -242,6 +287,7 @@ struct KernelInner {
     state: RwLock<Option<KernelState>>,
     runtime: Arc<OnceLock<Runtime>>,
     locks: Arc<PathLocks>,
+    permissions: crate::policy::PolicyHandle,
 }
 
 impl std::fmt::Debug for KernelInner {
@@ -281,6 +327,7 @@ impl ToolKernel {
                 state: RwLock::new(None),
                 runtime: Arc::new(OnceLock::new()),
                 locks: Arc::new(PathLocks::default()),
+                permissions: crate::policy::default_handle(),
             }),
         }
     }
@@ -297,6 +344,16 @@ impl ToolKernel {
                 "tool limits must be greater than zero",
             ));
         }
+        config
+            .permissions
+            .validate()
+            .map_err(adk_rust::AdkError::config)?;
+        *self
+            .inner
+            .permissions
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) =
+            crate::policy::PolicyState::new(config.permissions.clone());
         let (workspace, devtools) = match config.workspace.clone() {
             Some(path) => {
                 std::fs::create_dir_all(&path).map_err(|error| {
@@ -340,6 +397,23 @@ impl ToolKernel {
                     .map(|state| state.config.enabled.contains(id))
             })
             .unwrap_or(false)
+    }
+
+    /// Shared permission policy handle.
+    ///
+    /// Worker startup hands the same handle to the runtime, so a validated
+    /// operator change is visible to subsequent tool calls.
+    pub fn permission_handle(&self) -> crate::policy::PolicyHandle {
+        self.inner.permissions.clone()
+    }
+
+    /// Immutable policy snapshot for one call.
+    pub fn permission_snapshot(&self) -> crate::policy::PolicySnapshot {
+        self.inner
+            .permissions
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot()
     }
 
     /// The configured workspace root, when startup resolved one.
@@ -488,15 +562,6 @@ impl KernelTool {
             .unwrap_or(effective.config.max_output_bytes)
     }
 
-    fn permission(&self) -> Value {
-        json!({
-            "decision": "allow",
-            "mode": "package",
-            "rule": "capability",
-            "capability": self.descriptor.capability,
-        })
-    }
-
     fn denied_permission(&self) -> Value {
         json!({
             "decision": "deny",
@@ -506,13 +571,77 @@ impl KernelTool {
         })
     }
 
+    fn sandbox_profile(&self) -> &'static str {
+        if self.descriptor.effect.is_mutation() || self.descriptor.writes {
+            "workspace-write"
+        } else {
+            "workspace-read"
+        }
+    }
+
+    fn action_effect(&self) -> crate::policy::ActionEffect {
+        match self.descriptor.effect {
+            ToolEffect::None => crate::policy::ActionEffect::None,
+            ToolEffect::FileWrite => crate::policy::ActionEffect::FileWrite,
+            ToolEffect::FileDelete => crate::policy::ActionEffect::FileDelete,
+        }
+    }
+
+    fn policy_request(
+        &self,
+        args: &Value,
+        relative: &[String],
+        task: Option<&common::Task>,
+    ) -> crate::policy::PermissionRequest {
+        crate::policy::PermissionRequest {
+            tool: self.inner.name().to_string(),
+            capability: self.descriptor.capability.clone(),
+            effect: self.action_effect(),
+            high_risk: matches!(self.descriptor.risk, ToolRisk::High),
+            arguments_digest: common::canonical_digest(&crate::tools::effect::canonical_arguments(
+                args,
+            )),
+            paths: relative.to_vec(),
+            command: self
+                .descriptor
+                .command
+                .and_then(|extract| extract(args))
+                .map(|command| common::redact(&command)),
+            domain: self.descriptor.domain.and_then(|extract| extract(args)),
+            principal: task
+                .map(|task| task.caller.clone())
+                .unwrap_or_else(|| "local".into()),
+            profile_revision: task.map(|task| task.profile_revision).unwrap_or(0),
+            sandbox_profile: self.sandbox_profile().to_string(),
+        }
+    }
+
+    fn permission_value(
+        &self,
+        evaluated: &crate::policy::PolicyDecision,
+        snapshot: &crate::policy::PolicySnapshot,
+        decision: &str,
+        reason: &str,
+        approval: Option<&common::Approval>,
+    ) -> Value {
+        json!({
+            "decision": decision,
+            "evaluated": evaluated.decision.as_str(),
+            "mode": evaluated.mode.as_str(),
+            "rule": evaluated.rule,
+            "reason": reason,
+            "capability": self.descriptor.capability,
+            "policy": snapshot.summary(),
+            "approval": approval.map(|approval| json!({
+                "id": approval.id,
+                "status": approval.status,
+            })),
+        })
+    }
+
     fn sandbox(&self, effective: &EffectiveConfig) -> Value {
         json!({
-            "profile": if self.descriptor.effect.is_mutation() || self.descriptor.writes {
-                "workspace-write"
-            } else {
-                "workspace-read"
-            },
+            "profile": self.sandbox_profile(),
             "workspace": effective
                 .config
                 .workspace
@@ -548,6 +677,263 @@ impl KernelTool {
             })
             .collect()
     }
+
+    async fn authorize(
+        &self,
+        evaluated: &crate::policy::PolicyDecision,
+        snapshot: &crate::policy::PolicySnapshot,
+        request: &crate::policy::PermissionRequest,
+        task: Option<&common::Task>,
+    ) -> Authorization {
+        match evaluated.decision {
+            crate::policy::Decision::Allow => Authorization::Allowed {
+                decision: "allow",
+                reason: evaluated.reason.clone(),
+                approval: None,
+            },
+            crate::policy::Decision::Deny => Authorization::Denied {
+                decision: "deny",
+                reason: evaluated.reason.clone(),
+                approval: None,
+            },
+            crate::policy::Decision::Ask
+                if self.descriptor.tool_owned_approval && evaluated.rule.is_none() =>
+            {
+                // Protected effect tools run their own exact approval. The
+                // mode's ask is delegated so the runtime does not open a second
+                // approval or weaken the tool's wait. An explicit ask rule is
+                // still enforced here.
+                Authorization::Allowed {
+                    decision: "allow",
+                    reason: "tool_owned_approval".into(),
+                    approval: None,
+                }
+            }
+            crate::policy::Decision::Ask => self.ask(evaluated, snapshot, request, task).await,
+        }
+    }
+
+    async fn ask(
+        &self,
+        evaluated: &crate::policy::PolicyDecision,
+        snapshot: &crate::policy::PolicySnapshot,
+        request: &crate::policy::PermissionRequest,
+        task: Option<&common::Task>,
+    ) -> Authorization {
+        let Some(task) = task else {
+            // Without a durable task there is nowhere to record a decision.
+            // Fail closed rather than silently running the action.
+            return Authorization::Denied {
+                decision: "deny",
+                reason: "approval_requires_task".into(),
+                approval: None,
+            };
+        };
+        let Some(runtime) = self.kernel.inner.runtime.get() else {
+            return Authorization::Denied {
+                decision: "deny",
+                reason: "approval_runtime_unavailable".into(),
+                approval: None,
+            };
+        };
+        let digest = request.action_digest();
+        let operation = self.inner.name();
+        let existing = runtime
+            .approval_for_operation(&task.id, operation, &digest)
+            .await;
+        let approval = match existing {
+            Some(approval) => approval,
+            None => {
+                let target = approval_target(request);
+                match runtime
+                    .request_approval_with_action(
+                        &task.id,
+                        operation,
+                        &target,
+                        &digest,
+                        self.descriptor.risk.as_str(),
+                        snapshot.approval_ttl_ms().max(1) as i64,
+                        Some(request.approval_action()),
+                        Some(evaluated.mode.as_str().to_string()),
+                        evaluated.rule.clone(),
+                    )
+                    .await
+                {
+                    Ok(approval) => approval,
+                    Err(error) => {
+                        let _ = runtime
+                            .append_event(
+                                &task.id,
+                                "approval.unavailable",
+                                json!({
+                                    "tool": operation,
+                                    "code": error.code,
+                                    "message": common::redact(&error.message),
+                                }),
+                                true,
+                            )
+                            .await;
+                        runtime.set_pause(&task.id, crate::PAUSE_RUNNING).await;
+                        return Authorization::Denied {
+                            decision: "deny",
+                            reason: "approval_unavailable".into(),
+                            approval: None,
+                        };
+                    }
+                }
+            }
+        };
+        let outcome = settle_approval(runtime, approval, snapshot).await;
+        runtime.set_pause(&task.id, crate::PAUSE_RUNNING).await;
+        match outcome {
+            AskOutcome::Allowed(approval) => Authorization::Allowed {
+                decision: "allow",
+                reason: "approval_approved".into(),
+                approval: Some(approval),
+            },
+            AskOutcome::Denied { reason, approval } => Authorization::Denied {
+                decision: "deny",
+                reason,
+                approval,
+            },
+            AskOutcome::Pending(approval) => Authorization::Pending {
+                decision: "ask",
+                reason: "approval_pending".into(),
+                approval,
+            },
+        }
+    }
+}
+
+enum Authorization {
+    Allowed {
+        decision: &'static str,
+        reason: String,
+        approval: Option<common::Approval>,
+    },
+    Denied {
+        decision: &'static str,
+        reason: String,
+        approval: Option<common::Approval>,
+    },
+    Pending {
+        decision: &'static str,
+        reason: String,
+        approval: common::Approval,
+    },
+}
+
+impl Authorization {
+    fn decision(&self) -> &'static str {
+        match self {
+            Self::Allowed { decision, .. }
+            | Self::Denied { decision, .. }
+            | Self::Pending { decision, .. } => decision,
+        }
+    }
+
+    fn reason(&self) -> &str {
+        match self {
+            Self::Allowed { reason, .. }
+            | Self::Denied { reason, .. }
+            | Self::Pending { reason, .. } => reason,
+        }
+    }
+
+    fn approval(&self) -> Option<&common::Approval> {
+        match self {
+            Self::Allowed { approval, .. } => approval.as_ref(),
+            Self::Denied { approval, .. } => approval.as_ref(),
+            Self::Pending { approval, .. } => Some(approval),
+        }
+    }
+}
+
+enum AskOutcome {
+    Allowed(common::Approval),
+    Denied {
+        reason: String,
+        approval: Option<common::Approval>,
+    },
+    Pending(common::Approval),
+}
+
+async fn settle_approval(
+    runtime: &Runtime,
+    approval: common::Approval,
+    snapshot: &crate::policy::PolicySnapshot,
+) -> AskOutcome {
+    let wait_ms = snapshot.approval_wait_ms();
+    let mut current = approval;
+    loop {
+        match current.status.as_str() {
+            "approved" if common::now_ms() < current.expires_at => {
+                return AskOutcome::Allowed(current)
+            }
+            "approved" => {
+                return AskOutcome::Denied {
+                    reason: "approval_expired".into(),
+                    approval: Some(current),
+                }
+            }
+            "rejected" => {
+                return AskOutcome::Denied {
+                    reason: "approval_rejected".into(),
+                    approval: Some(current),
+                }
+            }
+            "revoked" => {
+                return AskOutcome::Denied {
+                    reason: "approval_revoked".into(),
+                    approval: Some(current),
+                }
+            }
+            "expired" => {
+                return AskOutcome::Denied {
+                    reason: "approval_expired".into(),
+                    approval: Some(current),
+                }
+            }
+            _ => {}
+        }
+        if wait_ms == 0 {
+            return AskOutcome::Pending(current);
+        }
+        let remaining = (current.expires_at - common::now_ms()).max(1) as u64;
+        let wait = remaining.min(wait_ms);
+        match runtime
+            .wait_for_approval(&current.id, Duration::from_millis(wait))
+            .await
+        {
+            Ok(decided) => current = decided,
+            Err(error) if error.code == "approval.expired" => {
+                return AskOutcome::Denied {
+                    reason: "approval_expired".into(),
+                    approval: Some(current),
+                }
+            }
+            Err(_) => return AskOutcome::Pending(current),
+        }
+    }
+}
+
+fn approval_target(request: &crate::policy::PermissionRequest) -> String {
+    let mut target = format!("tool={}", request.tool);
+    if !request.paths.is_empty() {
+        target.push_str(&format!(" paths={}", request.paths.join(",")));
+    }
+    if let Some(command) = &request.command {
+        target.push_str(&format!(" command={}", common::redact(command)));
+    }
+    if let Some(domain) = &request.domain {
+        target.push_str(&format!(" domain={domain}"));
+    }
+    target.push_str(&format!(" sandbox={}", request.sandbox_profile));
+    if target.len() > 1024 {
+        target.truncate(1021);
+        target.push_str("...");
+    }
+    target
 }
 
 #[async_trait]
@@ -641,6 +1027,79 @@ impl Tool for KernelTool {
         // the same bounds; task-scoped events and audit are omitted because no
         // task outcome exists to commit them before.
         let task = active_task(&self.kernel, ctx.as_ref()).await;
+        // One snapshot per call: a mode or rule change applies only to later
+        // calls and both the decision and the recorded evidence use this view.
+        let snapshot = self.kernel.permission_snapshot();
+        let relative = self.relative_paths(&effective, &args);
+        let request = self.policy_request(&args, &relative, task.as_ref());
+        let evaluated = snapshot.evaluate(&request);
+        let authorization = self
+            .authorize(&evaluated, &snapshot, &request, task.as_ref())
+            .await;
+        let permission = self.permission_value(
+            &evaluated,
+            &snapshot,
+            authorization.decision(),
+            authorization.reason(),
+            authorization.approval(),
+        );
+        // A protected effect tool owns its exact approval. Its own
+        // `approval.requested` event is the decision evidence, so the kernel
+        // does not add a second write before that request. Deny and explicit
+        // ask rules still record the permission decision here.
+        if authorization.reason() != "tool_owned_approval" {
+            self.record_permission(
+                &effective,
+                ctx.as_ref(),
+                task.as_ref(),
+                &request,
+                &evaluated,
+                &snapshot,
+                &authorization,
+            )
+            .await;
+        }
+        if !matches!(authorization, Authorization::Allowed { .. }) {
+            let (code, message) = match &authorization {
+                Authorization::Pending { approval, .. } => (
+                    "approval.pending",
+                    format!(
+                        "tool '{}' is waiting for approval '{}'",
+                        self.inner.name(),
+                        approval.id
+                    ),
+                ),
+                _ => (
+                    "permission.denied",
+                    format!(
+                        "tool '{}' was denied by permission policy ({})",
+                        self.inner.name(),
+                        authorization.reason()
+                    ),
+                ),
+            };
+            self.observe(
+                &effective,
+                ctx.as_ref(),
+                &args,
+                task.as_ref(),
+                ToolObservation {
+                    ok: false,
+                    error_code: Some(code.to_string()),
+                    duration: Duration::ZERO,
+                    queue_wait: Duration::ZERO,
+                    truncated: false,
+                    output_bytes: 0,
+                    result_digest: String::new(),
+                    post_digest: String::new(),
+                    diff: Value::Null,
+                    effect: None,
+                    permission,
+                },
+            )
+            .await;
+            return Ok(error_value(code, message));
+        }
 
         let queue_started = Instant::now();
         let permit_wait = self.timeout(&effective).unwrap_or(Duration::from_secs(300));
@@ -664,7 +1123,6 @@ impl Tool for KernelTool {
         };
         let queue_wait = queue_started.elapsed();
 
-        let relative = self.relative_paths(&effective, &args);
         let paths = self.lock_paths(&effective, &args);
         let _path_guards = self.kernel.inner.locks.acquire(&paths).await;
         let before = if self.descriptor.effect.is_mutation() {
@@ -681,8 +1139,46 @@ impl Tool for KernelTool {
             task.as_ref(),
             &relative,
             queue_wait,
+            &permission,
         )
         .await;
+
+        // Snapshot the files this mutation is about to touch. A capture failure
+        // is fail-closed: an unreversible edit must not be presented as a
+        // checkpointed one.
+        let checkpoint = match self
+            .checkpoint_before(&effective, ctx.as_ref(), task.as_ref(), &relative)
+            .await
+        {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                let code = error.code.clone();
+                self.observe(
+                    &effective,
+                    ctx.as_ref(),
+                    &args,
+                    task.as_ref(),
+                    ToolObservation {
+                        ok: false,
+                        error_code: Some(code.clone()),
+                        duration: started.elapsed(),
+                        queue_wait,
+                        truncated: false,
+                        output_bytes: 0,
+                        result_digest: String::new(),
+                        post_digest: String::new(),
+                        diff: Value::Null,
+                        effect: Some(json!({
+                            "kind": self.descriptor.effect.as_str(),
+                            "paths": relative,
+                        })),
+                        permission: permission.clone(),
+                    },
+                )
+                .await;
+                return Ok(error_value(&code, error.message));
+            }
+        };
 
         let deadline = self.timeout(&effective);
         let timeout = async {
@@ -711,35 +1207,40 @@ impl Tool for KernelTool {
             result = &mut execution => Outcome::Complete(result),
         };
         let duration = started.elapsed();
+        self.checkpoint_after(&effective, checkpoint.as_deref(), &relative)
+            .await;
         let result = match outcome {
             Outcome::Cancelled(value) | Outcome::TimedOut(value) => value,
             Outcome::Complete(Ok(value)) => value,
-            Outcome::Complete(Err(error)) if self.descriptor.typed_errors => typed_error(&error),
             Outcome::Complete(Err(error)) => {
-                self.observe(
-                    &effective,
-                    ctx.as_ref(),
-                    &args,
-                    task.as_ref(),
-                    ToolObservation {
-                        ok: false,
-                        error_code: Some(error.code.to_string()),
-                        duration,
-                        queue_wait,
-                        truncated: false,
-                        output_bytes: 0,
-                        result_digest: String::new(),
-                        post_digest: String::new(),
-                        diff: Value::Null,
-                        effect: self.descriptor.effect.is_mutation().then_some(json!({
-                            "kind": self.descriptor.effect.as_str(),
-                            "paths": relative,
-                        })),
-                        permission: self.permission(),
-                    },
-                )
-                .await;
-                return Err(error);
+                if self.descriptor.typed_errors {
+                    typed_error(&error)
+                } else {
+                    self.observe(
+                        &effective,
+                        ctx.as_ref(),
+                        &args,
+                        task.as_ref(),
+                        ToolObservation {
+                            ok: false,
+                            error_code: Some(error.code.to_string()),
+                            duration,
+                            queue_wait,
+                            truncated: false,
+                            output_bytes: 0,
+                            result_digest: String::new(),
+                            post_digest: String::new(),
+                            diff: Value::Null,
+                            effect: self.descriptor.effect.is_mutation().then_some(json!({
+                                "kind": self.descriptor.effect.as_str(),
+                                "paths": relative,
+                            })),
+                            permission: permission.clone(),
+                        },
+                    )
+                    .await;
+                    return Err(error);
+                }
             }
         };
 
@@ -784,7 +1285,7 @@ impl Tool for KernelTool {
             post_digest,
             diff,
             effect,
-            permission: self.permission(),
+            permission: permission.clone(),
         };
         self.observe(
             &effective,
@@ -822,6 +1323,103 @@ struct ToolObservation {
 }
 
 impl KernelTool {
+    #[allow(clippy::too_many_arguments)]
+    async fn record_permission(
+        &self,
+        effective: &EffectiveConfig,
+        ctx: &dyn ToolContext,
+        task: Option<&common::Task>,
+        request: &crate::policy::PermissionRequest,
+        evaluated: &crate::policy::PolicyDecision,
+        snapshot: &crate::policy::PolicySnapshot,
+        authorization: &Authorization,
+    ) {
+        let (Some(task), Some(runtime)) = (task, self.kernel.inner.runtime.get()) else {
+            return;
+        };
+        let approval = authorization.approval();
+        let payload = json!({
+            "tool": self.inner.name(),
+            "call_id": ctx.function_call_id(),
+            "invocation": ctx.invocation_id(),
+            "agent": ctx.agent_name(),
+            "decision": authorization.decision(),
+            "evaluated": evaluated.decision.as_str(),
+            "mode": evaluated.mode.as_str(),
+            "rule": evaluated.rule,
+            "reason": authorization.reason(),
+            "capability": self.descriptor.capability,
+            "risk": self.descriptor.risk.as_str(),
+            "effect": self.descriptor.effect.as_str(),
+            "paths": request.paths,
+            "command": request.command,
+            "domain": request.domain,
+            "arguments_digest": request.arguments_digest,
+            "action_digest": request.action_digest(),
+            "sandbox": self.sandbox(effective),
+            "policy": snapshot.summary(),
+            "approval": approval.map(|approval| json!({
+                "id": approval.id,
+                "status": approval.status,
+                "expires_at": approval.expires_at,
+            })),
+            "redaction": Self::redaction(),
+        });
+        let _ = runtime
+            .append_event(&task.id, "permission.decision", payload, true)
+            .await;
+        if let Authorization::Pending { approval, .. } = authorization {
+            let _ = runtime
+                .append_event(
+                    &task.id,
+                    "approval.pending",
+                    json!({
+                        "tool": self.inner.name(),
+                        "call_id": ctx.function_call_id(),
+                        "approval_id": approval.id,
+                        "operation": approval.operation,
+                        "target": approval.target,
+                        "digest": approval.digest,
+                        "expires_at": approval.expires_at,
+                        "action": approval.action,
+                        "message": "the tool call returned without a decision; continuing the turn does not grant the action",
+                    }),
+                    true,
+                )
+                .await;
+        }
+        let command_digest = request
+            .command
+            .as_deref()
+            .map(|command| common::canonical_digest(&command))
+            .unwrap_or_default();
+        let detail = format!(
+            "tool={} mode={} rule={} decision={} reason={} paths={} command_digest={} domain={} policy_revision={} policy_digest={} approval={}",
+            self.inner.name(),
+            evaluated.mode.as_str(),
+            evaluated.rule.as_deref().unwrap_or("mode"),
+            authorization.decision(),
+            authorization.reason(),
+            request.paths.join(","),
+            command_digest,
+            request.domain.as_deref().unwrap_or(""),
+            snapshot.revision,
+            snapshot.digest,
+            approval.map(|approval| approval.id.as_str()).unwrap_or(""),
+        );
+        let _ = runtime
+            .audit_with_trace(
+                &task.caller,
+                "permission.decision",
+                &task.id,
+                authorization.decision(),
+                &detail,
+                &task.trace_id,
+            )
+            .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn observe_start(
         &self,
         effective: &EffectiveConfig,
@@ -830,6 +1428,7 @@ impl KernelTool {
         task: Option<&common::Task>,
         relative: &[String],
         queue_wait: Duration,
+        permission: &Value,
     ) {
         let Some(task) = task else { return };
         let Some(runtime) = self.kernel.inner.runtime.get() else {
@@ -843,7 +1442,7 @@ impl KernelTool {
             "capability": self.descriptor.capability,
             "risk": self.descriptor.risk.as_str(),
             "effect": self.descriptor.effect.as_str(),
-            "permission": self.permission(),
+            "permission": permission,
             "sandbox": self.sandbox(effective),
             "redaction": Self::redaction(),
             "schema_digest": common::canonical_digest(&self.inner.declaration()),
@@ -996,6 +1595,49 @@ impl KernelTool {
             .await;
     }
 
+    async fn checkpoint_before(
+        &self,
+        effective: &EffectiveConfig,
+        ctx: &dyn ToolContext,
+        task: Option<&common::Task>,
+        relative: &[String],
+    ) -> crate::Result<Option<String>> {
+        if !self.descriptor.effect.is_mutation() {
+            return Ok(None);
+        }
+        let (Some(task), Some(workspace)) = (task, effective.config.workspace.as_deref()) else {
+            return Ok(None);
+        };
+        let Some(runtime) = self.kernel.inner.runtime.get() else {
+            return Ok(None);
+        };
+        runtime
+            .checkpoint_before(task, ctx.invocation_id(), workspace, relative)
+            .await
+            .map(Some)
+    }
+
+    async fn checkpoint_after(
+        &self,
+        effective: &EffectiveConfig,
+        checkpoint: Option<&str>,
+        relative: &[String],
+    ) {
+        let (Some(checkpoint), Some(workspace)) =
+            (checkpoint, effective.config.workspace.as_deref())
+        else {
+            return;
+        };
+        let Some(runtime) = self.kernel.inner.runtime.get() else {
+            return;
+        };
+        // A post-capture failure leaves the manifest `partial` and is reported
+        // through `checkpoint.committed`; it must not rewrite the tool result.
+        let _ = runtime
+            .checkpoint_after(checkpoint, workspace, relative)
+            .await;
+    }
+
     fn pre_image(&self, effective: &EffectiveConfig, args: &Value) -> BTreeMap<String, String> {
         self.images(effective, args)
     }
@@ -1041,7 +1683,7 @@ async fn active_task(kernel: &ToolKernel, ctx: &dyn ToolContext) -> Option<commo
     let runtime = kernel.inner.runtime.get()?;
     let (namespace, caller) = decode_native_user_id(ctx.user_id()).ok()?;
     runtime
-        .effect_task(ctx.session_id(), &namespace, &caller)
+        .task_for_call(ctx.session_id(), &namespace, &caller)
         .await
 }
 
@@ -1376,6 +2018,20 @@ mod tests {
     }
 
     fn configured(enabled: BTreeSet<String>, max_parallel: usize, workspace: &Path) -> ToolKernel {
+        configured_with(
+            enabled,
+            max_parallel,
+            workspace,
+            crate::policy::PermissionPolicy::default(),
+        )
+    }
+
+    fn configured_with(
+        enabled: BTreeSet<String>,
+        max_parallel: usize,
+        workspace: &Path,
+        permissions: crate::policy::PermissionPolicy,
+    ) -> ToolKernel {
         let kernel = ToolKernel::new();
         kernel
             .configure(ToolKernelConfig {
@@ -1384,9 +2040,34 @@ mod tests {
                 max_output_bytes: 1024,
                 max_parallel,
                 enabled,
+                permissions,
             })
             .expect("kernel configures");
         kernel
+    }
+
+    fn permission_policy(
+        rules: Vec<crate::policy::PermissionRule>,
+    ) -> crate::policy::PermissionPolicy {
+        crate::policy::PermissionPolicy {
+            rules,
+            ..crate::policy::PermissionPolicy::default()
+        }
+    }
+
+    fn permission_rule(
+        id: &str,
+        decision: crate::policy::RuleDecision,
+    ) -> crate::policy::PermissionRule {
+        crate::policy::PermissionRule {
+            id: id.into(),
+            decision,
+            tools: Vec::new(),
+            command_prefix: Vec::new(),
+            paths: Vec::new(),
+            domains: Vec::new(),
+            priority: 0,
+        }
     }
 
     fn probe(
@@ -1430,6 +2111,110 @@ mod tests {
         let result = wrapped.execute(ctx, json!({})).await.expect("typed denial");
         assert_eq!(result["error"], "tool.not_enabled");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn deny_rule_blocks_dispatch_before_the_tool_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut deny = permission_rule("deny-writer", crate::policy::RuleDecision::Deny);
+        deny.tools = vec!["writer".into()];
+        let kernel = configured_with(
+            BTreeSet::new(),
+            2,
+            dir.path(),
+            permission_policy(vec![deny]),
+        );
+        let (tool, _, _, calls) = probe("writer");
+        let wrapped = kernel.wrap(
+            tool,
+            ToolDescriptor::new("workspace:write")
+                .risk(ToolRisk::High)
+                .effect(ToolEffect::FileWrite)
+                .paths(path_of),
+        );
+        let ctx = Arc::new(adk_tool::SimpleToolContext::new("test")) as Arc<dyn ToolContext>;
+        let result = wrapped
+            .execute(ctx, json!({"path": "notes/a.txt"}))
+            .await
+            .expect("typed denial");
+        assert_eq!(result["error"], "permission.denied");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn command_rule_matches_the_observed_command_and_unknown_commands_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut allow = permission_rule("allow-status", crate::policy::RuleDecision::Allow);
+        allow.tools = vec!["exec_command".into()];
+        allow.command_prefix = vec!["git status".into()];
+        let kernel = configured_with(
+            BTreeSet::new(),
+            2,
+            dir.path(),
+            permission_policy(vec![allow]),
+        );
+        let (tool, _, _, calls) = probe("exec_command");
+        let wrapped = kernel.wrap(
+            tool,
+            ToolDescriptor::new("exec:command")
+                .risk(ToolRisk::High)
+                .command(|args| {
+                    args.get("command")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                }),
+        );
+        let ctx = Arc::new(adk_tool::SimpleToolContext::new("test")) as Arc<dyn ToolContext>;
+        wrapped
+            .execute(ctx.clone(), json!({"command": "git status --short"}))
+            .await
+            .expect("allowed call");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A different command falls back to the mode's ask. There is no task in
+        // this unit test, so the ask must fail closed instead of running.
+        let result = wrapped
+            .execute(ctx, json!({"command": "git push"}))
+            .await
+            .expect("typed denial");
+        assert_eq!(result["error"], "permission.denied");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn domain_rule_matches_the_observed_host_not_a_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut allow = permission_rule("allow-api", crate::policy::RuleDecision::Allow);
+        allow.domains = vec!["api.example.com".into()];
+        let kernel = configured_with(
+            BTreeSet::new(),
+            2,
+            dir.path(),
+            permission_policy(vec![allow]),
+        );
+        let (tool, _, _, calls) = probe("web_fetch");
+        let wrapped = kernel.wrap(
+            tool,
+            ToolDescriptor::new("network:read")
+                .risk(ToolRisk::Medium)
+                .domain(|args| {
+                    args.get("url")
+                        .and_then(Value::as_str)
+                        .and_then(|url| url.split("://").nth(1))
+                        .map(|rest| rest.split('/').next().unwrap_or_default().to_string())
+                }),
+        );
+        let ctx = Arc::new(adk_tool::SimpleToolContext::new("test")) as Arc<dyn ToolContext>;
+        wrapped
+            .execute(ctx.clone(), json!({"url": "https://api.example.com/v1"}))
+            .await
+            .expect("allowed call");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let result = wrapped
+            .execute(ctx, json!({"url": "https://evil.example.com/v1"}))
+            .await
+            .expect("typed denial");
+        assert_eq!(result["error"], "permission.denied");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

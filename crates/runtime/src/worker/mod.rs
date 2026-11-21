@@ -149,6 +149,8 @@ pub struct Worker {
     web_policy: Option<WebPolicy>,
     /// Package-declared sandbox and process policy.
     process_policy: Option<crate::ProcessPolicy>,
+    /// A package-registered tool declared a workspace file effect or paths.
+    pub(crate) tool_workspace_required: bool,
     /// Worker-owned status interfaces for protected effects.
     pub(crate) effect_reconcilers:
         BTreeMap<String, Arc<dyn crate::execution::operations::EffectReconciler>>,
@@ -187,6 +189,7 @@ impl Worker {
             builtin_tools: BTreeSet::new(),
             web_policy: None,
             process_policy: None,
+            tool_workspace_required: false,
             effect_reconcilers: BTreeMap::new(),
             effect_approvals: BTreeMap::new(),
             effect_runtime,
@@ -728,7 +731,8 @@ impl Worker {
         }
         self.kernel
             .configure(ToolKernelConfig {
-                workspace: (!self.builtin_tools.is_empty()).then(|| settings.tool_workspace()),
+                workspace: (!self.builtin_tools.is_empty() || self.tool_workspace_required)
+                    .then(|| settings.tool_workspace()),
                 timeout: std::time::Duration::from_millis(settings.file.tools.timeout_ms.max(1)),
                 max_output_bytes: settings.file.tools.max_output_bytes.max(1),
                 max_parallel: settings.file.tools.max_parallel.max(1),
@@ -737,6 +741,7 @@ impl Worker {
                     .iter()
                     .map(|tool| tool.id().to_string())
                     .collect(),
+                permissions: settings.file.permissions.clone(),
             })
             .map_err(|error| {
                 ApiError::new(
@@ -970,6 +975,9 @@ impl Worker {
         runtime.set_memory(Some(memory.clone())).await;
         runtime.set_graph(graph.clone()).await;
         runtime.set_sessions(sessions.clone()).await;
+        runtime
+            .set_tool_workspace(Some(settings.tool_workspace()))
+            .await;
         runtime
             .set_graph_checkpointers(
                 graphs
