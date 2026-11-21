@@ -35,6 +35,7 @@ revision store and never create a second profile loader or authority.
 | `/v1/commands/{name}` | New | Read one command descriptor, or invoke it with `POST`. Invocation requires `task:submit`. |
 | `/v1/drain` | New | Authorized bounded drain. Requires `instance:admin`. |
 | `/v1/tasks` | New | Durable task admission with caller-scoped idempotency. |
+| `/v1/runs` | New | One-shot headless run over the same durable task path. Returns the structured `RunResult`. Requires `task:submit`. |
 | `/v1/tasks/{id}` | New | Durable task projection. |
 | `/v1/tasks/{id}/events` | New | Retained task event page. |
 | `/v1/tasks/{id}/events/stream` | New | Replays retained events, then follows the live broadcast. Uses a bounded cursor contract; model token deltas are non-durable. |
@@ -523,6 +524,53 @@ submits a prompt or creates another task.
 - `Last-Event-ID` is not interpreted. Clients resume with the explicit
   `after` query parameter so cursor precedence is unambiguous.
 
+## Headless runs
+
+The Worker can run one task and stream ordered frames without a TUI or an
+installed Client application. The headless path is the same durable task
+admission and the same native executor as `/v1/tasks`; it adds one projection,
+not a second runner, session store, or event vocabulary.
+
+- CLI: `<package> run --config <path> --input <text|-> [--input-file <path> ...]
+  [--image <path> ...] [--agent <id>] [--profile <name>] [--session <id>]
+  [--continue | --resume <id>] [--json | --jsonl] [--idempotency-key <key>]`.
+  `--input -` reads stdin. `--json` prints one `RunResult`; `--jsonl` prints one
+  compact frame per line. `--json` and `--jsonl` are mutually exclusive.
+- `POST /v1/runs` accepts a `RunRequest` and returns the same `RunResult`. It
+  requires `task:submit`; an omitted agent uses the configured default. A
+  `RunRequest` carries resolved input only, so an HTTP caller cannot name a host
+  path to read. Bounded `wait_ms` (maximum 600000) ends an incomplete wait with
+  the uncertain exit class and the truthful non-terminal projection.
+- Local input sources are resolved before admission. Stdin is read once; a text
+  file is capped at 256 KiB and folded into the prompt as
+  `<file name="name">…</file>`; an image is capped at 512 KiB decoded and sent as
+  a native inline-data part. A run accepts at most 16 files and 4 images, and
+  text plus decoded images must stay within the 1 MB task input bound. A source
+  error names its position and limit, never a full host path or input value.
+- Inline images are revalidated at admission. A malformed or oversized image
+  fails before a task is durably accepted, so no execution begins.
+- `--continue` resolves the caller's newest canonical session through the same
+  `session:read` identity rules as `GET /v1/sessions/latest`. `--resume <id>`
+  uses `GET /v1/sessions/{id}` semantics. An invisible session is
+  `session.not_found`, never a disclosure of another principal's history.
+- One-shot success, validation, authorization, approval, execution failure,
+  uncertainty, and cancellation have stable process exit classes: `0`, `2`, `3`,
+  `4`, `5`, `6`, and `7`. SDK clients project the same `RunResult` from the
+  existing task route (`Client::await_run`); the Gateway and SDK acquire no
+  second executor.
+- JSONL frames start with `task_started`, open a `turn_started` for each attempt,
+  carry `item_started`/`item_updated`/`item_completed` items, and end with
+  `task_completed`. Item types are `agent_message`, `reasoning`, `tool_call`,
+  `approval`, and `diff`. `agent_message` and `reasoning` updates carry the
+  emitted text fragment; their completed item and the terminal `output` carry
+  the completed text. `diff` carries the typed checkpoint preview when the
+  caller can read it. Frames use `type` and `item_type` tags and the run schema
+  version in `common::RUN_PROTOCOL_SCHEMA`.
+- The terminal `task_completed` frame carries `state`, `output`, `error`,
+  `uncertainty`, `usage`, and `exit_code`, matching `RunResult`. A bounded wait
+  or a closed live stream ends with the uncertain class rather than a claimed
+  success.
+
 ## Artifacts
 
 Artifact bytes and immutable versions are stored by the pinned native
@@ -674,7 +722,10 @@ shape.
 
 ## Bounds
 
-- Task input: 1 MB management limit enforced by the runtime.
+- Task input: 1 MB management limit enforced by the runtime, including decoded
+  inline images.
+- Headless sources: 16 text files (256 KiB each), 4 images (512 KiB decoded
+  each), and one stdin selection. The one-shot wait bound is at most 600000 ms.
 - Event page: `limit` clamped to 1–1000.
 - Request body: bounded by the serving framework's default body limit.
 - Artifact version: 64 MiB ceiling, 64 KiB response chunks, grant lifetime

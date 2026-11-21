@@ -55,6 +55,7 @@ async fn make_task(
         agent: "echo".into(),
         session_id: session.into(),
         input: "secret task input".into(),
+        input_images: Vec::new(),
         idempotency_key: key.into(),
         request_digest: format!("digest-{key}"),
         profile: "default".into(),

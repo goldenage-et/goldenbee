@@ -3,8 +3,10 @@
 use super::transport::{get, post_empty, post_reconciling};
 use super::Client;
 use common::{
-    ApiError, GatewaySubmitRequest, GatewaySubmitResponse, GatewayTask, StreamPage, MAX_EVENT_PAGE,
+    ApiError, GatewaySubmitRequest, GatewaySubmitResponse, GatewayTask, RunResult, StreamPage,
+    MAX_EVENT_PAGE,
 };
+use std::time::Duration;
 
 impl Client {
     /// Submit to an explicit Worker through Gateway.
@@ -43,5 +45,21 @@ impl Client {
     /// Cancel a routed task.
     pub async fn cancel(&self, task_id: &str) -> Result<GatewayTask, ApiError> {
         post_empty(self, &format!("/v1/tasks/{task_id}/cancel")).await
+    }
+
+    /// Wait for a routed task and project the shared one-shot result.
+    ///
+    /// This is a bounded projection of the existing task route, not a second
+    /// executor. A wait bound that expires returns the truthful non-terminal
+    /// projection with the uncertain exit class.
+    pub async fn await_run(&self, task_id: &str, timeout: Duration) -> Result<RunResult, ApiError> {
+        let started = tokio::time::Instant::now();
+        loop {
+            let routed = self.task(task_id).await?;
+            if routed.task.state.is_terminal() || started.elapsed() >= timeout {
+                return Ok(RunResult::from_task(&routed.task));
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 }

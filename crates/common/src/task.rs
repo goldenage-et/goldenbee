@@ -170,6 +170,9 @@ pub struct Task {
     pub session_id: String,
     /// Original input.
     pub input: String,
+    /// Bounded inline images admitted with the text input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_images: Vec<crate::run::RunImage>,
     /// Idempotency key.
     pub idempotency_key: String,
     /// Canonical request digest.
