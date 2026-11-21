@@ -18,6 +18,7 @@ import {
   TraceLine,
   TraceTitle,
 } from "@/components/ui/trace"
+import { ChainOfThought } from "@/components/ai-elements/chain-of-thought"
 import { taskStateView } from "@/features/chat/chat-status"
 import type {
   ChatPlanPart,
@@ -44,33 +45,21 @@ function traceStatus(
 
 export function ReasoningView({ part }: { part: ChatReasoningPart }) {
   const running = part.streaming && !part.complete
-  const [open, setOpen] = useState<boolean | undefined>(undefined)
-  // A user click wins; an unopened streaming run shows its text.
-  const expanded = open ?? running
 
   return (
-    <div className="flex flex-col gap-1">
-      <TraceCollapsible open={expanded} onOpenChange={setOpen}>
-        <TraceCollapsibleTrigger>
-          <TraceLine status={running ? "running" : undefined}>
-            <TraceIcon>
-              {running ? (
-                <LoaderCircleIcon className="animate-spin" />
-              ) : (
-                <BrainIcon />
-              )}
-            </TraceIcon>
-            <TraceTitle>{running ? "Thinking" : "Thought"}</TraceTitle>
-          </TraceLine>
-        </TraceCollapsibleTrigger>
-        <TraceCollapsibleContent>
-          <p className="whitespace-pre-wrap">{part.text}</p>
-        </TraceCollapsibleContent>
-      </TraceCollapsible>
-      <p className="pl-6 text-xs text-muted-foreground">
-        Reasoning is live-only; reconnecting will not replay it.
-      </p>
-    </div>
+    <ChainOfThought
+      title={running ? "Thinking" : "Thought"}
+      running={running}
+      icon={
+        running ? (
+          <LoaderCircleIcon className="animate-spin" />
+        ) : (
+          <BrainIcon />
+        )
+      }
+    >
+      <p className="whitespace-pre-wrap">{part.text}</p>
+    </ChainOfThought>
   )
 }
 

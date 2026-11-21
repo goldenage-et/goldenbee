@@ -96,15 +96,16 @@ export function ChatComposer({
           </InputGroupAddon>
         </InputGroup>
       </form>
-      <p
-        className={cn(
-          "text-micro text-muted-foreground",
-          busy && hint ? "shimmer" : undefined,
-        )}
-      >
-        {hint ??
-          "Enter sends · Shift+Enter adds a line · Attachments are not supported by this Gateway release."}
-      </p>
+      {hint ? (
+        <p
+          className={cn(
+            "text-micro text-muted-foreground",
+            busy ? "shimmer" : undefined,
+          )}
+        >
+          {hint}
+        </p>
+      ) : null}
     </div>
   )
 }

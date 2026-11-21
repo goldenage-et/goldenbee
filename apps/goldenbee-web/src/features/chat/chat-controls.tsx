@@ -1,4 +1,4 @@
-import { AlertTriangleIcon } from "lucide-react"
+import { AlertTriangleIcon, ChevronDownIcon } from "lucide-react"
 
 import {
   Alert,
@@ -6,14 +6,18 @@ import {
   AlertTitle,
 } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  InputGroupButton,
+} from "@/components/ui/input-group"
 import type { ProfileErrorView } from "@/features/chat/chat-profiles"
 import {
   activeRevision,
@@ -70,6 +74,79 @@ function profileMetadata(profile: Profile): string {
   return parts.join(" · ")
 }
 
+interface TargetOption {
+  value: string
+  label: string
+}
+
+function TargetMenu({
+  label,
+  value,
+  placeholder,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: string
+  placeholder: string
+  options: TargetOption[]
+  disabled?: boolean
+  onChange(value: string): void
+}) {
+  const selected = options.find((option) => option.value === value)
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={label}
+        disabled={disabled}
+        render={
+          <InputGroupButton
+            size="sm"
+            variant="ghost"
+            className="max-w-52 justify-between gap-1 border border-line/60 bg-surface/70 px-2 text-meta"
+          />
+        }
+      >
+        <span className="max-w-40 truncate">
+          {selected?.label ?? (value || placeholder)}
+        </span>
+        <ChevronDownIcon className="size-3.5 text-dim" aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        side="top"
+        sideOffset={6}
+        className="min-w-60"
+      >
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>{label}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={value}
+            onValueChange={(next) =>
+              onChange(typeof next === "string" ? next : "")
+            }
+          >
+            {options.length === 0 ? (
+              <DropdownMenuLabel>{placeholder}</DropdownMenuLabel>
+            ) : null}
+            {options.map((option) => (
+              <DropdownMenuRadioItem
+                key={option.value}
+                value={option.value}
+                closeOnClick
+              >
+                <span className="min-w-0 truncate">{option.label}</span>
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 /**
  * Target selection for the next task.
  *
@@ -106,90 +183,58 @@ export function ChatControls({
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <div className="flex min-w-0 items-center gap-1">
-          <Label htmlFor="chat-worker" className="sr-only">
-            Worker
-          </Label>
-          <Select
-            value={requestedWorker || null}
-            disabled={available.length === 0}
-            onValueChange={(value) =>
-              onChange({
-                ...resolved.selection,
-                worker: typeof value === "string" ? value : "",
-              })
-            }
-          >
-            <SelectTrigger
-              id="chat-worker"
-              size="sm"
-              className="max-w-56 border-line bg-surface-2"
-              aria-label="Worker"
-            >
-              <SelectValue placeholder="No reachable Worker" />
-            </SelectTrigger>
-            <SelectContent>
-              {requestedWorker && !workerIsListed ? (
-                <SelectItem value={requestedWorker}>
-                  {requestedWorker} · unavailable
-                </SelectItem>
-              ) : null}
-              {available.map((candidate) => (
-                <SelectItem key={candidate.id} value={candidate.id}>
-                  {candidate.id} · {candidate.package} v{candidate.version}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <TargetMenu
+          label="Worker"
+          value={requestedWorker}
+          placeholder="No reachable Worker"
+          disabled={available.length === 0}
+          options={[
+            ...(requestedWorker && !workerIsListed
+              ? [
+                  {
+                    value: requestedWorker,
+                    label: `${requestedWorker} · unavailable`,
+                  },
+                ]
+              : []),
+            ...available.map((candidate) => ({
+              value: candidate.id,
+              label: `${candidate.id} · ${candidate.package} v${candidate.version}`,
+            })),
+          ]}
+          onChange={(worker) =>
+            onChange({ ...resolved.selection, worker })
+          }
+        />
+
+        <TargetMenu
+          label="Agent"
+          value={resolved.selection.agent}
+          placeholder="No agent capability"
+          disabled={resolved.agents.length === 0}
+          options={[
+            ...(resolved.selection.agent &&
+            !resolved.agents.some(
+              (capability) => capability.id === resolved.selection.agent,
+            )
+              ? [
+                  {
+                    value: resolved.selection.agent,
+                    label: `${resolved.selection.agent} · unavailable`,
+                  },
+                ]
+              : []),
+            ...resolved.agents.map((capability) => ({
+              value: capability.id,
+              label: capability.description
+                ? `${capability.id} · ${capability.description}`
+                : capability.id,
+            })),
+          ]}
+          onChange={(agent) => onChange({ ...resolved.selection, agent })}
+        />
 
         <div className="flex min-w-0 items-center gap-1">
-          <Label htmlFor="chat-agent" className="sr-only">
-            Agent
-          </Label>
-          <Select
-            value={resolved.selection.agent || null}
-            disabled={resolved.agents.length === 0}
-            onValueChange={(value) =>
-              onChange({
-                ...resolved.selection,
-                agent: typeof value === "string" ? value : "",
-              })
-            }
-          >
-            <SelectTrigger
-              id="chat-agent"
-              size="sm"
-              className="max-w-48 border-line bg-surface-2"
-              aria-label="Agent"
-            >
-              <SelectValue placeholder="No agent capability" />
-            </SelectTrigger>
-            <SelectContent>
-              {resolved.selection.agent &&
-              !resolved.agents.some(
-                (capability) => capability.id === resolved.selection.agent,
-              ) ? (
-                <SelectItem value={resolved.selection.agent}>
-                  {resolved.selection.agent} · unavailable
-                </SelectItem>
-              ) : null}
-              {resolved.agents.map((capability) => (
-                <SelectItem key={capability.id} value={capability.id}>
-                  {capability.id}
-                  {capability.description
-                    ? ` · ${capability.description}`
-                    : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex min-w-0 items-center gap-1">
-          <Label htmlFor="chat-profile" className="sr-only">
-            Runtime Profile
-          </Label>
           <ProfileSelect
             resolved={resolved}
             profiles={profiles}
@@ -278,72 +323,31 @@ function ProfileSelect({
       profiles.findIndex((candidate) => candidate.name === profile.name) ===
       index,
   )
-
-  if (uniqueProfiles.length === 0) {
-    return (
-      <Select
-        value={value || null}
-        disabled={loading}
-        onValueChange={(next) =>
-          onChange({
-            ...resolved.selection,
-            profile: typeof next === "string" ? next : "",
-          })
-        }
-      >
-        <SelectTrigger
-          id="chat-profile"
-          size="sm"
-          className="max-w-48 border-line bg-surface-2"
-          aria-label="Runtime Profile"
-        >
-          <SelectValue
-            placeholder={
-              loading
-                ? "Loading Runtime Profiles…"
-                : error
-                  ? "Worker default (profiles unavailable)"
-                  : "Worker default"
-            }
-          />
-        </SelectTrigger>
-        <SelectContent>
-          {value && !loading ? (
-            <SelectItem value={value}>{value} · unverified</SelectItem>
-          ) : null}
-        </SelectContent>
-      </Select>
-    )
-  }
+  const options: TargetOption[] = [
+    { value: "", label: "Worker default" },
+    ...(value && !uniqueProfiles.some((profile) => profile.name === value)
+      ? [{ value, label: `${value} · unavailable` }]
+      : []),
+    ...uniqueProfiles.map((profile) => ({
+      value: profile.name,
+      label: profileLabel(profile),
+    })),
+  ]
 
   return (
-    <Select
-      value={value || null}
-      onValueChange={(next) =>
-        onChange({
-          ...resolved.selection,
-          profile: typeof next === "string" ? next : "",
-        })
+    <TargetMenu
+      label="Runtime Profile"
+      value={value}
+      placeholder={
+        loading
+          ? "Loading Runtime Profiles…"
+          : error
+            ? "Worker default (profiles unavailable)"
+            : "Worker default"
       }
-    >
-      <SelectTrigger
-        id="chat-profile"
-        size="sm"
-        className="max-w-48 border-line bg-surface-2"
-        aria-label="Runtime Profile"
-      >
-        <SelectValue placeholder="Worker default" />
-      </SelectTrigger>
-      <SelectContent>
-        {value && !uniqueProfiles.some((profile) => profile.name === value) ? (
-          <SelectItem value={value}>{value} · unavailable</SelectItem>
-        ) : null}
-        {uniqueProfiles.map((profile) => (
-          <SelectItem key={profile.name} value={profile.name}>
-            {profileLabel(profile)}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+      options={options}
+      disabled={loading}
+      onChange={(profile) => onChange({ ...resolved.selection, profile })}
+    />
   )
 }

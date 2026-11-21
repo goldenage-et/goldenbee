@@ -1,4 +1,11 @@
-import { FolderPlusIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react"
+import {
+  FolderPlusIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+  PencilIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react"
 import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
@@ -9,6 +16,8 @@ export interface SessionTabsProps {
   groups: SessionGroup[]
   activeGroupId: string
   backgroundChatIds: string[]
+  sidebarOpen: boolean
+  onToggleSidebar(): void
   onSelectGroup(id: string): void
   onNewSession(): void
   onNewGroup(): void
@@ -20,6 +29,8 @@ export function SessionTabs({
   groups,
   activeGroupId,
   backgroundChatIds,
+  sidebarOpen,
+  onToggleSidebar,
   onSelectGroup,
   onNewSession,
   onNewGroup,
@@ -27,14 +38,29 @@ export function SessionTabs({
   onRequestClose,
 }: SessionTabsProps) {
   const active = groups.find((group) => group.id === activeGroupId)
+  const SidebarIcon = sidebarOpen ? PanelLeftCloseIcon : PanelLeftOpenIcon
 
   return (
     <div
-      role="tablist"
-      aria-label="Session groups"
       className="flex h-9 shrink-0 items-center gap-1 border-b border-line bg-background px-2"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      <Button
+        type="button"
+        size="icon-xs"
+        variant="ghost"
+        aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+        aria-pressed={sidebarOpen}
+        title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+        onClick={onToggleSidebar}
+        className="shrink-0 max-[780px]:hidden"
+      >
+        <SidebarIcon aria-hidden="true" />
+      </Button>
+      <div
+        role="tablist"
+        aria-label="Session groups"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+      >
         {groups.map((group) => {
           const selected = group.id === activeGroupId
           const count = group.chatIds.filter(

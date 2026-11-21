@@ -413,6 +413,25 @@ describe("command center shell", () => {
     })
   })
 
+  it("collapses and expands the sidebar from the session header", async () => {
+    const { user } = renderApp()
+    await waitForChat()
+
+    const sidebar = document.getElementById("context-sidebar")
+    expect(sidebar).toHaveAttribute("data-state", "open")
+
+    await user.click(
+      screen.getByRole("button", { name: "Collapse sidebar" }),
+    )
+    expect(sidebar).toHaveAttribute("data-state", "closed")
+    expect(
+      screen.getByRole("button", { name: "Expand sidebar" }),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "Expand sidebar" }))
+    expect(sidebar).toHaveAttribute("data-state", "open")
+  })
+
   it("opens the sidebar as a drawer below 780px", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
@@ -486,10 +505,14 @@ describe("command center shell", () => {
     const sidebar = screen.getByRole("complementary", {
       name: "Gateway context",
     })
+    expect(within(sidebar).getByText("Gateways")).toBeInTheDocument()
+    expect(within(sidebar).getByText("Sessions")).toBeInTheDocument()
     expect(
-      within(sidebar).getByRole("link", { name: "Diagnostics" }),
-    ).toHaveAttribute("aria-current", "page")
-    expect(within(sidebar).getByRole("link", { name: "Audit" })).toBeInTheDocument()
+      within(sidebar).queryByRole("link", { name: "Diagnostics" }),
+    ).not.toBeInTheDocument()
+    expect(
+      within(sidebar).queryByRole("link", { name: "Audit" }),
+    ).not.toBeInTheDocument()
     expect(await screen.findByText("Gateway health")).toBeInTheDocument()
     diagnostics.unmount()
 

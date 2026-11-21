@@ -13,6 +13,7 @@ import {
   MessageFooter,
 } from "@/components/ui/message"
 import { Spinner } from "@/components/ui/spinner"
+import { Markdown } from "@/components/ai-elements/markdown"
 import {
   ApprovalCard,
   type ApprovalGateway,
@@ -34,6 +35,15 @@ function textParts(message: ChatMessage): ChatTextPart[] {
     (part): part is ChatTextPart => part.type === "text",
   )
 }
+
+/** Old persisted diagnostics from event kinds now treated as quiet. */
+const hiddenDiagnosticKinds = new Set([
+  "context.manifest",
+  "sandbox.decision",
+  "permission.decision",
+  "tool.started",
+  "tool.completed",
+])
 
 function ErrorView({ part }: { part: Extract<ChatPart, { type: "error" }> }) {
   return (
@@ -136,7 +146,8 @@ export function ChatMessageView({
   )
   const diagnostics = message.parts.filter(
     (part): part is Extract<ChatPart, { type: "diagnostic" }> =>
-      part.type === "diagnostic",
+      part.type === "diagnostic" &&
+      !hiddenDiagnosticKinds.has(part.eventKind),
   )
   const streaming = texts.some((part) => part.streaming)
   const waiting = !task && errors.length === 0 && uncertainties.length === 0
@@ -177,19 +188,9 @@ export function ChatMessageView({
           </div>
         ) : null}
 
-        {texts.map((part, index) => (
-          <div
-            key={`${message.id}-text-${index}`}
-            className="text-sm leading-relaxed whitespace-pre-wrap"
-          >
-            {part.text}
-            {part.streaming ? (
-              <span className="ml-0.5 inline-block animate-pulse" aria-hidden="true">
-                ▍
-              </span>
-            ) : null}
-          </div>
-        ))}
+        {answerText ? (
+          <Markdown streaming={streaming}>{answerText}</Markdown>
+        ) : null}
 
         {waiting && streaming ? (
           <Marker role="status">

@@ -90,6 +90,7 @@ export function CommandCenterShell({
     () => inspectorDefault === "open",
   )
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsState, setSettingsState] = useState<{
     open: boolean
@@ -461,20 +462,35 @@ export function CommandCenterShell({
 
       <ContextSidebar
         store={store}
-        route={route}
         profiles={profiles}
         defaultProfileId={defaultProfileId}
+        chats={controller.chats}
+        groups={controller.groups}
+        activeChatId={controller.activeChatId}
+        backgroundChatIds={controller.backgroundChatIds}
         backgroundSessions={controller.backgroundSessions}
+        inspections={inspections}
         drawerOpen={drawerOpen}
+        sidebarOpen={sidebarOpen}
         narrow={narrow}
         onCloseDrawer={() => setDrawerOpen(false)}
         onAddProfile={addProfile}
         onRemoveProfile={(id) => profiles.getState().removeProfile(id)}
         onUseProfile={useProfile}
+        onSelectChat={(chatId) => {
+          if (!controller.selectChat(chatId)) {
+            setNotice(panelLimitNotice)
+          }
+          setDrawerOpen(false)
+        }}
         onRestoreChat={(chatId) => {
           if (!controller.restoreChat(chatId)) {
             setNotice(panelLimitNotice)
           }
+          setDrawerOpen(false)
+        }}
+        onNewSession={() => {
+          splitPanel()
           setDrawerOpen(false)
         }}
       />
@@ -495,6 +511,8 @@ export function CommandCenterShell({
               groups={controller.groups}
               activeGroupId={controller.activeGroupId}
               backgroundChatIds={controller.backgroundChatIds}
+              sidebarOpen={sidebarOpen}
+              onToggleSidebar={() => setSidebarOpen((open) => !open)}
               onSelectGroup={controller.selectGroup}
               onNewSession={splitPanel}
               onNewGroup={() =>
@@ -659,9 +677,13 @@ export function CommandCenterShell({
               the client
             </span>
           )}
-          <span className="ml-auto hidden shrink-0 sm:block">
-            Goldenbee Web Client
-          </span>
+          <div className="ml-auto flex shrink-0 items-center gap-3">
+            <span className="hidden lg:block">
+              Enter sends · Shift+Enter adds a line · Attachments are not
+              supported by this Gateway release.
+            </span>
+            <span className="hidden sm:block">Goldenbee Web Client</span>
+          </div>
         </footer>
       </div>
 

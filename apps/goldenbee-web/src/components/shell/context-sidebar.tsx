@@ -1,18 +1,29 @@
 import {
+  MessageSquareIcon,
   PlusIcon,
   RotateCcwIcon,
-  ScrollTextIcon,
   ServerIcon,
-  StethoscopeIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react"
+import type { CSSProperties } from "react"
 import { cn } from "cn"
 
-import { routeHref, type AppRoute } from "@/app/router"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { StatusDot } from "@/components/shell/status-dot"
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupAction,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+} from "@/components/ui/sidebar"
 import {
   useConnection,
   type ConnectionStore,
@@ -22,290 +33,453 @@ import {
   useGatewayProfiles,
   type GatewayProfilesStore,
 } from "@/features/workspace/gateway-profiles"
-import type { BackgroundSession } from "@/features/workspace/use-workspace-controller"
+import {
+  useChatInspection,
+  type ChatInspectionStore,
+} from "@/features/chat/chat-inspection-store"
+import type { StoredChat } from "@/features/chat/local-chat-history"
+import type { SessionGroup } from "@/features/workspace/workspace-store"
+import type { GatewayWorker } from "@goldenbee/sdk"
 
 const sectionLabel =
-  "px-3 text-micro font-bold tracking-[0.14em] text-dim uppercase"
+  "text-micro font-bold tracking-[0.14em] text-dim uppercase"
+
+const sidebarStyle = {
+  "--sidebar-width": "238px",
+} as CSSProperties
+
+interface GatewayRow {
+  id: string
+  name: string
+  url: string
+  saved: boolean
+  current: boolean
+  isDefault: boolean
+}
+
+interface SessionRow {
+  id: string
+  title: string
+  worker: string
+  agent: string
+  profile: string
+  groupName: string
+  background: boolean
+  active: boolean
+  updatedAt: number
+}
 
 export interface ContextSidebarProps {
   store: ConnectionStore
-  route: AppRoute
   profiles: GatewayProfilesStore
   defaultProfileId: string | null
-  backgroundSessions: BackgroundSession[]
+  chats: StoredChat[]
+  groups: SessionGroup[]
+  activeChatId: string | null
+  backgroundChatIds: string[]
+  backgroundSessions: Array<{ id: string; title: string }>
+  inspections: ChatInspectionStore
   drawerOpen: boolean
+  sidebarOpen: boolean
   narrow: boolean
   onCloseDrawer(): void
   onAddProfile(url: string): void
   onRemoveProfile(id: string): void
   onUseProfile(id: string): void
+  onSelectChat(id: string): void
   onRestoreChat(id: string): void
+  onNewSession(): void
 }
 
 export function ContextSidebar({
   store,
-  route,
   profiles,
   defaultProfileId,
+  chats,
+  groups,
+  activeChatId,
+  backgroundChatIds,
   backgroundSessions,
+  inspections,
   drawerOpen,
+  sidebarOpen,
   narrow,
   onCloseDrawer,
   onAddProfile,
   onRemoveProfile,
   onUseProfile,
+  onSelectChat,
   onRestoreChat,
+  onNewSession,
 }: ContextSidebarProps) {
   const gatewayUrl = useConnection((state) => state.gatewayUrl, store)
   const health = useConnection((state) => state.health, store)
   const workers = useConnection((state) => state.workers, store)
-  const tokenPersisted = useConnection((state) => state.tokenPersisted, store)
   const savedProfiles = useGatewayProfiles((state) => state.profiles, profiles)
-  const currentName = profileNameForUrl(gatewayUrl)
-  const currentSaved = savedProfiles.some(
-    (profile) => profile.url === gatewayUrl.replace(/\/$/, ""),
+  const liveInspections = useChatInspection(
+    (state) => state.inspections,
+    inspections,
   )
+  const currentName = profileNameForUrl(gatewayUrl)
+  const currentUrl = gatewayUrl.replace(/\/$/, "")
+  const currentSaved = savedProfiles.some(
+    (profile) => profile.url === currentUrl,
+  )
+  const sidebarVisible = narrow ? drawerOpen : sidebarOpen
+
+  const gatewayRows: GatewayRow[] = savedProfiles
+    .map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      url: profile.url,
+      saved: true,
+      current: profile.url === currentUrl,
+      isDefault: profile.id === defaultProfileId,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.current) - Number(a.current) ||
+        Number(b.isDefault) - Number(a.isDefault),
+    )
+  if (!currentSaved) {
+    gatewayRows.unshift({
+      id: "current-gateway",
+      name: currentName,
+      url: currentUrl,
+      saved: false,
+      current: true,
+      isDefault: false,
+    })
+  }
+
+  const groupByChat = new Map<string, string>()
+  for (const group of groups) {
+    for (const chatId of group.chatIds) {
+      groupByChat.set(chatId, group.name)
+    }
+  }
+
+  const sessions = new Map<string, SessionRow>()
+  function addSession(input: {
+    id: string
+    title: string
+    selection?: StoredChat["selection"]
+    updatedAt?: number
+  }): void {
+    if (sessions.has(input.id)) {
+      return
+    }
+    sessions.set(input.id, {
+      id: input.id,
+      title: input.title,
+      worker: input.selection?.worker ?? "",
+      agent: input.selection?.agent ?? "",
+      profile: input.selection?.profile ?? "",
+      groupName: groupByChat.get(input.id) ?? "",
+      background: backgroundChatIds.includes(input.id),
+      active: input.id === activeChatId,
+      updatedAt: input.updatedAt ?? 0,
+    })
+  }
+
+  for (const chat of chats) {
+    addSession({
+      id: chat.id,
+      title: chat.title,
+      selection: chat.selection,
+      updatedAt: chat.updatedAt,
+    })
+  }
+  for (const group of groups) {
+    for (const chatId of group.chatIds) {
+      addSession({ id: chatId, title: "Local chat" })
+    }
+  }
+  for (const session of backgroundSessions) {
+    addSession({ id: session.id, title: session.title })
+  }
+  if (activeChatId) {
+    addSession({ id: activeChatId, title: "Local chat" })
+  }
+  for (const [chatId, inspection] of Object.entries(liveInspections)) {
+    const selection = inspection.selection ?? undefined
+    const existing = sessions.get(chatId)
+    if (existing) {
+      if (selection?.worker) {
+        existing.worker = selection.worker
+      }
+      if (selection?.agent) {
+        existing.agent = selection.agent
+      }
+      if (selection?.profile !== undefined) {
+        existing.profile = selection.profile
+      }
+      if (inspection.title) {
+        existing.title = inspection.title
+      }
+      continue
+    }
+    addSession({
+      id: chatId,
+      title: inspection.title ?? "Local chat",
+      selection,
+    })
+  }
+
+  const workerById = new Map<string, GatewayWorker>(
+    workers.map((worker) => [worker.id, worker]),
+  )
+  const clusters = new Map<string, SessionRow[]>()
+  for (const session of sessions.values()) {
+    const key = session.worker || "__unassigned__"
+    const bucket = clusters.get(key)
+    if (bucket) {
+      bucket.push(session)
+    } else {
+      clusters.set(key, [session])
+    }
+  }
+  const orderedClusters = [...clusters.entries()]
+    .map(([key, rows]) => {
+      const worker = key === "__unassigned__" ? undefined : workerById.get(key)
+      return {
+        key,
+        worker,
+        label:
+          worker !== undefined
+            ? `${worker.package} · ${worker.instance}`
+            : key === "__unassigned__"
+              ? "Unassigned"
+              : key,
+        sessions: [...rows].sort(
+          (a, b) =>
+            Number(a.background) - Number(b.background) ||
+            b.updatedAt - a.updatedAt,
+        ),
+      }
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
 
   return (
-    <aside
-      id="context-sidebar"
-      aria-label="Gateway context"
-      data-state={drawerOpen ? "open" : "closed"}
-      aria-hidden={narrow && !drawerOpen ? true : undefined}
-      inert={narrow && !drawerOpen}
-      className={cn(
-        "flex w-[238px] shrink-0 flex-col border-r border-line bg-sidebar",
-        "max-[1100px]:w-[210px]",
-        "max-[780px]:fixed max-[780px]:inset-y-0 max-[780px]:left-14 max-[780px]:z-40 max-[780px]:w-[264px] max-[780px]:shadow-2xl max-[780px]:transition-transform",
-        drawerOpen
-          ? "max-[780px]:translate-x-0"
-          : "max-[780px]:-translate-x-[calc(100%+3.5rem)]",
-      )}
-    >
-      <div className="flex items-center justify-between px-3 pt-4 pb-2">
-        <span className={sectionLabel}>Gateways</span>
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            aria-label="Save current Gateway as profile"
-            title="Save current Gateway"
-            disabled={currentSaved}
-            onClick={() => onAddProfile(gatewayUrl)}
-          >
-            <PlusIcon aria-hidden="true" />
-          </Button>
-          {narrow ? (
-            <Button
+    <SidebarProvider className="contents" style={sidebarStyle}>
+      <Sidebar
+        id="context-sidebar"
+        role="complementary"
+        aria-label="Gateway context"
+        collapsible="none"
+        data-state={sidebarVisible ? "open" : "closed"}
+        aria-hidden={!sidebarVisible ? true : undefined}
+        inert={!sidebarVisible}
+        style={{ "--sidebar-width": sidebarOpen ? "238px" : "0px" } as CSSProperties}
+        className={cn(
+          "relative h-full shrink-0 overflow-hidden transition-[width] duration-200 ease-linear",
+          sidebarOpen ? "border-r border-line" : "border-r-0",
+          "max-[1100px]:w-[210px]",
+          "max-[780px]:fixed max-[780px]:inset-y-0 max-[780px]:left-14 max-[780px]:z-40 max-[780px]:w-[264px] max-[780px]:border-r max-[780px]:border-line max-[780px]:shadow-2xl max-[780px]:transition-transform",
+          drawerOpen
+            ? "max-[780px]:translate-x-0"
+            : "max-[780px]:-translate-x-[calc(100%+3.5rem)]",
+        )}
+      >
+        {narrow ? (
+          <div className="flex justify-end p-2 pb-0">
+            <button
               type="button"
-              size="icon-xs"
-              variant="ghost"
               aria-label="Close navigation"
               onClick={onCloseDrawer}
+              className="grid size-7 place-items-center rounded-[7px] text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
             >
-              <XIcon aria-hidden="true" />
-            </Button>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="px-2.5">
-        <div className="rounded-[9px] border border-gold/20 bg-gold/5 px-2.5 py-2">
-          <div className="flex items-center gap-2">
-            <ServerIcon className="size-3.5 shrink-0 text-gold" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate text-body font-medium">
-              {currentName}
-            </span>
-            <StatusDot tone="positive" className="text-micro text-positive">
-              Connected
-            </StatusDot>
+              <XIcon className="size-4" aria-hidden="true" />
+            </button>
           </div>
-          <p className="mt-1 truncate text-micro text-dim" title={gatewayUrl}>
-            {gatewayUrl}
-          </p>
-          <p className="mt-1 text-micro text-muted-foreground">
-            {health
-              ? `${health.workers} Workers approved · ${health.reachable} reachable`
-              : "Gateway health is unavailable."}
-          </p>
-        </div>
-      </div>
+        ) : null}
 
-      <div className="mt-3 flex flex-col gap-0.5 px-2.5">
-        <span className={sectionLabel}>Operator evidence</span>
-        <a
-          href={routeHref({ name: "diagnostics" })}
-          aria-current={route.name === "diagnostics" ? "page" : undefined}
-          className="density-row flex items-center gap-2 rounded-[7px] px-1 py-1.5 text-meta text-muted-foreground hover:bg-surface-3 hover:text-foreground aria-[current=page]:bg-gold/10 aria-[current=page]:text-gold"
-        >
-          <StethoscopeIcon className="size-3.5 shrink-0" aria-hidden="true" />
-          Diagnostics
-        </a>
-        <a
-          href={routeHref({ name: "audit" })}
-          aria-current={route.name === "audit" ? "page" : undefined}
-          className="density-row flex items-center gap-2 rounded-[7px] px-1 py-1.5 text-meta text-muted-foreground hover:bg-surface-3 hover:text-foreground aria-[current=page]:bg-gold/10 aria-[current=page]:text-gold"
-        >
-          <ScrollTextIcon className="size-3.5 shrink-0" aria-hidden="true" />
-          Audit
-        </a>
-      </div>
-
-      <div className="mt-3 flex flex-col gap-1 px-2.5">
-        <span className="px-1 text-micro font-semibold tracking-wide text-dim uppercase">
-          Saved profiles
-        </span>
-        {savedProfiles.length === 0 ? (
-          <p className="px-1 py-1 text-meta text-muted-foreground">
-            No saved Gateway profiles. Profiles store a name and URL only.
-          </p>
-        ) : (
-          <ul className="flex flex-col">
-            {savedProfiles.map((profile) => (
-              <li
-                key={profile.id}
-                className="group/profile flex items-center gap-1 rounded-[7px] px-1 py-1 hover:bg-surface-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-meta font-medium">
-                      {profile.name}
-                    </span>
-                    {profile.id === defaultProfileId ? (
-                      <Badge
-                        variant="outline"
-                        className="h-4 rounded px-1 text-micro text-gold"
-                      >
-                        Default
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <p className="truncate text-micro text-dim" title={profile.url}>
-                    {profile.url}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="ghost"
-                  aria-label={`Use profile ${profile.name}`}
-                  title="Disconnect and open this Gateway address"
-                  onClick={() => onUseProfile(profile.id)}
-                >
-                  <RotateCcwIcon aria-hidden="true" />
-                </Button>
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="ghost"
-                  aria-label={`Remove profile ${profile.name}`}
-                  onClick={() => onRemoveProfile(profile.id)}
-                >
-                  <Trash2Icon aria-hidden="true" />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <div className="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-3 pb-1">
-          <span className={sectionLabel}>Workers</span>
-          <span className="text-micro text-dim">{workers.length} visible</span>
-        </div>
-        <div className="min-h-0 overflow-y-auto px-2.5">
-          {workers.length === 0 ? (
-            <p className="px-1 py-1 text-meta text-muted-foreground">
-              No Worker is visible to this caller.
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-0.5">
-              {workers.map((worker) => (
-                <li
-                  key={worker.id}
-                  className="density-row flex items-center gap-2 rounded-[7px] px-1 py-1.5"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="grid size-6 shrink-0 place-items-center rounded-[7px] bg-surface-3 text-micro font-semibold text-profile"
-                  >
-                    {worker.package.slice(0, 2).toUpperCase()}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-meta font-medium">
-                      {worker.package} · {worker.instance}
-                    </p>
-                    <StatusDot
-                      tone={worker.reachable ? "positive" : "dim"}
-                      className="text-micro text-muted-foreground"
+        <SidebarContent className="gap-0">
+          <SidebarGroup>
+            <SidebarGroupLabel className={sectionLabel}>
+              Gateways
+            </SidebarGroupLabel>
+            <SidebarGroupAction
+              type="button"
+              aria-label="Save current Gateway as profile"
+              title="Save current Gateway"
+              disabled={currentSaved}
+              onClick={() => onAddProfile(gatewayUrl)}
+            >
+              <PlusIcon aria-hidden="true" />
+            </SidebarGroupAction>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {gatewayRows.map((gateway) => (
+                  <SidebarMenuItem key={gateway.id}>
+                    <SidebarMenuButton
+                      size="lg"
+                      isActive={gateway.current}
+                      aria-label={
+                        gateway.saved
+                          ? `Use profile ${gateway.name}`
+                          : `Current Gateway ${gateway.name}`
+                      }
+                      title={
+                        gateway.current && health
+                          ? `${gateway.url} · ${health.reachable} of ${health.workers} Workers reachable`
+                          : gateway.url
+                      }
+                      onClick={() => {
+                        if (gateway.saved && !gateway.current) {
+                          onUseProfile(gateway.id)
+                        }
+                      }}
+                      className="h-auto min-h-11 items-start py-1.5"
                     >
-                      {worker.reachable ? "Reachable" : worker.status}
-                    </StatusDot>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+                      <ServerIcon className="mt-0.5" aria-hidden="true" />
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-meta font-medium">
+                            {gateway.name}
+                          </span>
+                          {gateway.current ? (
+                            <StatusDot
+                              tone="positive"
+                              className="shrink-0 text-micro text-positive"
+                            >
+                              live
+                            </StatusDot>
+                          ) : null}
+                          {gateway.isDefault ? (
+                            <span className="shrink-0 text-[9px] font-semibold tracking-wide text-gold uppercase">
+                              default
+                            </span>
+                          ) : null}
+                        </span>
+                        <span
+                          className="truncate text-micro font-normal text-sidebar-foreground/55"
+                          title={gateway.url}
+                        >
+                          {gateway.url}
+                        </span>
+                      </span>
+                    </SidebarMenuButton>
+                    {gateway.saved ? (
+                      <SidebarMenuAction
+                        showOnHover
+                        aria-label={`Remove profile ${gateway.name}`}
+                        title={`Remove ${gateway.name}`}
+                        onClick={() => onRemoveProfile(gateway.id)}
+                      >
+                        <Trash2Icon aria-hidden="true" />
+                      </SidebarMenuAction>
+                    ) : null}
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
 
-        <div className="mt-3 border-t border-line px-3 pt-3 pb-1">
-          <div className="flex items-center justify-between">
-            <span className={sectionLabel}>Background sessions</span>
-            <Badge
-              variant="outline"
-              className="h-4 rounded px-1 text-micro text-muted-foreground"
+          <SidebarGroup className="min-h-0 flex-1">
+            <SidebarGroupLabel className={sectionLabel}>
+              Sessions
+            </SidebarGroupLabel>
+            <SidebarGroupAction
+              type="button"
+              aria-label="New session"
+              title="New session"
+              onClick={onNewSession}
             >
-              {backgroundSessions.length}
-            </Badge>
-          </div>
-        </div>
-        <div className="min-h-0 overflow-y-auto px-2.5 pb-2">
-          {backgroundSessions.length === 0 ? (
-            <p className="px-1 py-1 text-meta text-muted-foreground">
-              No background sessions.
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-0.5">
-              {backgroundSessions.map((session) => (
-                <li key={session.id}>
-                  <button
-                    type="button"
-                    aria-label={`Restore ${session.title}`}
-                    onClick={() => onRestoreChat(session.id)}
-                    className="density-row flex w-full items-center gap-2 rounded-[7px] px-1 py-1.5 text-left hover:bg-surface-3"
-                  >
-                    <RotateCcwIcon
-                      className="size-3.5 shrink-0 text-gold"
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-meta font-medium">
-                        {session.title}
+              <PlusIcon aria-hidden="true" />
+            </SidebarGroupAction>
+            <SidebarGroupContent>
+              {orderedClusters.length === 0 ? (
+                <p className="px-2 py-1 text-meta text-muted-foreground">
+                  No sessions yet.
+                </p>
+              ) : (
+                orderedClusters.map((cluster) => (
+                  <div key={cluster.key} className="mt-1 first:mt-0">
+                    <div className="flex items-center gap-2 px-2 pt-1 pb-1">
+                      <StatusDot
+                        tone={
+                          cluster.worker
+                            ? cluster.worker.reachable
+                              ? "positive"
+                              : "dim"
+                            : "dim"
+                        }
+                        className="min-w-0 flex-1 text-micro font-semibold text-sidebar-foreground/65"
+                      >
+                        {cluster.label}
+                      </StatusDot>
+                      <span className="text-micro tabular-nums text-dim">
+                        {cluster.sessions.length}
                       </span>
-                      <span className="block text-micro text-muted-foreground">
-                        Background · Restore
-                      </span>
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-
-      <div className="border-t border-line px-3 py-2.5">
-        <StatusDot tone="positive" className="text-meta">
-          <span className="font-medium text-positive">Gateway connection</span>
-        </StatusDot>
-        <p className="mt-1 pl-3 text-micro text-dim">
-          {tokenPersisted
-            ? "Caller token saved for this tab."
-            : "Caller token in memory for this tab."}
-        </p>
-      </div>
-    </aside>
+                    </div>
+                    <SidebarMenu>
+                      {cluster.sessions.map((session) => (
+                        <SidebarMenuItem key={session.id}>
+                          <SidebarMenuButton
+                            size="sm"
+                            isActive={session.active}
+                            title={
+                              session.groupName
+                                ? `${session.title} · ${session.groupName}`
+                                : session.title
+                            }
+                            aria-label={
+                              session.background
+                                ? `Restore ${session.title}`
+                                : `Focus ${session.title}`
+                            }
+                            onClick={() => {
+                              if (session.background) {
+                                onRestoreChat(session.id)
+                              } else {
+                                onSelectChat(session.id)
+                              }
+                            }}
+                            className={cn(
+                              "h-auto items-start py-1.5",
+                              session.background && "pr-8",
+                            )}
+                          >
+                            {session.background ? (
+                              <RotateCcwIcon
+                                className="mt-0.5 text-gold"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <MessageSquareIcon
+                                className="mt-0.5"
+                                aria-hidden="true"
+                              />
+                            )}
+                            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <span className="truncate text-meta font-medium">
+                                {session.title}
+                              </span>
+                              {session.agent || session.profile ? (
+                                <span className="truncate text-micro font-normal text-sidebar-foreground/55">
+                                  {[session.agent, session.profile]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </span>
+                              ) : null}
+                            </span>
+                          </SidebarMenuButton>
+                          {session.background ? (
+                            <SidebarMenuBadge className="top-2 right-2 text-[9px] text-dim">
+                              BG
+                            </SidebarMenuBadge>
+                          ) : null}
+                        </SidebarMenuItem>
+                      ))}
+                    </SidebarMenu>
+                  </div>
+                ))
+              )}
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+      </Sidebar>
+    </SidebarProvider>
   )
 }

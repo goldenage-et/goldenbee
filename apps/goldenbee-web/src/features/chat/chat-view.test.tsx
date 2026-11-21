@@ -532,9 +532,6 @@ describe("chat view", () => {
 
     expect(await screen.findByText("Done")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Thought/ })).toBeInTheDocument()
-    expect(
-      screen.getByText(/Reasoning is live-only; reconnecting will not replay it\./),
-    ).toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: /Thought/ }))
     expect(await screen.findByText("Check the log.")).toBeInTheDocument()
@@ -960,7 +957,9 @@ describe("target selection", () => {
     expect(await screen.findByText("working")).toBeInTheDocument()
 
     await user.click(screen.getByLabelText("Agent"))
-    await user.click(await screen.findByRole("option", { name: /echo/ }))
+    await user.click(
+      await screen.findByRole("menuitemradio", { name: /echo/ }),
+    )
 
     expect(gateway.submits).toHaveLength(1)
     expect(gateway.submits[0]?.agent).toBe("general")
