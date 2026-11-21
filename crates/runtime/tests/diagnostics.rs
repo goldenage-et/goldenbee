@@ -167,6 +167,7 @@ async fn diagnostics_expose_blocked_approval_without_prompt_or_secret_export() {
             common::ApprovalDecision {
                 decision: "approved".into(),
                 digest: approval.digest,
+                answer: None,
             },
         )
         .await

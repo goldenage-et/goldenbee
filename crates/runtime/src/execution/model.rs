@@ -163,6 +163,66 @@ impl Llm for DeterministicModel {
                     .any(|part| matches!(part, Part::FunctionResponse { .. }))
             });
 
+        // Test control: run a fixed sequence of tool calls in one turn. Stateful
+        // tools (background processes, PTY sessions) need more than one call to
+        // be observed through the real Runner. `$last.<field>` in an argument
+        // string is replaced by the previous tool result's field, so a start id
+        // can flow into wait and kill without a second model.
+        if let Some(rest) = last_user.strip_prefix("steps:") {
+            let steps: Vec<serde_json::Value> =
+                serde_json::from_str(rest.trim()).unwrap_or_default();
+            let prior: Vec<&serde_json::Value> = req
+                .contents
+                .iter()
+                .skip(last_user_index.map(|index| index + 1).unwrap_or(0))
+                .flat_map(|content| content.parts.iter())
+                .filter_map(|part| match part {
+                    Part::FunctionResponse {
+                        function_response, ..
+                    } => Some(&function_response.response),
+                    _ => None,
+                })
+                .collect();
+            if prior.len() < steps.len() {
+                let step = &steps[prior.len()];
+                let name = step
+                    .get("tool")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    let last = prior.last().copied().cloned().unwrap_or_default();
+                    let args = resolve_last(step.get("args").cloned().unwrap_or_default(), &last);
+                    let mut call = Content::new("model");
+                    call.parts.push(Part::FunctionCall {
+                        name: name.to_string(),
+                        args,
+                        id: Some(format!("call-{}", uuid::Uuid::new_v4())),
+                        thought_signature: None,
+                    });
+                    return Ok(Box::pin(stream::iter(vec![Ok(LlmResponse {
+                        content: Some(call),
+                        usage_metadata: Some(usage(&last_user, &self.model)),
+                        finish_reason: Some(FinishReason::Stop),
+                        partial: false,
+                        turn_complete: true,
+                        interrupted: false,
+                        error_code: None,
+                        error_message: None,
+                        citation_metadata: None,
+                        provider_metadata: None,
+                        interaction_id: None,
+                    })])));
+                }
+            }
+            let last = prior.last().copied().cloned().unwrap_or_default();
+            return Ok(Box::pin(stream::iter(vec![Ok(response_for(
+                &self.model,
+                format!("{}: steps result {last}", self.prefix),
+                &last_user,
+                true,
+            ))])));
+        }
+
         // Test control: call an exact tool name with JSON arguments. This
         // exercises native tool discovery and dispatch without hardcoding a
         // production provider or a private tool engine.
@@ -1201,6 +1261,38 @@ impl Llm for HttpModel {
             "",
             true,
         ))])))
+    }
+}
+
+/// Resolve `$last.<field>` placeholders in a scripted tool step.
+fn resolve_last(value: serde_json::Value, last: &serde_json::Value) -> serde_json::Value {
+    fn resolve_string(text: &str, last: &serde_json::Value) -> String {
+        if let Some(field) = text.strip_prefix("$last.") {
+            if !field.contains('.') {
+                if let Some(value) = last.get(field) {
+                    return match value {
+                        serde_json::Value::String(value) => value.clone(),
+                        other => other.to_string(),
+                    };
+                }
+            }
+        }
+        text.to_string()
+    }
+    match value {
+        serde_json::Value::String(text) => serde_json::Value::String(resolve_string(&text, last)),
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(|value| resolve_last(value, last))
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, resolve_last(value, last)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 

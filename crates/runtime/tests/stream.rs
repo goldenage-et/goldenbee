@@ -245,6 +245,7 @@ async fn approval_transitions_replay_over_sse_after_runtime_restart() {
             ApprovalDecision {
                 decision: "approved".into(),
                 digest: "digest-1".into(),
+                answer: None,
             },
         )
         .await

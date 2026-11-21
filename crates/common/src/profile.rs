@@ -235,6 +235,11 @@ pub struct Approval {
     /// Receipt after the protected effect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<String>,
+    /// Answer supplied by the deciding caller for a user question.
+    ///
+    /// Present only for `user.ask` approvals. It is never an authority grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
     /// Creation time.
     pub created_at: i64,
 }
@@ -246,4 +251,10 @@ pub struct ApprovalDecision {
     pub decision: String,
     /// Exact digest the approver saw.
     pub digest: String,
+    /// Optional answer for `user.ask` approvals.
+    ///
+    /// A permission approval ignores this field; the runtime never treats an
+    /// answer as authorization for anything except the exact question digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }

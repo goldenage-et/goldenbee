@@ -8,7 +8,7 @@ use adk_rust::server::{create_app, ServerConfig};
 use adk_rust::Launcher;
 #[cfg(not(feature = "launcher-cli"))]
 use adk_rust::SingleAgentLoader;
-use common::{ApiError, Principal, SubmitTaskRequest, TaskState};
+use common::{ApiError, CommandRequest, Principal, SubmitTaskRequest, TaskState};
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 #[cfg(not(feature = "launcher-cli"))]
@@ -56,6 +56,9 @@ impl Worker {
         let mut restrictions = Vec::new();
         let mut skills = Vec::new();
         let mut secret_refs = Vec::new();
+        let mut command_name = None;
+        let mut command_arguments: BTreeMap<String, String> = BTreeMap::new();
+        let mut idempotency_key = None;
         let mut compaction_budget = None;
         let mut compaction_preserve_recent = None;
         let mut compaction_max_retries = None;
@@ -91,6 +94,9 @@ impl Worker {
                 | "--restriction"
                 | "--skill"
                 | "--secret-ref"
+                | "--command"
+                | "--arg"
+                | "--idempotency-key"
                 | "--compaction-budget"
                 | "--compaction-preserve-recent"
                 | "--compaction-max-retries"
@@ -134,6 +140,20 @@ impl Worker {
                         "--restriction" => restrictions.push(value.clone()),
                         "--skill" => skills.push(value.clone()),
                         "--secret-ref" => secret_refs.push(value.clone()),
+                        "--command" => command_name = Some(value.clone()),
+                        "--idempotency-key" => idempotency_key = Some(value.clone()),
+                        "--arg" => {
+                            let (name, argument) = value.split_once('=').ok_or_else(|| {
+                                ApiError::new("cli.value_invalid", "--arg must use name=value")
+                            })?;
+                            if name.trim().is_empty() {
+                                return Err(ApiError::new(
+                                    "cli.value_invalid",
+                                    "--arg must name an argument",
+                                ));
+                            }
+                            command_arguments.insert(name.to_string(), argument.to_string());
+                        }
                         "--compaction-budget" => {
                             compaction_budget = Some(value.parse::<u64>().map_err(|_| {
                                 ApiError::new(
@@ -266,6 +286,7 @@ impl Worker {
                                 .into_iter()
                                 .map(|skill| skill.name)
                                 .collect::<Vec<_>>(),
+                            "commands": instance.command_descriptors().await,
                             "instance": instance.runtime().config().instance_id,
                             "asset_revision": instance.asset_revision(),
                         })
@@ -283,6 +304,143 @@ impl Worker {
                 }
                 instance.shutdown().await;
                 Ok(())
+            }
+            "commands" => {
+                let instance = self.start(&config).await?;
+                let principal = instance
+                    .operator_principal()
+                    .await
+                    .unwrap_or_else(|_| Principal::new("local", "local", &["*"]));
+                let subcommand = positionals.get(1).map(String::as_str).unwrap_or("list");
+                let name = command_name.clone().or_else(|| positionals.get(2).cloned());
+                let result: WorkerResult<()> = async {
+                    match subcommand {
+                        "list" => {
+                            let commands = instance.command_descriptors().await;
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&commands)
+                                        .unwrap_or_else(|_| "[]".into())
+                                );
+                            } else {
+                                for command in commands {
+                                    println!(
+                                        "command: {} ({}) - {}",
+                                        command.name, command.kind, command.description
+                                    );
+                                }
+                            }
+                            Ok(())
+                        }
+                        "show" => {
+                            let name = name.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.command_name_required",
+                                    "commands show requires --command",
+                                )
+                            })?;
+                            let commands = instance.command_descriptors().await;
+                            let command = commands
+                                .into_iter()
+                                .find(|command| command.name == name)
+                                .ok_or_else(|| {
+                                    ApiError::new(
+                                        "command.not_found",
+                                        format!("command '{name}' is not defined"),
+                                    )
+                                })?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&command)
+                                    .unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
+                        "run" => {
+                            let name = name.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.command_name_required",
+                                    "commands run requires --command",
+                                )
+                            })?;
+                            let request = CommandRequest {
+                                input,
+                                arguments: command_arguments.clone(),
+                                session_id: session.clone(),
+                                idempotency_key: idempotency_key
+                                    .clone()
+                                    .unwrap_or_else(|| format!("cli-command-{}", uuid_like())),
+                                agent: agent.clone(),
+                                limits: Default::default(),
+                            };
+                            let response =
+                                instance.execute_command(&principal, &name, request).await?;
+                            if let Some(submitted) = &response.task {
+                                let runtime = instance.runtime();
+                                loop {
+                                    let task = runtime
+                                        .task_unscoped(&submitted.task_id)
+                                        .await
+                                        .ok_or_else(|| {
+                                            ApiError::new(
+                                                "task.not_found",
+                                                "task disappeared from durable state",
+                                            )
+                                        })?;
+                                    if task.state.is_terminal() {
+                                        if json {
+                                            println!(
+                                                "{}",
+                                                serde_json::json!({
+                                                    "command": response.command,
+                                                    "kind": response.kind,
+                                                    "task": &task,
+                                                })
+                                            );
+                                        } else if let Some(output) = &task.output {
+                                            println!("{output}");
+                                        } else {
+                                            println!("{:?}", task.state);
+                                        }
+                                        return match task.state {
+                                            TaskState::Succeeded => Ok(()),
+                                            TaskState::Cancelled => Err(ApiError::new(
+                                                "task.cancelled",
+                                                "task was cancelled",
+                                            )),
+                                            _ => Err(task.error.unwrap_or_else(|| {
+                                                ApiError::new("task.failed", "task did not succeed")
+                                            })),
+                                        };
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                }
+                            }
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&response)
+                                        .unwrap_or_else(|_| "{}".into())
+                                );
+                            } else {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&response.result)
+                                        .unwrap_or_else(|_| "{}".into())
+                                );
+                            }
+                            Ok(())
+                        }
+                        other => Err(ApiError::new(
+                            "cli.command_unknown",
+                            format!("unknown commands subcommand '{other}'"),
+                        )),
+                    }
+                }
+                .await;
+                instance.shutdown().await;
+                result
             }
             "profile" => {
                 let instance = self.start(&config).await?;
@@ -603,6 +761,22 @@ impl Worker {
                                     println!("{}: {}", turn.role, turn.text);
                                 }
                             }
+                            Ok(())
+                        }
+                        "compact" => {
+                            let id = id.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session compact requires a session id",
+                                )
+                            })?;
+                            let scheduled =
+                                runtime.request_session_compaction(&principal, &id).await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&scheduled)
+                                    .unwrap_or_else(|_| "{}".into())
+                            );
                             Ok(())
                         }
                         "fork" => {
@@ -1019,7 +1193,8 @@ impl Worker {
                 .await?;
                 let state = crate::serving::WorkerState::new(runtime, manifest)
                     .with_durable_a2a(a2a.durable())
-                    .with_browser(instance.browser());
+                    .with_browser(instance.browser())
+                    .with_commands(instance.command_registry().await);
                 let app = crate::serving::api_router(state.clone())
                     .merge(native)
                     .merge(a2a.router());
@@ -1109,8 +1284,9 @@ impl Worker {
              run --config <path> --input <text> [--agent <id>] [--profile <name>] [--session <id>] [--json]\n      Execute through shared runtime and the native ADK Runner.\n  \
              dev --config <path> [--agent <id>] [--profile <name>]\n      Native ADK Runner launcher console. No Gateway or SDK.\n  \
              serve --config <path> [--addr 127.0.0.1:8080] [--agent <id>]\n      Native ADK web server, REST, and A2A. No Gateway or SDK.\n  \
+             commands list|show|run --config <path> [--command <name>] [--input <text>]\n      [--arg name=value] [--session <id>] [--json]\n      Discover and execute neutral runtime and Worker-defined commands.\n  \
              profile list|show|create|revise|activate|deactivate|delete|export --config <path> [options]\n      Worker-native immutable profile management.\n      Compaction options: --compaction-budget <tokens> [--compaction-strategy truncation]\n      [--compaction-preserve-recent <events>] [--compaction-max-retries <attempts>].\n  \
-             session list|latest|show|fork|rename|export|transcript --config <path> [options]\n      Continue, resume, fork, rename, and durably export canonical sessions.\n      Fork: session fork <source> <new> [--title <title>]. Rename: --title <title>.\n  \
+             session list|latest|show|compact|fork|rename|export|transcript --config <path> [options]\n      Continue, resume, compact, fork, rename, and durably export canonical sessions.\n      Compact schedules native compaction for the next model turn.\n      Fork: session fork <source> <new> [--title <title>]. Rename: --title <title>.\n  \
              checkpoint list|diff|restore --config <path> [options]\n      Inspect turn-boundary file checkpoints and rewind/undo/restore a turn or file set.\n      Restore options: --mode rewind|undo|restore [--file <workspace-relative-path> ...].\n  \
              up --config <path> [--addr ADDR] [--json]\n      Start this Worker in the background and wait for readiness.\n  \
              status --config <path> [--json]\n      Report background process and health.\n  \

@@ -12,7 +12,7 @@ pub mod transcript;
 pub use store::{FileSessionService, SessionSummary, SESSION_STORE_FILE, SESSION_STORE_SCHEMA};
 
 use crate::Runtime;
-use common::{scopes, Principal, SessionTranscript, SessionView};
+use common::{scopes, Principal, SessionCompaction, SessionTranscript, SessionView};
 use std::sync::Arc;
 
 /// Native ADK application identity used for sessions owned by this Worker.
@@ -172,6 +172,42 @@ impl Runtime {
         )
         .await?;
         Ok(view)
+    }
+
+    /// Schedule a manual compaction of one canonical session.
+    ///
+    /// The pinned ADK Runner has no public "compact now" method. This records
+    /// a durable scheduling intent in the session state; the next model turn
+    /// applies native truncation before its request and leaves canonical
+    /// session events untouched. The response states that behavior instead of
+    /// claiming an immediate rewrite.
+    pub async fn request_session_compaction(
+        &self,
+        principal: &Principal,
+        session_id: &str,
+    ) -> crate::Result<SessionCompaction> {
+        principal.require(scopes::SESSION_WRITE)?;
+        let sessions = self.session_owner().await?;
+        let app = session_app(self);
+        let user = native_user(principal)?;
+        sessions.request_compaction(&app, &user, session_id).await?;
+        self.audit(
+            &principal.id,
+            "session.compaction",
+            session_id,
+            "scheduled",
+            "next_model_turn",
+        )
+        .await?;
+        Ok(SessionCompaction {
+            session_id: session_id.to_string(),
+            namespace: principal.namespace.clone(),
+            principal: principal.id.clone(),
+            state: "scheduled".into(),
+            applies_on: "next_model_turn".into(),
+            manual_entry_point: false,
+            reason: "the pinned ADK Runner applies native compaction proactively on the next model turn; canonical session history is retained".into(),
+        })
     }
 
     /// Export the canonical history to a durable transcript.

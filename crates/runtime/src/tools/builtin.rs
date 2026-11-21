@@ -41,11 +41,44 @@ pub enum BuiltinTool {
     Glob,
     /// ADK `grep`.
     Grep,
+    /// Foreground contained command with streamed output.
+    Shell,
+    /// Interactive contained PTY session.
+    Pty,
+    /// Contained command started in the background.
+    BackgroundProcess,
+    /// Observe one owned background process.
+    ProcessWait,
+    /// Terminate one owned background process.
+    ProcessKill,
+    /// Bounded HTTP fetch under a destination policy.
+    WebFetch,
+    /// Bounded search through an operator-configured endpoint.
+    WebSearch,
+    /// Return a typed image descriptor for a workspace file.
+    ViewImage,
+    /// Persist and publish the per-task plan.
+    WriteTodos,
+    /// Ask the caller a question through the approval channel.
+    AskUser,
+}
+
+/// Ownership family of a generic built-in capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinCategory {
+    /// Workspace file and search tools.
+    File,
+    /// Contained process and PTY tools.
+    Process,
+    /// Network tools under a destination policy.
+    Web,
+    /// Image, plan, and user-question tools.
+    Interaction,
 }
 
 impl BuiltinTool {
     /// Every generic file/search capability.
-    pub const ALL: [BuiltinTool; 7] = [
+    pub const FILES: [BuiltinTool; 7] = [
         Self::ReadFile,
         Self::WriteFile,
         Self::EditFile,
@@ -53,6 +86,42 @@ impl BuiltinTool {
         Self::ApplyPatch,
         Self::Glob,
         Self::Grep,
+    ];
+
+    /// Every contained process and PTY capability.
+    pub const PROCESS: [BuiltinTool; 5] = [
+        Self::Shell,
+        Self::Pty,
+        Self::BackgroundProcess,
+        Self::ProcessWait,
+        Self::ProcessKill,
+    ];
+
+    /// Every network capability.
+    pub const WEB: [BuiltinTool; 2] = [Self::WebFetch, Self::WebSearch];
+
+    /// Every image, plan, and user-question capability.
+    pub const INTERACTION: [BuiltinTool; 3] = [Self::ViewImage, Self::WriteTodos, Self::AskUser];
+
+    /// Every generic capability.
+    pub const ALL: [BuiltinTool; 17] = [
+        Self::ReadFile,
+        Self::WriteFile,
+        Self::EditFile,
+        Self::MultiEdit,
+        Self::ApplyPatch,
+        Self::Glob,
+        Self::Grep,
+        Self::Shell,
+        Self::Pty,
+        Self::BackgroundProcess,
+        Self::ProcessWait,
+        Self::ProcessKill,
+        Self::WebFetch,
+        Self::WebSearch,
+        Self::ViewImage,
+        Self::WriteTodos,
+        Self::AskUser,
     ];
 
     /// Stable tool name exposed to the model.
@@ -65,17 +134,60 @@ impl BuiltinTool {
             Self::ApplyPatch => "apply_patch",
             Self::Glob => "glob",
             Self::Grep => "grep",
+            Self::Shell => "shell",
+            Self::Pty => "pty",
+            Self::BackgroundProcess => "background_process",
+            Self::ProcessWait => "process_wait",
+            Self::ProcessKill => "process_kill",
+            Self::WebFetch => "web_fetch",
+            Self::WebSearch => "web_search",
+            Self::ViewImage => "view_image",
+            Self::WriteTodos => "write_todos",
+            Self::AskUser => "ask_user",
         }
     }
 
     /// Permission exercised by the tool.
     pub fn permission(self) -> &'static str {
         match self {
-            Self::ReadFile | Self::Glob | Self::Grep => "workspace:read",
+            Self::ReadFile | Self::Glob | Self::Grep | Self::ViewImage => "workspace:read",
             Self::WriteFile | Self::EditFile | Self::MultiEdit | Self::ApplyPatch => {
                 "workspace:write"
             }
+            Self::Shell | Self::Pty | Self::BackgroundProcess | Self::ProcessKill => {
+                "process:execute"
+            }
+            Self::ProcessWait => "process:read",
+            Self::WebFetch => "web:fetch",
+            Self::WebSearch => "web:search",
+            Self::WriteTodos => "plan:write",
+            Self::AskUser => "user:ask",
         }
+    }
+
+    /// Owning capability family.
+    pub fn category(self) -> BuiltinCategory {
+        match self {
+            Self::ReadFile
+            | Self::WriteFile
+            | Self::EditFile
+            | Self::MultiEdit
+            | Self::ApplyPatch
+            | Self::Glob
+            | Self::Grep => BuiltinCategory::File,
+            Self::Shell
+            | Self::Pty
+            | Self::BackgroundProcess
+            | Self::ProcessWait
+            | Self::ProcessKill => BuiltinCategory::Process,
+            Self::WebFetch | Self::WebSearch => BuiltinCategory::Web,
+            Self::ViewImage | Self::WriteTodos | Self::AskUser => BuiltinCategory::Interaction,
+        }
+    }
+
+    /// Whether the tool requires an explicit package sandbox policy.
+    pub fn requires_sandbox(self) -> bool {
+        self.category() == BuiltinCategory::Process
     }
 }
 
@@ -89,7 +201,7 @@ pub fn tools(kernel: &ToolKernel) -> Vec<(String, Arc<dyn Tool>, Vec<String>)> {
         return Vec::new();
     };
     let mut tools = Vec::new();
-    for builtin in BuiltinTool::ALL {
+    for builtin in BuiltinTool::FILES {
         if !kernel.is_enabled(builtin.id()) {
             continue;
         }
@@ -103,6 +215,7 @@ pub fn tools(kernel: &ToolKernel) -> Vec<(String, Arc<dyn Tool>, Vec<String>)> {
             BuiltinTool::ApplyPatch => Arc::new(ApplyPatchTool::new(workspace.clone())),
             BuiltinTool::Glob => Arc::new(GlobTool::new(workspace.clone())),
             BuiltinTool::Grep => Arc::new(GrepTool::new(workspace.clone())),
+            _ => continue,
         };
         tools.push((
             id,
@@ -132,6 +245,9 @@ fn descriptor(builtin: BuiltinTool) -> ToolDescriptor {
                 .risk(ToolRisk::High)
                 .effect(ToolEffect::FileWrite)
                 .paths(patch_paths);
+        }
+        _ => {
+            descriptor = descriptor.risk(ToolRisk::Medium).effect(ToolEffect::None);
         }
     }
     descriptor

@@ -44,6 +44,7 @@ pub fn worker() -> Result<Worker, String> {
         .browser("browser")
         .callbacks(native_callbacks)
         .knowledge_tools()
+        .progressive_skills()
         .adk_plugin(audit_plugin())
         .hooks(Arc::new(PackageHooks)))
 }

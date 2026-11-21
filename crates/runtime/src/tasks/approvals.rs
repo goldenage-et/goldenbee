@@ -103,6 +103,7 @@ impl Runtime {
                     decided_by: None,
                     decided_at: None,
                     receipt: None,
+                    answer: None,
                     created_at: at,
                 };
                 task.state = TaskState::WaitingApproval;
@@ -268,6 +269,17 @@ impl Runtime {
                     approval.status = decision.decision.clone();
                     approval.decided_by = Some(principal.id.clone());
                     approval.decided_at = Some(now());
+                    // Only a user question carries an answer. A permission
+                    // approval cannot smuggle extra payload into its record.
+                    approval.answer = (approval.operation == "user.ask"
+                        && decision.decision == "approved")
+                        .then(|| decision.answer.clone())
+                        .flatten()
+                        .map(|answer| {
+                            let mut answer = answer;
+                            answer.truncate(4096);
+                            answer
+                        });
                     Ok((approval.clone(), true))
                 })
                 .await?;
@@ -439,6 +451,25 @@ impl Runtime {
         self.set_pause(&updated.task_id, crate::PAUSE_RUNNING).await;
         self.approval_notify().notify_waiters();
         Ok(updated)
+    }
+
+    /// Return a task to `running` after a bounded question wait ends without a
+    /// decision. The approval record stays pending until its own expiry.
+    pub(crate) async fn resume_after_question(&self, task_id: &str) {
+        let _ = self
+            .store()
+            .write(|state| {
+                let Some(task) = state.tasks.get_mut(task_id) else {
+                    return Ok(());
+                };
+                if task.state == TaskState::WaitingApproval {
+                    task.state = TaskState::Running;
+                    task.updated_at = now();
+                }
+                Ok(())
+            })
+            .await;
+        self.set_pause(task_id, crate::PAUSE_RUNNING).await;
     }
 
     /// Wait for a decision without holding an execution permit. The caller

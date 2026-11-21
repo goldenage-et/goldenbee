@@ -2,11 +2,16 @@
 
 pub mod builtin;
 pub mod effect;
+pub mod interaction;
 pub mod kernel;
+pub mod plan;
+pub mod process;
+pub mod web;
 
-pub use builtin::BuiltinTool;
+pub use builtin::{BuiltinCategory, BuiltinTool};
 pub use effect::EffectTool;
 pub use kernel::{ToolDescriptor, ToolEffect, ToolKernel, ToolKernelConfig, ToolRisk};
+pub use web::WebPolicy;
 
 use crate::worker::Worker;
 use adk_rust::{Tool, Toolset};

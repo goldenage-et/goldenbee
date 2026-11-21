@@ -9,10 +9,10 @@
 //! plugins, launcher, and server. This module adds configuration resolution,
 //! reference checking, immutable snapshots, and Worker lifecycle hooks.
 
-mod agent;
-mod assets;
+pub(crate) mod agent;
+pub(crate) mod assets;
 mod cli;
-mod config;
+pub(crate) mod config;
 mod gateway;
 mod hooks;
 mod instance;
@@ -20,8 +20,12 @@ mod models;
 mod profiles;
 
 pub use crate::agents::{AgentDefinition, AgentDescriptor, AgentOrigin, SkillAsset};
+pub use crate::context::{ContextConfig, MemorySource};
 pub use crate::execution::plugins::AgentCallbacks;
-pub use crate::tools::{BuiltinTool, ToolDescriptor, ToolEffect, ToolKernel, ToolRisk};
+pub use crate::process::ProcessPolicy;
+pub use crate::tools::{
+    BuiltinCategory, BuiltinTool, ToolDescriptor, ToolEffect, ToolKernel, ToolRisk, WebPolicy,
+};
 pub use config::{
     FileConfig, GatewayConfig, ModelsConfig, PathsConfig, ResolvedModels, StorageConfig,
     TokenConfig, WorkerSettings,
@@ -154,6 +158,10 @@ pub struct Worker {
     settings_tools: Vec<SettingsTool>,
     /// Package-declared generic file/search capabilities.
     builtin_tools: BTreeSet<BuiltinTool>,
+    /// Package-declared destination policy for the web tools.
+    web_policy: Option<WebPolicy>,
+    /// Package-declared sandbox and process policy.
+    process_policy: Option<crate::ProcessPolicy>,
     /// A package-registered tool declared a workspace file effect or paths.
     pub(crate) tool_workspace_required: bool,
     /// Worker-owned status interfaces for protected effects.
@@ -169,6 +177,8 @@ pub struct Worker {
     plugins: Vec<Plugin>,
     knowledge: bool,
     features: BTreeSet<String>,
+    /// Package declares support for operator-selected progressive disclosure.
+    progressive_skills: bool,
     browser: Option<String>,
     pub(crate) duplicate_ids: BTreeSet<String>,
 }
@@ -193,6 +203,8 @@ impl Worker {
             kernel,
             settings_tools: Vec::new(),
             builtin_tools: BTreeSet::new(),
+            web_policy: None,
+            process_policy: None,
             tool_workspace_required: false,
             effect_reconcilers: BTreeMap::new(),
             effect_approvals: BTreeMap::new(),
@@ -206,6 +218,7 @@ impl Worker {
                 .into_iter()
                 .map(String::from)
                 .collect(),
+            progressive_skills: false,
             browser: None,
             duplicate_ids: BTreeSet::new(),
         }
@@ -468,8 +481,16 @@ impl Worker {
         self
     }
 
-    /// Enable the package's runtime-owned native knowledge tools.
-    ///
+    /// Declare that this package supports operator-selected progressive skill
+    /// disclosure. Configuration may select `progressive`; it cannot create the
+    /// mechanism for a package that did not declare it here.
+    pub fn progressive_skills(mut self) -> Self {
+        self.progressive_skills = true;
+        self.features.insert("skills-progressive-disclosure".into());
+        self
+    }
+
+    /// Enable the package's runtime-owned native knowledge tools.    ///
     /// The tools read and write the installed native graph store. A profile can
     /// select an agent that references them, but it cannot add a tool the
     /// package did not declare here.
@@ -485,7 +506,7 @@ impl Worker {
     /// exposed selection, but cannot create a capability the package did not
     /// declare.
     pub fn file_tools(self) -> Self {
-        self.builtin_tools(BuiltinTool::ALL)
+        self.builtin_tools(BuiltinTool::FILES)
     }
 
     /// Enable one generic file/search tool.
@@ -499,6 +520,45 @@ impl Worker {
         I: IntoIterator<Item = BuiltinTool>,
     {
         self.builtin_tools.extend(tools);
+        self
+    }
+
+    /// Enable the web tools with one explicit destination policy.
+    pub fn web_tools(self, policy: WebPolicy) -> Self {
+        self.web_policy(policy).builtin_tools(BuiltinTool::WEB)
+    }
+
+    /// Enable one web tool with one explicit destination policy.
+    pub fn web_tool(self, tool: BuiltinTool, policy: WebPolicy) -> Self {
+        self.web_policy(policy).builtin_tools([tool])
+    }
+
+    /// Declare the destination policy used by enabled web tools.
+    ///
+    /// A web tool cannot start without a policy; there is no implicit public
+    /// network. The policy can only narrow what the package declared.
+    pub fn web_policy(mut self, policy: WebPolicy) -> Self {
+        self.web_policy = Some(policy);
+        self
+    }
+
+    /// Enable the shell, PTY, background, wait, and kill tools.
+    ///
+    /// The policy supplies the exact sandbox boundary and process limits. A
+    /// process tool cannot start without one.
+    pub fn process_tools(self, policy: crate::ProcessPolicy) -> Self {
+        self.process_policy(policy)
+            .builtin_tools(BuiltinTool::PROCESS)
+    }
+
+    /// Enable one process tool with one explicit policy.
+    pub fn process_tool(self, tool: BuiltinTool, policy: crate::ProcessPolicy) -> Self {
+        self.process_policy(policy).builtin_tools([tool])
+    }
+
+    /// Declare the sandbox and process policy used by enabled process tools.
+    pub fn process_policy(mut self, policy: crate::ProcessPolicy) -> Self {
+        self.process_policy = Some(policy);
         self
     }
 
@@ -696,6 +756,38 @@ impl Worker {
             }
         }
         settings.kernel = Some(self.kernel.clone());
+        if settings.file.skills.disclosure == "progressive" && !self.progressive_skills {
+            return Err(ApiError::new(
+                "config.capability_not_declared",
+                "skills.disclosure = \"progressive\" requires a package that declares progressive skill disclosure",
+            ));
+        }
+        if self
+            .builtin_tools
+            .iter()
+            .any(|tool| tool.category() == BuiltinCategory::Web)
+        {
+            let Some(policy) = self.web_policy.as_ref() else {
+                return Err(ApiError::new(
+                    "config.web_policy",
+                    "web tools require an explicit destination policy",
+                ));
+            };
+            policy
+                .validate()
+                .map_err(|message| ApiError::new("config.web_policy", common::redact(&message)))?;
+        }
+        if self
+            .builtin_tools
+            .iter()
+            .any(|tool| tool.category() == BuiltinCategory::Process)
+            && self.process_policy.is_none()
+        {
+            return Err(ApiError::new(
+                "config.process_policy",
+                "process tools require an explicit sandbox and process policy",
+            ));
+        }
         self.kernel
             .configure(ToolKernelConfig {
                 workspace: (!self.builtin_tools.is_empty() || self.tool_workspace_required)
@@ -737,6 +829,123 @@ impl Worker {
         if !self.builtin_tools.is_empty() {
             for (id, tool, permissions) in crate::tools::builtin::tools(&self.kernel) {
                 self = self.insert_registered(id, tool, permissions);
+            }
+        }
+        if self.builtin_tools.contains(&BuiltinTool::WriteTodos) {
+            let kernel = self.kernel.clone();
+            let tool = Arc::new(crate::tools::plan::PlanTool::new(
+                kernel.clone(),
+                self.effect_runtime.clone(),
+            )) as Arc<dyn Tool>;
+            self = self.insert_registered(
+                "write_todos".into(),
+                kernel.wrap(tool, crate::tools::plan::PlanTool::descriptor()),
+                vec![BuiltinTool::WriteTodos.permission().into()],
+            );
+        }
+        if self.builtin_tools.contains(&BuiltinTool::AskUser) {
+            let kernel = self.kernel.clone();
+            let tool = Arc::new(crate::tools::interaction::AskUserTool::new(
+                kernel.clone(),
+                self.effect_runtime.clone(),
+            )) as Arc<dyn Tool>;
+            self = self.insert_registered(
+                "ask_user".into(),
+                kernel.wrap(tool, crate::tools::interaction::AskUserTool::descriptor()),
+                vec![BuiltinTool::AskUser.permission().into()],
+            );
+        }
+        if self.builtin_tools.contains(&BuiltinTool::ViewImage) {
+            if let Some(workspace) = self.kernel.devtools_workspace() {
+                let kernel = self.kernel.clone();
+                let tool = Arc::new(crate::tools::interaction::ViewImageTool::new(workspace))
+                    as Arc<dyn Tool>;
+                self = self.insert_registered(
+                    "view_image".into(),
+                    kernel.wrap(tool, crate::tools::interaction::ViewImageTool::descriptor()),
+                    vec![BuiltinTool::ViewImage.permission().into()],
+                );
+            }
+        }
+        if let Some(policy) = self.process_policy.clone() {
+            let process = Arc::new(crate::ProcessRuntime::new(policy));
+            for builtin in BuiltinTool::PROCESS {
+                if !self.builtin_tools.contains(&builtin) {
+                    continue;
+                }
+                let kernel = self.kernel.clone();
+                let (tool, descriptor): (Arc<dyn Tool>, crate::tools::ToolDescriptor) =
+                    match builtin {
+                        BuiltinTool::Shell => {
+                            let descriptor = crate::tools::process::ShellTool::descriptor(&process);
+                            (
+                                Arc::new(crate::tools::process::ShellTool::new(
+                                    kernel.clone(),
+                                    self.effect_runtime.clone(),
+                                    process.clone(),
+                                )),
+                                descriptor,
+                            )
+                        }
+                        BuiltinTool::Pty => (
+                            Arc::new(crate::tools::process::PtyTool::new(
+                                kernel.clone(),
+                                self.effect_runtime.clone(),
+                                process.clone(),
+                            )),
+                            crate::tools::process::PtyTool::descriptor(),
+                        ),
+                        BuiltinTool::BackgroundProcess => (
+                            Arc::new(crate::tools::process::BackgroundProcessTool::new(
+                                kernel.clone(),
+                                self.effect_runtime.clone(),
+                                process.clone(),
+                            )),
+                            crate::tools::process::BackgroundProcessTool::descriptor(),
+                        ),
+                        BuiltinTool::ProcessWait => (
+                            Arc::new(crate::tools::process::ProcessWaitTool::new(
+                                kernel.clone(),
+                                self.effect_runtime.clone(),
+                            )),
+                            crate::tools::process::ProcessWaitTool::descriptor(),
+                        ),
+                        BuiltinTool::ProcessKill => (
+                            Arc::new(crate::tools::process::ProcessKillTool::new(
+                                kernel.clone(),
+                                self.effect_runtime.clone(),
+                            )),
+                            crate::tools::process::ProcessKillTool::descriptor(),
+                        ),
+                        _ => continue,
+                    };
+                self = self.insert_registered(
+                    builtin.id().into(),
+                    kernel.wrap(tool, descriptor),
+                    vec![builtin.permission().into()],
+                );
+            }
+        }
+        if let Some(policy) = self.web_policy.clone() {
+            let policy = Arc::new(policy);
+            if self.builtin_tools.contains(&BuiltinTool::WebFetch) {
+                let kernel = self.kernel.clone();
+                let tool =
+                    Arc::new(crate::tools::web::WebFetchTool::new(policy.clone())) as Arc<dyn Tool>;
+                self = self.insert_registered(
+                    "web_fetch".into(),
+                    kernel.wrap(tool, crate::tools::web::WebFetchTool::descriptor()),
+                    vec![BuiltinTool::WebFetch.permission().into()],
+                );
+            }
+            if self.builtin_tools.contains(&BuiltinTool::WebSearch) {
+                let kernel = self.kernel.clone();
+                let tool = Arc::new(crate::tools::web::WebSearchTool::new(policy)) as Arc<dyn Tool>;
+                self = self.insert_registered(
+                    "web_search".into(),
+                    kernel.wrap(tool, crate::tools::web::WebSearchTool::descriptor()),
+                    vec![BuiltinTool::WebSearch.permission().into()],
+                );
             }
         }
         if let Some(id) = self.duplicate_ids.iter().next() {
@@ -880,6 +1089,7 @@ impl Worker {
             &graphs,
             ExecutorServices {
                 sessions: sessions.clone(),
+                file_sessions: sessions.clone(),
                 plugins: plugins.clone(),
                 callbacks: self.callbacks.clone(),
                 artifacts: runtime.artifact_store(),
@@ -889,6 +1099,7 @@ impl Worker {
                 providers,
                 effect_approvals: self.effect_approvals.clone(),
                 max_parallel: settings.file.tools.max_parallel.max(1),
+                kernel: self.kernel.clone(),
             },
         )?;
         let executor = Arc::new(executor);
@@ -913,7 +1124,8 @@ impl Worker {
                 settings: RwLock::new(settings),
                 assets: RwLock::new(Arc::new(assets)),
                 runtime,
-                sessions,
+                sessions: sessions.clone(),
+                file_sessions: sessions,
                 executor: RwLock::new(executor.clone()),
                 graph: graph.clone(),
                 manifest,
@@ -986,6 +1198,7 @@ impl Worker {
 
 struct ExecutorServices {
     sessions: Arc<dyn SessionService>,
+    file_sessions: Arc<FileSessionService>,
     plugins: Option<Arc<PluginManager>>,
     callbacks: Option<Arc<dyn Fn() -> AgentCallbacks + Send + Sync>>,
     artifacts: Arc<crate::data::artifacts::NativeArtifactStore>,
@@ -995,6 +1208,7 @@ struct ExecutorServices {
     providers: Arc<ProviderRegistry>,
     effect_approvals: BTreeMap<String, crate::EffectApprovalPolicy>,
     max_parallel: usize,
+    kernel: crate::tools::ToolKernel,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1006,6 +1220,7 @@ fn build_executor(
 ) -> WorkerResult<NativeExecutor> {
     let ExecutorServices {
         sessions,
+        file_sessions,
         plugins,
         callbacks,
         artifacts,
@@ -1015,10 +1230,12 @@ fn build_executor(
         providers,
         effect_approvals,
         max_parallel,
+        kernel,
     } = services;
     let agents: Vec<(String, Arc<dyn Agent>)> = assets
         .agents
         .iter()
+        .chain(assets.command_agents.iter())
         .map(|(id, agent)| (id.clone(), agent.clone()))
         .collect();
     let specs = assets.specs.clone();
@@ -1026,13 +1243,22 @@ fn build_executor(
         .specs
         .iter()
         .map(|(id, spec)| (id.clone(), spec.mcp_servers.clone()))
+        .chain(
+            assets
+                .command_mcp
+                .iter()
+                .map(|(id, servers)| (id.clone(), servers.clone())),
+        )
         .collect();
     let registered = assets.agents.clone();
     let skills = assets.skills.clone();
+    let skill_disclosure = assets.skill_disclosure.clone();
     let profile_memory = memory.clone();
     let profile_mcp = mcp.clone();
+    let profile_context = assets.context.clone();
     let effect_tools: BTreeSet<String> = effect_approvals.keys().cloned().collect();
     let profile_effect_tools = effect_tools.clone();
+    let profile_kernel = kernel.clone();
     let builder: crate::execution::profile::ProfileAgentBuilder =
         Arc::new(move |revision, _default_agent, reporter| {
             build_profile_agent(
@@ -1040,12 +1266,15 @@ fn build_executor(
                 &registered,
                 &specs,
                 &skills,
+                &skill_disclosure,
                 &profile_effect_tools,
                 callbacks.as_deref(),
                 profile_memory.as_ref(),
+                &profile_context,
                 &providers,
                 reporter,
                 Some(&profile_mcp),
+                Some(&profile_kernel),
             )
         });
     let mut executor = NativeExecutor::with_plugins(app_name, agents, sessions, plugins)?
@@ -1055,7 +1284,14 @@ fn build_executor(
         .with_mcp(mcp, declarations)
         .with_remote_mcp(remote_mcp)
         .with_effect_approvals(effect_approvals)
-        .with_tool_concurrency(max_parallel);
+        .with_tool_concurrency(max_parallel)
+        .with_context(
+            assets.context.clone(),
+            assets.prompts.clone(),
+            assets.specs.clone(),
+        )
+        .with_file_sessions(file_sessions)
+        .with_tool_kernel(kernel);
     if let Some(memory) = memory {
         executor = executor.with_memory(memory);
     }

@@ -79,3 +79,26 @@ pub struct SessionTranscript {
     /// Ordered conversation turns.
     pub turns: Vec<SessionTurn>,
 }
+
+/// Truthful outcome of a manual compaction request.
+///
+/// The pinned ADK Runner has no public "compact now" entry point. A request
+/// therefore schedules native proactive compaction for the next model turn;
+/// canonical session events stay intact in the session store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionCompaction {
+    /// Session ID.
+    pub session_id: String,
+    /// Namespace.
+    pub namespace: String,
+    /// Principal.
+    pub principal: String,
+    /// Request state. `scheduled` means the next model turn applies it.
+    pub state: String,
+    /// When the request takes effect.
+    pub applies_on: String,
+    /// Whether a direct manual ADK entry point was available.
+    pub manual_entry_point: bool,
+    /// Redacted explanation of the behavior.
+    pub reason: String,
+}

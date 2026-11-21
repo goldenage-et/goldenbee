@@ -1,5 +1,6 @@
 //! Operator TOML configuration and resolved Worker settings.
 
+use crate::context::ContextConfig;
 use crate::mcp::{McpConfig, McpServerConfig};
 use crate::worker::assets::Assets;
 use crate::worker::WorkerResult;
@@ -24,6 +25,8 @@ pub struct WorkerSettings {
     pub prompts_dir: Option<PathBuf>,
     /// Resolved skills directory.
     pub skills_dir: Option<PathBuf>,
+    /// Resolved Worker command asset directory.
+    pub commands_dir: Option<PathBuf>,
     /// Resolved storage directory.
     pub data_dir: PathBuf,
     /// Validated optional browser capability.
@@ -81,6 +84,7 @@ impl WorkerSettings {
             }
         }
         validate_models(&file)?;
+        file.context.validate()?;
         validate_mcp(&file.mcp)?;
         file.mcp.validate()?;
         file.permissions.validate().map_err(|message| {
@@ -96,6 +100,7 @@ impl WorkerSettings {
             )
         })?;
         validate_peers(&file.peers, file.allow_remote)?;
+        validate_skills(&file.skills)?;
         Ok(Self {
             config_path: path.to_path_buf(),
             config_dir: config_dir.clone(),
@@ -103,6 +108,7 @@ impl WorkerSettings {
             agents_dir: file.paths.agents.as_deref().map(resolve),
             prompts_dir: file.paths.prompts.as_deref().map(resolve),
             skills_dir: file.paths.skills.as_deref().map(resolve),
+            commands_dir: file.paths.commands.as_deref().map(resolve),
             browser: match &file.browser {
                 Some(options) => Some(options.resolve(&config_dir)?),
                 None => None,
@@ -129,6 +135,16 @@ impl WorkerSettings {
     /// Effective runtime-owned sandbox policy for this instance.
     pub fn sandbox_rules(&self) -> &crate::sandbox::SandboxRules {
         &self.file.sandbox
+    }
+
+    /// Resolved skill disclosure behavior for this revision.
+    pub(crate) fn skill_disclosure(&self) -> crate::agents::skills::SkillDisclosure {
+        let skills = &self.file.skills;
+        crate::agents::skills::SkillDisclosure {
+            progressive: skills.disclosure == "progressive",
+            max_instruction_chars: skills.max_instruction_chars,
+            max_resource_chars: skills.max_resource_chars,
+        }
     }
 
     /// Effective provider profiles: local-safe defaults overridden by operator
@@ -226,6 +242,7 @@ impl WorkerSettings {
                 permissions: vec![server.grant_for(id)],
             });
         }
+        config.routing_agents = assets.command_agents.keys().cloned().collect();
         config.max_active = self.file.max_active.max(1);
         config.max_queue = self.file.max_queue;
         config.per_principal = self.file.per_principal.max(1);
@@ -356,6 +373,51 @@ pub struct FileConfig {
     /// Generic file/search tool workspace and runtime limits.
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// Configured memory-file assembly. The runtime hardcodes no filename.
+    #[serde(default)]
+    pub context: ContextConfig,
+    /// Skill disclosure and bounded skill output.
+    #[serde(default)]
+    pub skills: SkillsConfig,
+}
+
+/// Skill loading policy. Progressive disclosure is a package-declared
+/// capability; configuration selects it but cannot create it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsConfig {
+    /// `inherit` keeps the pinned eager selection/injection behavior.
+    /// `progressive` exposes L1 summaries, L2 instructions, and L3 resources.
+    #[serde(default = "default_skill_disclosure")]
+    pub disclosure: String,
+    /// Maximum characters returned by `load_skill`.
+    #[serde(default = "default_skill_instruction_chars")]
+    pub max_instruction_chars: usize,
+    /// Maximum characters returned by `load_skill_resource`.
+    #[serde(default = "default_skill_resource_chars")]
+    pub max_resource_chars: usize,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            disclosure: default_skill_disclosure(),
+            max_instruction_chars: default_skill_instruction_chars(),
+            max_resource_chars: default_skill_resource_chars(),
+        }
+    }
+}
+
+fn default_skill_disclosure() -> String {
+    "inherit".into()
+}
+
+fn default_skill_instruction_chars() -> usize {
+    8_000
+}
+
+fn default_skill_resource_chars() -> usize {
+    16_000
 }
 
 /// Generic file/search tool configuration. It narrows or configures compiled
@@ -655,6 +717,9 @@ pub struct PathsConfig {
     /// Skill directory containing `*/SKILL.md`.
     #[serde(default)]
     pub skills: Option<String>,
+    /// Worker-defined command directory containing `*.toml` commands.
+    #[serde(default)]
+    pub commands: Option<String>,
 }
 
 /// Configured storage.
@@ -755,6 +820,28 @@ fn default_stream_keepalive_ms() -> u64 {
 
 fn default_scopes() -> Vec<String> {
     vec!["*".into()]
+}
+
+fn validate_skills(skills: &SkillsConfig) -> WorkerResult<()> {
+    if !matches!(skills.disclosure.as_str(), "inherit" | "progressive") {
+        return Err(ApiError::new(
+            "config.skill_disclosure",
+            "skills.disclosure must be 'inherit' or 'progressive'",
+        ));
+    }
+    if !(256..=100_000).contains(&skills.max_instruction_chars) {
+        return Err(ApiError::new(
+            "config.skill_limit",
+            "skills.max_instruction_chars must be between 256 and 100000",
+        ));
+    }
+    if !(256..=1_000_000).contains(&skills.max_resource_chars) {
+        return Err(ApiError::new(
+            "config.skill_limit",
+            "skills.max_resource_chars must be between 256 and 1000000",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_models(file: &FileConfig) -> WorkerResult<()> {

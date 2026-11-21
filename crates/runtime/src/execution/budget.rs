@@ -166,6 +166,35 @@ impl BudgetStop {
     }
 }
 
+/// Pre-admission budget validation for the provider that will run.
+///
+/// A configured monetary ceiling is only enforceable when the operator declared
+/// the pricing basis for that provider. Rejecting the task before admission is
+/// better than running work and later reporting usage the runtime cannot price.
+pub fn validate_admission(
+    limits: &Limits,
+    provider: &crate::ProviderProfile,
+    id: &str,
+) -> std::result::Result<(), ApiError> {
+    if limits.max_cost_micros == 0 {
+        return Ok(());
+    }
+    if provider.input_cost_micros_per_million.is_none()
+        || provider.candidate_cost_micros_per_million.is_none()
+    {
+        return Err(ApiError::new(
+            "budget.cost_unverifiable",
+            format!(
+                "provider '{id}' has a configured cost budget but no operator-declared input and candidate pricing"
+            ),
+        )
+        .with("provider", id)
+        .with("budget_kind", BudgetKind::Cost.as_str())
+        .with("limit", limits.max_cost_micros.to_string()));
+    }
+    Ok(())
+}
+
 /// Check whether a model event leaves no allowance for the requested tools or
 /// reports consumption beyond a configured limit.
 ///
@@ -453,6 +482,25 @@ mod tests {
         assert_eq!(stop.kind, BudgetKind::Tokens);
         assert!(!stop.exact_preemptive);
         assert!(stop.uncertainty.contains("reported"));
+    }
+
+    #[test]
+    fn a_cost_budget_requires_operator_declared_pricing() {
+        let mut profile = crate::RuntimeConfig::local(std::path::PathBuf::from("/tmp"))
+            .providers
+            .get("deterministic")
+            .cloned()
+            .expect("built-in provider");
+        let limits = Limits {
+            max_cost_micros: 1,
+            ..Limits::default()
+        };
+        let error = validate_admission(&limits, &profile, "deterministic")
+            .expect_err("unpriceable cost budget must be rejected");
+        assert_eq!(error.code, "budget.cost_unverifiable");
+        profile.input_cost_micros_per_million = Some(1);
+        profile.candidate_cost_micros_per_million = Some(1);
+        assert!(validate_admission(&limits, &profile, "deterministic").is_ok());
     }
 
     #[test]

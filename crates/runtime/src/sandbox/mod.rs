@@ -389,6 +389,15 @@ pub struct Sandbox {
     resolved: ResolvedSandboxRules,
 }
 
+/// Program and arguments that enter the validated boundary.
+#[derive(Debug, Clone)]
+pub(crate) struct SandboxArgv {
+    /// Outer supervisor program (`prlimit`).
+    pub(crate) program: PathBuf,
+    /// Complete argument vector, including `bubblewrap` and the shell command.
+    pub(crate) args: Vec<std::ffi::OsString>,
+}
+
 impl Sandbox {
     /// Validate the mechanism and policy. A missing executable, root identity,
     /// or malformed mount fails here rather than degrading to host execution.

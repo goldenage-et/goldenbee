@@ -68,6 +68,8 @@ struct Inner {
     /// Worker-owned status interfaces for registered protected effects.
     effect_reconcilers:
         RwLock<BTreeMap<String, Arc<dyn crate::execution::operations::EffectReconciler>>>,
+    /// Task-owned shell, PTY, and background processes.
+    processes: crate::process::ProcessSupervisor,
     config_revision: AtomicU64,
     phase: RwLock<LifecyclePhase>,
     phase_history: RwLock<Vec<LifecyclePhase>>,
@@ -161,6 +163,7 @@ impl Runtime {
                 settings: RwLock::new(BTreeMap::new()),
                 mcp_credentials,
                 effect_reconcilers: RwLock::new(BTreeMap::new()),
+                processes: crate::process::ProcessSupervisor::new(),
                 config_revision: AtomicU64::new(initial_revision),
                 phase: RwLock::new(LifecyclePhase::Initializing),
                 phase_history: RwLock::new(vec![LifecyclePhase::Initializing]),
@@ -788,6 +791,19 @@ impl Runtime {
 
     pub(crate) async fn cancel_token(&self, task_id: &str) -> Option<CancellationToken> {
         self.inner.cancels.lock().await.get(task_id).cloned()
+    }
+
+    /// Task-owned process supervisor used by the opt-in process tools.
+    pub fn processes(&self) -> &crate::process::ProcessSupervisor {
+        &self.inner.processes
+    }
+
+    /// Terminate every process group owned by this Worker.
+    ///
+    /// Called from the Worker shutdown sequence after task cancellation so a
+    /// background command cannot outlive the runtime that admitted it.
+    pub async fn shutdown_processes(&self) {
+        self.inner.processes.shutdown().await;
     }
 
     /// Register the per-attempt execution pause flag used to release and

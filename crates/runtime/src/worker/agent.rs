@@ -1,29 +1,37 @@
-//! Native agents built from loaded asset definitions.
+//! Native agents built from loaded asset definitions and Worker commands.
 
-use crate::agents::definition::{skill_index, AgentSpec};
+use crate::agents::definition::AgentSpec;
+use crate::agents::skills::{self, SkillDisclosure};
 use crate::agents::{AgentDefinition, SkillAsset};
+use crate::commands::parse;
+use crate::commands::CommandAsset;
+use crate::context::ContextBundle;
 use crate::data::memory::{preload_callback, NativeMemory};
 use crate::execution::plugins::AgentCallbacks;
 use crate::execution::providers::{ProviderRegistry, ProviderRequirements};
+use crate::tools::ToolKernel;
 use crate::worker::WorkerResult;
 use adk_rust::prelude::LlmAgentBuilder;
-use adk_rust::{Agent, Tool, Toolset};
+use adk_rust::{Agent, Llm, Tool, Toolset};
 use common::ApiError;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub(super) struct AgentBindings<'a> {
-    pub(super) tools: &'a BTreeMap<String, Arc<dyn Tool>>,
-    pub(super) toolsets: &'a BTreeMap<String, Arc<dyn Toolset>>,
-    pub(super) mcp_ids: &'a std::collections::BTreeSet<String>,
-    pub(super) effect_tools: std::collections::BTreeSet<String>,
-    pub(super) prompts: &'a BTreeMap<String, String>,
-    pub(super) skills: &'a [SkillAsset],
-    pub(super) callbacks: Option<&'a (dyn Fn() -> AgentCallbacks + Send + Sync)>,
-    pub(super) memory: Option<&'a Arc<NativeMemory>>,
+pub(crate) struct AgentBindings<'a> {
+    pub(crate) tools: &'a BTreeMap<String, Arc<dyn Tool>>,
+    pub(crate) toolsets: &'a BTreeMap<String, Arc<dyn Toolset>>,
+    pub(crate) mcp_ids: &'a std::collections::BTreeSet<String>,
+    pub(crate) effect_tools: std::collections::BTreeSet<String>,
+    pub(crate) prompts: &'a BTreeMap<String, String>,
+    pub(crate) skills: &'a [SkillAsset],
+    pub(crate) skill_disclosure: &'a SkillDisclosure,
+    pub(crate) kernel: Option<&'a ToolKernel>,
+    pub(crate) context: &'a ContextBundle,
+    pub(crate) callbacks: Option<&'a (dyn Fn() -> AgentCallbacks + Send + Sync)>,
+    pub(crate) memory: Option<&'a Arc<NativeMemory>>,
 }
 
-pub(super) fn build_loaded_agent(
+pub(crate) fn build_loaded_agent(
     definition: &AgentDefinition,
     bindings: &AgentBindings<'_>,
     providers: &Arc<ProviderRegistry>,
@@ -40,37 +48,13 @@ pub(super) fn build_loaded_agent(
         tools: definition.tools.len() + definition.toolsets.len(),
         max_tokens: 0,
     };
-    let model = if providers.profiles().contains_key(&definition.model) {
-        providers
-            .resolve_primary(&definition.model, 0, &requirements)
-            .map_err(|error| {
-                ApiError::new(
-                    "asset.model_unresolved",
-                    format!(
-                        "agent '{}' model reference '{}' failed preflight: {}",
-                        definition.name,
-                        definition.model,
-                        common::redact(&error.message)
-                    ),
-                )
-            })?
-            .model
-    } else {
-        // Legacy inline diagnostic references are environment-free; provider
-        // profiles remain the only way to select a credentialed model.
-        crate::execution::model::model_for(&definition.model).map_err(|error| {
-            ApiError::new(
-                "asset.model_unresolved",
-                format!(
-                    "agent '{}' model reference '{}' failed: {}",
-                    definition.name,
-                    definition.model,
-                    common::redact(&format!("{error}"))
-                ),
-            )
-        })?
-    };
-    let instruction = prompts.get(&definition.prompt).cloned().ok_or_else(|| {
+    let model = resolve_model(
+        &definition.name,
+        &definition.model,
+        &requirements,
+        providers,
+    )?;
+    let prompt = prompts.get(&definition.prompt).cloned().ok_or_else(|| {
         ApiError::new(
             "asset.prompt_missing",
             format!(
@@ -79,6 +63,7 @@ pub(super) fn build_loaded_agent(
             ),
         )
     })?;
+    let instruction = bindings.context.apply_to_instruction(&prompt);
     for name in &definition.skills {
         if !skills.iter().any(|skill| &skill.name == name) {
             return Err(ApiError::new(
@@ -93,9 +78,6 @@ pub(super) fn build_loaded_agent(
     let mut builder = LlmAgentBuilder::new(&definition.name)
         .instruction(instruction)
         .model(model);
-    if let Some(index) = skill_index(skills, &definition.skills)? {
-        builder = builder.with_skills(index);
-    }
     if let Some(description) = &definition.description {
         builder = builder.description(description);
     }
@@ -149,19 +131,16 @@ pub(super) fn build_loaded_agent(
         bound_toolsets.push(toolset.clone());
         builder = builder.toolset(toolset);
     }
-    let mut agent_callbacks = callbacks.map(|factory| factory()).unwrap_or_default();
-    if let Some(memory) = memory {
-        let preload = preload_callback(memory.clone()).map_err(|error| {
-            ApiError::new(
-                "asset.memory_callback_failed",
-                format!(
-                    "agent '{}' could not bind native memory recall: {error}",
-                    definition.name
-                ),
-            )
-        })?;
-        agent_callbacks = agent_callbacks.with_before_model(preload);
-    }
+    let skill_tools = bound_tool_map(&definition.tools, tools);
+    builder = skills::bind(
+        builder,
+        skills,
+        &definition.skills,
+        bindings.skill_disclosure,
+        skill_tools,
+        bindings.kernel,
+    )?;
+    let agent_callbacks = callbacks_with_memory(callbacks, memory, &definition.name)?;
     builder = agent_callbacks.apply(builder);
     let agent = builder.build().map_err(|error| {
         ApiError::new(
@@ -173,10 +152,210 @@ pub(super) fn build_loaded_agent(
         Arc::new(agent),
         AgentSpec {
             description: definition.description.clone().unwrap_or_default(),
+            model: definition.model.clone(),
             tools: bound_tools,
             toolsets: bound_toolsets,
             mcp_servers,
             skills: definition.skills.clone(),
         },
     ))
+}
+
+/// Build the narrowed native agent for one Worker-defined command.
+///
+/// The command reuses the target agent's declared tools, toolsets, skills, and
+/// MCP connections. A non-empty `allowed_tools` list restricts the turn to that
+/// subset of the target's declared tools and drops unverifiable dynamic
+/// surfaces. It can never add a tool.
+pub(crate) fn build_command_agent(
+    target_agent: &str,
+    command: &CommandAsset,
+    spec: &AgentSpec,
+    bindings: &AgentBindings<'_>,
+    providers: &Arc<ProviderRegistry>,
+) -> WorkerResult<(Arc<dyn Agent>, Vec<String>)> {
+    let model_reference = command.model.as_deref().unwrap_or(&spec.model);
+    let requirements = ProviderRequirements {
+        modalities: vec!["text".into()],
+        tools: if command.allowed_tools.is_empty() {
+            spec.tools.len() + spec.toolsets.len()
+        } else {
+            command.allowed_tools.len()
+        },
+        max_tokens: 0,
+    };
+    let model = resolve_model(&command.name, model_reference, &requirements, providers)?;
+    let template = Arc::new(command.clone());
+    let context_text = bindings.context.text.clone();
+    let description = if command.description.trim().is_empty() {
+        format!("Worker command '{}'", command.name)
+    } else {
+        command.description.clone()
+    };
+    let mut builder = LlmAgentBuilder::new(command_route(command))
+        .description(description)
+        .model(model)
+        .instruction_provider(Box::new(move |ctx| {
+            let template = template.clone();
+            let context_text = context_text.clone();
+            Box::pin(async move {
+                let input = ctx
+                    .user_content()
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        adk_rust::Part::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                parse::prepare(&template, &input)
+                    .map(|prepared| {
+                        if context_text.is_empty() {
+                            prepared.prompt
+                        } else {
+                            format!("{}\n\n{}", prepared.prompt, context_text)
+                        }
+                    })
+                    .map_err(|error| {
+                        adk_rust::AdkError::agent(format!("{}: {}", error.code, error.message))
+                    })
+            })
+        }));
+    let selected = if command.allowed_tools.is_empty() {
+        spec.tools.clone()
+    } else {
+        let mut selected = Vec::new();
+        for name in &command.allowed_tools {
+            let tool = spec
+                .tools
+                .iter()
+                .find(|tool| tool.name() == name)
+                .cloned()
+                .ok_or_else(|| {
+                    ApiError::new(
+                        "asset.command_tool_unknown",
+                        format!(
+                            "command '{}' narrows to tool '{}' but agent '{target_agent}' does not declare it",
+                            command.name, name,
+                        ),
+                    )
+                })?;
+            selected.push(tool);
+        }
+        selected
+    };
+    for tool in &selected {
+        if bindings.effect_tools.contains(tool.name()) {
+            builder = builder.require_tool_confirmation(tool.name().to_string());
+        }
+        builder = builder.tool(tool.clone());
+    }
+    if command.allowed_tools.is_empty() {
+        for toolset in &spec.toolsets {
+            builder = builder.toolset(toolset.clone());
+        }
+    }
+    let selected_skills: Vec<String> = if command.allowed_tools.is_empty() {
+        spec.skills.clone()
+    } else {
+        Vec::new()
+    };
+    let mut skill_tools = BTreeMap::new();
+    for tool in &selected {
+        skill_tools.insert(tool.name().to_string(), tool.clone());
+    }
+    builder = skills::bind(
+        builder,
+        bindings.skills,
+        &selected_skills,
+        bindings.skill_disclosure,
+        skill_tools,
+        bindings.kernel,
+    )?;
+    let agent_callbacks =
+        callbacks_with_memory(bindings.callbacks, bindings.memory, &command_route(command))?;
+    builder = agent_callbacks.apply(builder);
+    let agent = builder.build().map_err(|error| {
+        ApiError::new(
+            "asset.command_agent_failed",
+            format!("command '{}' failed to build: {error}", command.name),
+        )
+    })?;
+    let mcp_servers = if command.allowed_tools.is_empty() {
+        spec.mcp_servers.clone()
+    } else {
+        Vec::new()
+    };
+    Ok((Arc::new(agent), mcp_servers))
+}
+
+/// Stable internal agent route for one command. It is an admission route, not
+/// an advertised capability.
+pub(crate) fn command_route(command: &CommandAsset) -> String {
+    format!("command:{}", command.name)
+}
+
+fn resolve_model(
+    owner: &str,
+    reference: &str,
+    requirements: &ProviderRequirements,
+    providers: &Arc<ProviderRegistry>,
+) -> WorkerResult<Arc<dyn Llm>> {
+    if providers.profiles().contains_key(reference) {
+        return providers
+            .resolve_primary(reference, 0, requirements)
+            .map(|resolved| resolved.model)
+            .map_err(|error| {
+                ApiError::new(
+                    "asset.model_unresolved",
+                    format!(
+                        "{owner} model reference '{reference}' failed preflight: {}",
+                        common::redact(&error.message)
+                    ),
+                )
+            });
+    }
+    // Legacy inline diagnostic references are environment-free; provider
+    // profiles remain the only way to select a credentialed model.
+    crate::execution::model::model_for(reference).map_err(|error| {
+        ApiError::new(
+            "asset.model_unresolved",
+            format!(
+                "{owner} model reference '{reference}' failed: {}",
+                common::redact(&format!("{error}"))
+            ),
+        )
+    })
+}
+
+fn bound_tool_map(
+    names: &[String],
+    tools: &BTreeMap<String, Arc<dyn Tool>>,
+) -> BTreeMap<String, Arc<dyn Tool>> {
+    let mut bound = BTreeMap::new();
+    for name in names {
+        if let Some(tool) = tools.get(name) {
+            bound.insert(name.clone(), tool.clone());
+        }
+    }
+    bound
+}
+
+fn callbacks_with_memory(
+    callbacks: Option<&(dyn Fn() -> AgentCallbacks + Send + Sync)>,
+    memory: Option<&Arc<NativeMemory>>,
+    agent: &str,
+) -> WorkerResult<AgentCallbacks> {
+    let mut agent_callbacks = callbacks.map(|factory| factory()).unwrap_or_default();
+    if let Some(memory) = memory {
+        let preload = preload_callback(memory.clone()).map_err(|error| {
+            ApiError::new(
+                "asset.memory_callback_failed",
+                format!("agent '{agent}' could not bind native memory recall: {error}"),
+            )
+        })?;
+        agent_callbacks = agent_callbacks.with_before_model(preload);
+    }
+    Ok(agent_callbacks)
 }

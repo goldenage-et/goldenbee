@@ -10,6 +10,7 @@
 pub mod artifact;
 pub mod backup;
 pub mod checkpoint;
+pub mod command;
 pub mod control;
 pub mod delegation;
 pub mod diagnostics;
@@ -45,6 +46,10 @@ pub use backup::{
 pub use checkpoint::{
     CheckpointDiff, CheckpointFileView, CheckpointRestoreOutcome, CheckpointRestoreRequest,
     CheckpointView, DiffHunk, DiffLine, FileDiff,
+};
+pub use command::{
+    kinds as command_kinds, CommandArgument, CommandDescriptor, CommandRequest, CommandResponse,
+    SkillDescriptor,
 };
 pub use control::{
     ControlAuditEntry, ControlCommand, ControlCommandRequest, ControlCommandResponse,
@@ -95,7 +100,8 @@ pub use providers::{
 };
 pub use redaction::redact;
 pub use session::{
-    SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionTurn, SessionView,
+    SessionCompaction, SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionTurn,
+    SessionView,
 };
 pub use socket::{
     SocketCommand, SocketCommandFrame, SocketOutcome, SocketScope, SocketServerFrame, SocketTicket,
@@ -106,7 +112,9 @@ pub use socket::{
 pub use stream::{
     parse_cursor, parse_limit, StreamEvent, StreamPage, EVENT_SCHEMA_VERSION, MAX_EVENT_PAGE,
 };
-pub use task::{ResolvedModel, SubmitTaskRequest, SubmitTaskResponse, Task, TaskState};
+pub use task::{
+    PlanItem, ResolvedModel, SubmitTaskRequest, SubmitTaskResponse, Task, TaskPlan, TaskState,
+};
 pub use team::{
     CreateTeamRequest, Team, TeamMember, TeamMemberGrant, TeamRoster, TeamSpec, TeamVersionRequest,
     UpdateTeamRequest,

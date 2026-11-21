@@ -197,6 +197,7 @@ async fn waiting_approval_releases_the_execution_slot_but_keeps_session_order() 
             ApprovalDecision {
                 decision: "approved".into(),
                 digest: approval.digest.clone(),
+                answer: None,
             },
         )
         .await

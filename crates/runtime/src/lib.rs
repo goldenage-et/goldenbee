@@ -8,6 +8,8 @@
 mod agents;
 pub mod browser;
 pub mod checkpoints;
+pub(crate) mod commands;
+pub mod context;
 mod core;
 mod data;
 mod execution;
@@ -15,6 +17,7 @@ pub mod master;
 pub mod mcp;
 pub mod peer;
 pub mod policy;
+mod process;
 mod sandbox;
 pub mod serving;
 mod sessions;
@@ -65,6 +68,9 @@ pub use policy::{
     ActionEffect, Decision as PermissionDecision, PermissionMode, PermissionPolicy,
     PermissionRequest, PermissionRule, PolicyDecision, RuleDecision,
 };
+pub use process::{
+    ProcessError, ProcessMode, ProcessPolicy, ProcessRuntime, ProcessState, ProcessView,
+};
 pub use tasks::Recovery;
 
 pub(crate) use common::ApiError;
@@ -99,11 +105,15 @@ pub mod native {
         SecretSource,
     };
     pub use crate::execution::runner::{decode_native_user_id, native_user_id, NativeExecutor};
+    pub use crate::process::{
+        ProcessError, ProcessMode, ProcessPolicy, ProcessRuntime, ProcessState, ProcessView,
+    };
     pub use crate::sandbox::{
         ExecOutput, Sandbox, SandboxCommandTool, SandboxError, SandboxLimits, SandboxPolicy,
     };
     pub use crate::sessions::{FileSessionService, SESSION_STORE_FILE};
     pub use crate::tools::EffectTool;
+    pub use crate::tools::WebPolicy;
     pub use common::KnowledgeFact;
 
     pub mod artifact {

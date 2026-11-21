@@ -312,6 +312,9 @@ pub struct State {
     /// Durable Master execution plans and their observed evidence.
     #[serde(default)]
     pub plans: BTreeMap<String, crate::master::MasterPlan>,
+    /// Per-task plans recorded by the planning tool, keyed by task id.
+    #[serde(default)]
+    pub task_plans: BTreeMap<String, common::TaskPlan>,
     /// Turn-boundary file checkpoint manifests. Snapshot bytes live in
     /// content-addressed files below the data directory.
     #[serde(default)]
@@ -361,6 +364,7 @@ impl Default for State {
             peer_records: BTreeMap::new(),
             peer_delegations: BTreeMap::new(),
             plans: BTreeMap::new(),
+            task_plans: BTreeMap::new(),
             checkpoints: BTreeMap::new(),
             traces: Vec::new(),
             audit: Vec::new(),

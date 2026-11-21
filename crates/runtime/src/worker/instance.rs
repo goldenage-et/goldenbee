@@ -58,6 +58,7 @@ pub(super) struct WorkerInner {
     pub(super) assets: RwLock<Arc<Assets>>,
     pub(super) runtime: Runtime,
     pub(super) sessions: Arc<dyn SessionService>,
+    pub(super) file_sessions: Arc<crate::sessions::FileSessionService>,
     pub(super) executor: RwLock<Arc<NativeExecutor>>,
     pub(super) graph: Option<Arc<NativeKnowledgeGraph>>,
     pub(super) manifest: PackageManifest,
@@ -107,6 +108,11 @@ impl WorkerInstance {
     /// Canonical native session service.
     pub fn session_service(&self) -> Arc<dyn SessionService> {
         self.inner.sessions.clone()
+    }
+
+    /// Discoverable command registry for the active asset revision.
+    pub(crate) async fn command_registry(&self) -> Arc<crate::commands::CommandRegistry> {
+        self.inner.assets.read().await.commands.clone()
     }
 
     /// Registered run-scope native plugins, when the package supplies them.
@@ -194,6 +200,19 @@ impl WorkerInstance {
     pub async fn reload(&self) -> WorkerResult<u64> {
         let mut settings = WorkerSettings::load(&self.inner.config_path)?;
         settings.kernel = Some(self.inner.kernel.clone());
+        if settings.file.skills.disclosure == "progressive"
+            && !self
+                .inner
+                .manifest
+                .features
+                .iter()
+                .any(|feature| feature == "skills-progressive-disclosure")
+        {
+            return Err(ApiError::new(
+                "config.capability_not_declared",
+                "skills.disclosure = \"progressive\" requires a package that declares progressive skill disclosure",
+            ));
+        }
         if let Some(name) = &settings.file.name {
             if name != &self.inner.name {
                 return Err(ApiError::new(
@@ -267,6 +286,7 @@ impl WorkerInstance {
             &graphs,
             crate::worker::ExecutorServices {
                 sessions: self.inner.sessions.clone(),
+                file_sessions: self.inner.file_sessions.clone(),
                 plugins: self.inner.plugins.clone(),
                 callbacks: self.inner.callbacks.clone(),
                 artifacts: self.inner.runtime.artifact_store(),
@@ -276,6 +296,7 @@ impl WorkerInstance {
                 providers,
                 effect_approvals: self.inner.effect_approvals.clone(),
                 max_parallel: settings.file.tools.max_parallel.max(1),
+                kernel: self.inner.kernel.clone(),
             },
         )?);
         // Reconcile after the candidate executor is built so a build failure
@@ -358,6 +379,7 @@ impl WorkerInstance {
         };
         self.inner.cancel.cancel();
         self.inner.runtime.cancel_all_tasks().await;
+        self.inner.runtime.shutdown_processes().await;
         self.inner.mcp.shutdown().await;
         if let Some(browser) = &self.inner.browser {
             browser.shutdown().await;

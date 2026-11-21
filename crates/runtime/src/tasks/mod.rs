@@ -3,6 +3,7 @@
 mod approvals;
 mod cancel;
 pub(crate) mod events;
+mod plan;
 mod recover;
 mod resume;
 mod run;
@@ -256,6 +257,7 @@ impl Runtime {
                     .capabilities
                     .iter()
                     .any(|capability| capability.id == agent)
+                    && !self.config().routing_agents.contains(&agent)
                     && local_team.is_none()
                 {
                     return Err(ApiError::new(
@@ -287,6 +289,7 @@ impl Runtime {
                         .iter()
                         .any(|capability| capability == "*")
                     && !revision.capabilities.contains(&agent)
+                    && !self.config().routing_agents.contains(&agent)
                 {
                     return Err(ApiError::new(
                         "profile.capability_denied",
@@ -297,7 +300,7 @@ impl Runtime {
                 let resolved_model = self.resolve_invocation_model(
                     revision,
                     &agent,
-                    limits.max_tokens,
+                    &limits,
                     revision.compaction.as_ref(),
                 )?;
                 let timestamp = now();

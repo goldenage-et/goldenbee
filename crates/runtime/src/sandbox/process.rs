@@ -30,12 +30,17 @@ impl Sandbox {
     where
         F: Future<Output = ()>,
     {
-        self.policy
-            .rules()
-            .check_command(command)
-            .map_err(SandboxError::policy)?;
         let guest_dir = self.guest_working_dir(working_dir)?;
-        let mut process = self.command(command, &guest_dir);
+        let argv = self.argv_for(command, &guest_dir, true)?;
+        let mut process = Command::new(argv.program);
+        process
+            .args(argv.args)
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0);
         let started = Instant::now();
         let mut child = process.spawn().map_err(|error| {
             SandboxError::spawn(format!("sandboxed command could not start: {error}"))
@@ -136,61 +141,104 @@ impl Sandbox {
         Ok(format!("/workspace/{relative}"))
     }
 
-    fn command(&self, command: &str, guest_dir: &str) -> Command {
-        let limits = self.policy.limits();
+    /// Program and arguments for one contained shell command.
+    ///
+    /// The process supervisor and PTY adapter reuse this exact vector, so a
+    /// background or interactive command cannot choose a weaker boundary than
+    /// the foreground executor.
+    pub(crate) fn argv(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+    ) -> Result<super::SandboxArgv, SandboxError> {
+        let guest_dir = self.guest_working_dir(working_dir)?;
+        self.argv_for(command, &guest_dir, true)
+    }
+
+    /// Program and arguments for one interactive PTY command.
+    ///
+    /// The PTY layer already creates the session and controlling terminal, so
+    /// `--new-session` is omitted. Calling `setsid` twice fails, and the PTY is
+    /// a per-session terminal with no host tty to inject into.
+    pub(crate) fn pty_argv(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+    ) -> Result<super::SandboxArgv, SandboxError> {
+        let guest_dir = self.guest_working_dir(working_dir)?;
+        self.argv_for(command, &guest_dir, false)
+    }
+
+    fn argv_for(
+        &self,
+        command: &str,
+        guest_dir: &str,
+        new_session: bool,
+    ) -> Result<super::SandboxArgv, SandboxError> {
         let rules = self.policy.rules();
-        let mut process = Command::new(&self.policy.prlimit);
-        process
-            .arg(format!("--cpu={}", limits.cpu_seconds))
-            .arg(format!("--as={}", limits.memory_bytes))
-            .arg(format!("--nproc={}", limits.max_processes))
-            .arg(format!("--fsize={}", limits.max_file_bytes))
-            .arg(format!("--nofile={}", limits.max_open_files))
-            .arg("--")
-            .arg(&self.policy.bubblewrap)
-            .arg("--unshare-all")
-            .arg("--unshare-user");
+        rules.check_command(command).map_err(SandboxError::policy)?;
+        let limits = self.policy.limits();
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
+        let mut push = |arg: &str| args.push(std::ffi::OsString::from(arg));
+        push(&format!("--cpu={}", limits.cpu_seconds));
+        push(&format!("--as={}", limits.memory_bytes));
+        push(&format!("--nproc={}", limits.max_processes));
+        push(&format!("--fsize={}", limits.max_file_bytes));
+        push(&format!("--nofile={}", limits.max_open_files));
+        push("--");
+        push(&self.policy.bubblewrap.to_string_lossy());
+        push("--unshare-all");
+        push("--unshare-user");
         if rules.network.enabled {
             // `--unshare-all` removes the network namespace; re-share it only
             // for an explicitly network-enabled policy.
-            process.arg("--share-net");
+            push("--share-net");
         }
-        process
-            .arg("--uid")
-            .arg(self.policy.uid.to_string())
-            .arg("--gid")
-            .arg(self.policy.gid.to_string())
-            .arg("--die-with-parent")
-            .arg("--new-session")
-            .arg("--disable-userns")
-            .arg("--cap-drop")
-            .arg("ALL")
-            .arg("--clearenv");
+        push("--uid");
+        push(&self.policy.uid.to_string());
+        push("--gid");
+        push(&self.policy.gid.to_string());
+        push("--die-with-parent");
+        if new_session {
+            push("--new-session");
+        }
+        push("--disable-userns");
+        push("--cap-drop");
+        push("ALL");
+        push("--clearenv");
         for (key, value) in &self.policy.environment {
-            process.arg("--setenv").arg(key).arg(value);
+            push("--setenv");
+            push(key);
+            push(value);
         }
         if rules.network.enabled {
             if let Some(proxy) = &rules.network.proxy {
                 for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
                     if !self.policy.environment.contains_key(key) {
-                        process.arg("--setenv").arg(key).arg(proxy);
+                        push("--setenv");
+                        push(key);
+                        push(proxy);
                     }
                 }
                 if !rules.network.proxy_bypass.is_empty()
                     && !self.policy.environment.contains_key("NO_PROXY")
                 {
-                    process
-                        .arg("--setenv")
-                        .arg("NO_PROXY")
-                        .arg(rules.network.proxy_bypass.join(","));
+                    push("--setenv");
+                    push("NO_PROXY");
+                    push(&rules.network.proxy_bypass.join(","));
                 }
             }
         }
-        process.arg("--proc").arg("/proc");
-        process.arg("--dev").arg("/dev");
-        process.arg("--tmpfs").arg("/tmp");
+        push("--proc");
+        push("/proc");
+        push("--dev");
+        push("/dev");
+        push("--tmpfs");
+        push("/tmp");
         for mount in &self.policy.read_only_mounts {
-            process.arg("--ro-bind").arg(mount).arg(mount);
+            push("--ro-bind");
+            push(&mount.to_string_lossy());
+            push(&mount.to_string_lossy());
         }
         if rules.network.enabled {
             // Resolver metadata is the only host `/etc` content needed for a
@@ -198,7 +246,9 @@ impl Sandbox {
             for path in ["/etc/resolv.conf", "/etc/hosts"] {
                 let path = Path::new(path);
                 if path.exists() {
-                    process.arg("--ro-bind").arg(path).arg(path);
+                    push("--ro-bind");
+                    push(&path.to_string_lossy());
+                    push(&path.to_string_lossy());
                 }
             }
         }
@@ -207,61 +257,55 @@ impl Sandbox {
         // exposes the whole workspace or only the authorized roots.
         match rules.profile {
             SandboxProfile::ReadOnly => {
-                process
-                    .arg("--ro-bind")
-                    .arg(&self.policy.workspace)
-                    .arg("/workspace");
+                push("--ro-bind");
+                push(&self.policy.workspace.to_string_lossy());
+                push("/workspace");
             }
             SandboxProfile::WorkspaceWrite => {
                 let roots = self.writable_roots();
                 if roots.is_empty() {
-                    process
-                        .arg("--bind")
-                        .arg(&self.policy.workspace)
-                        .arg("/workspace");
+                    push("--bind");
+                    push(&self.policy.workspace.to_string_lossy());
+                    push("/workspace");
                 } else {
-                    process
-                        .arg("--ro-bind")
-                        .arg(&self.policy.workspace)
-                        .arg("/workspace");
+                    push("--ro-bind");
+                    push(&self.policy.workspace.to_string_lossy());
+                    push("/workspace");
                     for root in roots {
-                        process.arg("--bind").arg(&root.host).arg(&root.guest);
+                        push("--bind");
+                        push(&root.host.to_string_lossy());
+                        push(&root.guest.to_string_lossy());
                     }
                 }
                 for protected in self.protected_paths() {
-                    process
-                        .arg("--ro-bind")
-                        .arg(&protected.host)
-                        .arg(&protected.guest);
+                    push("--ro-bind");
+                    push(&protected.host.to_string_lossy());
+                    push(&protected.guest.to_string_lossy());
                 }
             }
             SandboxProfile::FullAccess => {
-                process
-                    .arg("--bind")
-                    .arg(&self.policy.workspace)
-                    .arg("/workspace");
+                push("--bind");
+                push(&self.policy.workspace.to_string_lossy());
+                push("/workspace");
             }
         }
-        process
-            .arg("--chdir")
-            .arg(guest_dir)
-            .arg("--")
-            .arg("/bin/sh")
-            .arg("-c")
-            .arg(command)
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
-        process
+        push("--chdir");
+        push(guest_dir);
+        push("--");
+        push("/bin/sh");
+        push("-c");
+        push(command);
+        Ok(super::SandboxArgv {
+            program: self.policy.prlimit.clone(),
+            args,
+        })
     }
 
-    async fn terminate(&self, child: &mut Child, pid: u32) -> Result<(), SandboxError> {
-        // Kill the process group first so cooperative descendants receive the
-        // signal together, then kill the supervisor. `--die-with-parent` and
-        // the PID namespace guarantee the remaining descendants die with it.
+    /// Terminate one process group with the configured `kill` mechanism.
+    ///
+    /// The group signal is the same mechanism the foreground executor uses, so
+    /// a backed-out background process cannot survive its own tool contract.
+    pub(crate) fn kill_group(&self, pid: u32) {
         let _ = std::process::Command::new(&self.policy.kill)
             .arg("-KILL")
             .arg("--")
@@ -271,6 +315,13 @@ impl Sandbox {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+
+    async fn terminate(&self, child: &mut Child, pid: u32) -> Result<(), SandboxError> {
+        // Kill the process group first so cooperative descendants receive the
+        // signal together, then kill the supervisor. `--die-with-parent` and
+        // the PID namespace guarantee the remaining descendants die with it.
+        self.kill_group(pid);
         let _ = child.start_kill();
         match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
             Ok(Ok(_)) => Ok(()),

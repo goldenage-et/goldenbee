@@ -87,7 +87,11 @@ pub(crate) async fn approval_command(
                     Err(error) => return api_error(error),
                 },
             };
-            let decision = ApprovalDecision { decision, digest };
+            let decision = ApprovalDecision {
+                decision,
+                digest,
+                answer: None,
+            };
             match client.decide_approval(&task, &approval, &decision).await {
                 Ok(approval) => {
                     if json_output {
