@@ -460,4 +460,7 @@ pub struct CapabilityInventory {
     /// Package-declared browser capability, when installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserCapabilityInventory>,
+    /// Configured MCP servers and their observable state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<crate::mcp::McpCapabilityInventory>,
 }

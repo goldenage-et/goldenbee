@@ -842,7 +842,9 @@ impl crate::Executor for NativeExecutor {
             if let Some(declared) = self.mcp_declarations.get(&task.agent) {
                 let grants: BTreeSet<String> = revision.grants.iter().cloned().collect();
                 for server in declared {
-                    if revision.mcp.iter().any(|allowed| allowed == server) {
+                    if revision.mcp.iter().any(|allowed| allowed == server)
+                        && registry.known(server).await
+                    {
                         runtime_toolsets.push(registry.view(server, grants.clone()));
                     }
                 }

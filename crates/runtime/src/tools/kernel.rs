@@ -110,6 +110,11 @@ pub struct ToolDescriptor {
     pub network: bool,
     /// Whether a successful or failed call is audited even without a mutation.
     pub audit: bool,
+    /// Whether the call has an external effect with no workspace path.
+    ///
+    /// MCP tool calls use this: the runtime records committed, failed, or
+    /// unknown outcome evidence, but cannot snapshot or diff a remote system.
+    pub external_effect: bool,
     /// Whether the tool can write inside the workspace even when the exact
     /// paths are not known before dispatch.
     pub writes: bool,
@@ -140,6 +145,7 @@ impl std::fmt::Debug for ToolDescriptor {
             .field("builtin", &self.builtin)
             .field("network", &self.network)
             .field("audit", &self.audit)
+            .field("external_effect", &self.external_effect)
             .field("writes", &self.writes)
             .field("tool_owned_approval", &self.tool_owned_approval)
             .field("has_paths", &self.paths.is_some())
@@ -163,6 +169,7 @@ impl ToolDescriptor {
             builtin: false,
             network: false,
             audit: false,
+            external_effect: false,
             writes: false,
             tool_owned_approval: false,
             paths: None,
@@ -221,6 +228,12 @@ impl ToolDescriptor {
     /// Record an audit entry for every call, not only for mutations.
     pub fn audit(mut self) -> Self {
         self.audit = true;
+        self
+    }
+
+    /// Declare an external effect that has no workspace path to snapshot.
+    pub fn external_effect(mut self) -> Self {
+        self.external_effect = true;
         self
     }
 
@@ -1801,6 +1814,28 @@ impl KernelTool {
             .await;
     }
 
+    /// Truthful external-effect evidence for a call with no workspace path.
+    fn external_evidence(&self, observation: &ToolObservation) -> Option<Value> {
+        if !self.descriptor.external_effect {
+            return None;
+        }
+        let outcome = if observation.ok {
+            "committed"
+        } else if observation
+            .error_code
+            .as_deref()
+            .is_some_and(|code| code.contains("outcome_unknown"))
+        {
+            "unknown"
+        } else {
+            "failed"
+        };
+        Some(json!({
+            "kind": "external",
+            "outcome": outcome,
+        }))
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn observe(
         &self,
@@ -1814,6 +1849,10 @@ impl KernelTool {
         let Some(runtime) = self.kernel.inner.runtime.get() else {
             return;
         };
+        let effect_evidence = observation
+            .effect
+            .clone()
+            .or_else(|| self.external_evidence(&observation));
         let payload = json!({
             "tool": self.inner.name(),
             "call_id": ctx.function_call_id(),
@@ -1831,7 +1870,7 @@ impl KernelTool {
             "result_digest": observation.result_digest,
             "post_digest": observation.post_digest,
             "diff": observation.diff,
-            "effect_evidence": observation.effect,
+            "effect_evidence": effect_evidence,
             "arguments_digest": common::canonical_digest(args),
             "permission": observation.permission,
             "sandbox": self.sandbox(effective),
@@ -1890,18 +1929,39 @@ impl KernelTool {
         relative: &[String],
         observation: &ToolObservation,
     ) {
-        if !self.descriptor.effect.is_mutation() {
+        let kind = if self.descriptor.effect.is_mutation() {
+            self.descriptor.effect.as_str()
+        } else if self.descriptor.external_effect {
+            "external"
+        } else {
             return;
-        }
+        };
         let (Some(task), Some(runtime)) = (task, self.kernel.inner.runtime.get()) else {
             return;
+        };
+        let paths = if self.descriptor.effect.is_mutation() {
+            relative
+        } else {
+            &[]
+        };
+        let outcome = if observation.ok {
+            "committed"
+        } else if observation
+            .error_code
+            .as_deref()
+            .is_some_and(|code| code.contains("outcome_unknown"))
+        {
+            "unknown"
+        } else {
+            "failed"
         };
         let payload = json!({
             "tool": self.inner.name(),
             "call_id": ctx.function_call_id(),
             "invocation": ctx.invocation_id(),
-            "kind": self.descriptor.effect.as_str(),
-            "paths": relative,
+            "kind": kind,
+            "outcome": outcome,
+            "paths": paths,
             "ok": observation.ok,
             "error_code": observation.error_code,
             "result_digest": observation.result_digest,
@@ -1912,17 +1972,13 @@ impl KernelTool {
         let _ = runtime
             .append_event(&task.id, "tool.effect", payload, true)
             .await;
-        let outcome = if observation.ok {
-            "committed"
-        } else {
-            "failed"
-        };
         let detail = format!(
-            "tool={} effect={} paths={} digest={}",
+            "tool={} effect={} paths={} digest={} outcome={}",
             self.inner.name(),
-            self.descriptor.effect.as_str(),
-            relative.join(","),
-            observation.post_digest
+            kind,
+            paths.join(","),
+            observation.post_digest,
+            outcome
         );
         let _ = runtime
             .audit_with_trace(

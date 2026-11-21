@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Deterministic stdio MCP server used by Worker integration tests.
 
-It implements only the protocol operations the pinned rmcp client needs:
-initialize, initialized notification, ping, tools/list, and tools/call.
-Every side effect is an explicit file so tests can prove real execution.
+It implements the protocol operations the pinned rmcp client needs:
+initialize, initialized notification, ping, tools/list, tools/call,
+resources/list, resources/templates/list, resources/read, prompts/list, and
+prompts/get. Every side effect is an explicit file so tests can prove real
+execution.
 """
 
 import json
@@ -84,6 +86,85 @@ TOOLS = [
 ]
 
 
+RESOURCE_TEXT = "alpha resource body"
+HUGE_TEXT = "y" * 100000
+BINARY = "AAECAw=="
+
+RESOURCES = [
+    {
+        "uri": "file:///notes/alpha.txt",
+        "name": "alpha",
+        "description": "Small deterministic note.",
+        "mimeType": "text/plain",
+    },
+    {
+        "uri": "file:///notes/huge.txt",
+        "name": "huge",
+        "description": "Resource larger than the configured ceiling.",
+        "mimeType": "text/plain",
+    },
+    {
+        "uri": "file:///notes/binary.bin",
+        "name": "binary",
+        "description": "Binary resource that must never be returned raw.",
+        "mimeType": "application/octet-stream",
+    },
+    {
+        "uri": "file:///notes/hidden.txt",
+        "name": "hidden",
+        "description": "A resource the operator allowlist never exposes.",
+        "mimeType": "text/plain",
+    },
+]
+
+RESOURCE_TEMPLATES = [
+    {
+        "uriTemplate": "file:///notes/{name}.txt",
+        "name": "note-template",
+        "description": "Parameterised note.",
+        "mimeType": "text/plain",
+    }
+]
+
+PROMPTS = [
+    {
+        "name": "summarize",
+        "description": "Summarize one topic.",
+        "arguments": [
+            {"name": "topic", "description": "What to summarize.", "required": True}
+        ],
+    },
+    {
+        "name": "hidden",
+        "description": "A prompt the operator allowlist never exposes.",
+        "arguments": [],
+    },
+]
+
+
+def read_resource(uri):
+    if uri == "file:///notes/alpha.txt":
+        return [{"uri": uri, "mimeType": "text/plain", "text": RESOURCE_TEXT}]
+    if uri == "file:///notes/huge.txt":
+        return [{"uri": uri, "mimeType": "text/plain", "text": HUGE_TEXT}]
+    if uri == "file:///notes/binary.bin":
+        return [{"uri": uri, "mimeType": "application/octet-stream", "blob": BINARY}]
+    return None
+
+
+def get_prompt(name, arguments):
+    if name == "summarize":
+        topic = str((arguments or {}).get("topic", ""))
+        return {
+            "description": "Summarize one topic.",
+            "messages": [
+                {"role": "user", "content": {"type": "text", "text": "Summarize " + topic}},
+                {"role": "assistant", "content": {"type": "text", "text": "ok"}},
+            ],
+        }
+    return None
+
+
 def main():
     write_file(PID_FILE, str(os.getpid()))
     if ENV_FILE:
@@ -116,7 +197,11 @@ def main():
                     "id": request_id,
                     "result": {
                         "protocolVersion": "2025-11-25",
-                        "capabilities": {"tools": {}},
+                        "capabilities": {
+                            "tools": {},
+                            "resources": {},
+                            "prompts": {},
+                        },
                         "serverInfo": {
                             "name": "goldenbee-mcp-fixture",
                             "version": "1.0.0",
@@ -136,6 +221,56 @@ def main():
                     "result": {"tools": TOOLS},
                 }
             )
+        elif method == "resources/list":
+            respond(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"resources": RESOURCES},
+                }
+            )
+        elif method == "resources/templates/list":
+            respond(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"resourceTemplates": RESOURCE_TEMPLATES},
+                }
+            )
+        elif method == "resources/read":
+            uri = params.get("uri", "")
+            contents = read_resource(uri)
+            if contents is None:
+                error(request_id, -32002, "resource not found: " + str(uri))
+            else:
+                respond(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {"contents": contents},
+                    }
+                )
+        elif method == "prompts/list":
+            respond(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"prompts": PROMPTS},
+                }
+            )
+        elif method == "prompts/get":
+            name = params.get("name", "")
+            result = get_prompt(name, params.get("arguments"))
+            if result is None:
+                error(request_id, -32602, "prompt not found: " + str(name))
+            else:
+                respond(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": result,
+                    }
+                )
         elif method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments") or {}

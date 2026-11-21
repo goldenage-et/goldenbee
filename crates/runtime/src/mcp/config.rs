@@ -23,6 +23,12 @@ pub struct McpConfig {
     /// Protected credential references and their required audience/scope.
     #[serde(default)]
     pub credentials: Vec<McpCredentialConfig>,
+    /// Whether a trusted plugin bundle may declare additional MCP servers.
+    ///
+    /// Disabled by default. A plugin never widens the operator's server
+    /// allowlist; the operator must opt in explicitly.
+    #[serde(default)]
+    pub allow_plugin_servers: bool,
 }
 
 /// One MCP connection: local stdio or authorized remote Streamable HTTP.
@@ -55,6 +61,20 @@ pub struct McpServerConfig {
     /// Allowed local tools that additionally require a per-tool profile grant.
     #[serde(default)]
     pub protected_tools: Vec<String>,
+    /// Resource URIs and URI templates this instance may expose. Empty means
+    /// the server's resources are not readable through the runtime surface.
+    #[serde(default)]
+    pub allowed_resources: Vec<String>,
+    /// Allowed resources that additionally require an explicit grant.
+    #[serde(default)]
+    pub protected_resources: Vec<String>,
+    /// Prompt names this instance may expose. Empty means the server's prompts
+    /// are not retrievable through the runtime surface.
+    #[serde(default)]
+    pub allowed_prompts: Vec<String>,
+    /// Allowed prompts that additionally require an explicit grant.
+    #[serde(default)]
+    pub protected_prompts: Vec<String>,
     /// Deadline for local process start and MCP initialization.
     #[serde(default = "default_startup_timeout_ms")]
     pub startup_timeout_ms: u64,
@@ -107,6 +127,10 @@ impl Default for McpServerConfig {
             enabled: true,
             allowed_tools: Vec::new(),
             protected_tools: Vec::new(),
+            allowed_resources: Vec::new(),
+            protected_resources: Vec::new(),
+            allowed_prompts: Vec::new(),
+            protected_prompts: Vec::new(),
             startup_timeout_ms: default_startup_timeout_ms(),
             call_timeout_ms: default_call_timeout_ms(),
             max_output_bytes: default_max_output_bytes(),
@@ -125,9 +149,17 @@ impl Default for McpServerConfig {
 }
 
 impl McpServerConfig {
-    /// Whether this definition selects the remote Streamable HTTP transport.
+    /// Whether this definition selects the remote transport.
     pub fn is_remote(&self) -> bool {
         self.endpoint.is_some()
+    }
+
+    /// Whether this definition selected the legacy SSE compatibility adapter.
+    ///
+    /// ADK 2.3.0 and rmcp 3.11 expose stdio and Streamable HTTP only, so SSE is
+    /// a runtime-owned adapter over the same destination and credential policy.
+    pub fn uses_sse(&self) -> bool {
+        self.transport.eq_ignore_ascii_case("sse")
     }
 
     /// Local executable path, empty when this is a remote definition.
@@ -164,30 +196,40 @@ impl McpServerConfig {
 
     /// Stable identity for reload comparison. Any change restarts the child.
     pub fn signature(&self) -> String {
-        format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
-            self.transport,
-            self.command,
-            self.args,
-            self.env,
-            self.endpoint,
-            self.enabled,
-            self.allowed_tools,
-            self.protected_tools,
+        let mut parts: Vec<String> = vec![
+            self.transport.clone(),
+            format!("{:?}", self.command),
+            format!("{:?}", self.args),
+            format!("{:?}", self.env),
+            format!("{:?}", self.endpoint),
+            self.enabled.to_string(),
+        ];
+        for list in [
+            &self.allowed_tools,
+            &self.protected_tools,
+            &self.allowed_resources,
+            &self.protected_resources,
+            &self.allowed_prompts,
+            &self.protected_prompts,
+            &self.required_scopes,
+            &self.allowed_hosts,
+        ] {
+            parts.push(format!("{list:?}"));
+        }
+        parts.push(format!(
+            "{}|{}|{}|{:?}|{:?}|{:?}|{}|{}|{}",
             self.startup_timeout_ms,
             self.call_timeout_ms,
             self.max_output_bytes,
             self.credential,
             self.audience,
-            self.required_scopes,
             self.grant,
-            self.allowed_hosts,
             self.allow_loopback,
             self.allow_private_network,
             self.allow_insecure_http,
-            self.timeout_ms,
-            self.max_schema_bytes,
-        )
+        ));
+        parts.push(format!("{}|{}", self.timeout_ms, self.max_schema_bytes));
+        parts.join("\u{1f}")
     }
 }
 
@@ -297,6 +339,31 @@ impl McpConfig {
                     ));
                 }
             }
+            if !server.uses_sse()
+                && !matches!(
+                    server.transport.as_str(),
+                    "stdio" | "http" | "streamable-http" | "streamable_http"
+                )
+            {
+                return Err(ApiError::new(
+                    "mcp.transport_unsupported",
+                    format!("MCP server '{id}' transport must be stdio, http, or sse"),
+                ));
+            }
+            validate_surface(
+                id,
+                "resource",
+                &server.allowed_resources,
+                &server.protected_resources,
+                512,
+            )?;
+            validate_surface(
+                id,
+                "prompt",
+                &server.allowed_prompts,
+                &server.protected_prompts,
+                128,
+            )?;
             if server.allowed_hosts.is_empty() {
                 return Err(ApiError::new(
                     "config.invalid",
@@ -384,6 +451,7 @@ impl McpConfig {
                 .map(|(id, server)| (id.clone(), server.clone()))
                 .collect(),
             credentials: self.credentials.clone(),
+            allow_plugin_servers: self.allow_plugin_servers,
         }
     }
 
@@ -393,6 +461,46 @@ impl McpConfig {
             .iter()
             .find(|binding| binding.reference == reference)
     }
+}
+
+/// Validate one resource or prompt allowlist and its protected subset.
+///
+/// The operator owns the ceiling. A profile may narrow it but never add an
+/// entry, because this list is not part of a profile revision.
+pub(crate) fn validate_surface(
+    id: &str,
+    kind: &str,
+    allowed: &[String],
+    protected: &[String],
+    maximum: usize,
+) -> Result<(), ApiError> {
+    let mut seen = BTreeSet::new();
+    for value in allowed {
+        let valid = !value.trim().is_empty()
+            && value.len() <= maximum
+            && !value.chars().any(char::is_control);
+        if !valid {
+            return Err(ApiError::new(
+                "config.invalid",
+                format!("MCP server '{id}' has an invalid allowed {kind} name"),
+            ));
+        }
+        if !seen.insert(value) {
+            return Err(ApiError::new(
+                "config.invalid",
+                format!("MCP server '{id}' declares {kind} '{value}' more than once"),
+            ));
+        }
+    }
+    for value in protected {
+        if !seen.contains(value) {
+            return Err(ApiError::new(
+                "config.invalid",
+                format!("MCP server '{id}' protects {kind} '{value}' but does not allow it"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_reference(reference: &str) -> Result<(), ApiError> {

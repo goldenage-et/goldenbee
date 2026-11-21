@@ -474,7 +474,7 @@ async fn native_runner_calls_remote_tool_and_records_evidence() {
             &fixture.admin,
             request(
                 "general",
-                "mcp:write_record {\"value\":\"one\"}",
+                "mcp:mcp__tools__write_record {\"value\":\"one\"}",
                 "mcp-success",
             ),
         )
@@ -490,7 +490,8 @@ async fn native_runner_calls_remote_tool_and_records_evidence() {
         .iter()
         .find(|event| event.kind == "tool.call")
         .expect("native tool.call evidence");
-    assert_eq!(call.payload["name"], "write_record");
+    assert_eq!(call.payload["name"], "mcp__tools__write_record");
+    assert_eq!(call.payload["server"], "tools");
     let result = events
         .iter()
         .find(|event| event.kind == "tool.result")
@@ -526,7 +527,11 @@ async fn loaded_and_manual_agents_share_the_same_remote_context() {
             .runtime
             .submit_task(
                 &fixture.admin,
-                request(agent, "mcp:write_record {\"value\":\"shared\"}", key),
+                request(
+                    agent,
+                    "mcp:mcp__tools__write_record {\"value\":\"shared\"}",
+                    key,
+                ),
             )
             .await
             .expect("task admitted");
@@ -562,7 +567,11 @@ async fn unauthorized_destination_is_denied_before_any_request() {
         .runtime
         .submit_task(
             &fixture.admin,
-            request("general", "mcp:write_record {}", "endpoint-denied"),
+            request(
+                "general",
+                "mcp:mcp__tools__write_record {}",
+                "endpoint-denied",
+            ),
         )
         .await
         .expect("task admitted");
@@ -596,7 +605,7 @@ async fn advertised_tools_cannot_exceed_the_installed_ceiling() {
         .runtime
         .submit_task(
             &fixture.admin,
-            request("general", "mcp:delete_record {}", "tool-denied"),
+            request("general", "mcp:mcp__tools__delete_record {}", "tool-denied"),
         )
         .await
         .expect("task admitted");
@@ -633,7 +642,7 @@ async fn expired_and_revoked_credentials_block_new_calls() {
         .runtime
         .submit_task(
             &expired.admin,
-            request("general", "mcp:write_record {}", "expired"),
+            request("general", "mcp:mcp__tools__write_record {}", "expired"),
         )
         .await
         .expect("task admitted");
@@ -664,7 +673,7 @@ async fn expired_and_revoked_credentials_block_new_calls() {
             &live.admin,
             request(
                 "general",
-                "mcp:write_record {\"value\":\"first\"}",
+                "mcp:mcp__tools__write_record {\"value\":\"first\"}",
                 "revoke-first",
             ),
         )
@@ -684,7 +693,7 @@ async fn expired_and_revoked_credentials_block_new_calls() {
             &live.admin,
             request(
                 "general",
-                "mcp:write_record {\"value\":\"second\"}",
+                "mcp:mcp__tools__write_record {\"value\":\"second\"}",
                 "revoke-second",
             ),
         )
@@ -725,7 +734,7 @@ async fn hostile_redirect_is_not_followed() {
         .runtime
         .submit_task(
             &fixture.admin,
-            request("general", "mcp:write_record {}", "redirect"),
+            request("general", "mcp:mcp__tools__write_record {}", "redirect"),
         )
         .await
         .expect("task admitted");
@@ -767,7 +776,7 @@ async fn interrupted_write_is_unknown_and_not_replayed() {
             &fixture.admin,
             request(
                 "general",
-                "mcp:write_record {\"value\":\"once\"}",
+                "mcp:mcp__tools__write_record {\"value\":\"once\"}",
                 "interrupted",
             ),
         )

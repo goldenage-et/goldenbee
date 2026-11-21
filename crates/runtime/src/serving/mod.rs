@@ -18,6 +18,7 @@ mod diagnostics;
 mod error;
 mod health;
 mod lifecycle;
+mod mcp;
 mod peers;
 mod plans;
 mod profiles;
@@ -54,6 +55,10 @@ pub struct WorkerState {
     pub default_agent: Option<String>,
     /// Trusted plugin bundles active for this revision.
     pub plugins: Vec<crate::plugins::PluginView>,
+    /// Instance-owned local MCP connection registry.
+    pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
+    /// Instance-owned remote MCP connection registry.
+    pub remote_mcp: Option<Arc<crate::mcp::RemoteMcpRegistry>>,
 }
 
 impl WorkerState {
@@ -67,6 +72,8 @@ impl WorkerState {
             commands: None,
             default_agent: None,
             plugins: Vec::new(),
+            mcp: None,
+            remote_mcp: None,
         }
     }
 
@@ -99,6 +106,17 @@ impl WorkerState {
         self.plugins = plugins;
         self
     }
+
+    /// Attach the instance-owned MCP connection registries.
+    pub fn with_mcp(
+        mut self,
+        local: Option<Arc<crate::mcp::McpRegistry>>,
+        remote: Option<Arc<crate::mcp::RemoteMcpRegistry>>,
+    ) -> Self {
+        self.mcp = local;
+        self.remote_mcp = remote;
+        self
+    }
 }
 
 /// Harness management routes. Merge these with the native ADK router, then
@@ -110,6 +128,18 @@ pub fn api_router(state: WorkerState) -> Router {
         .route("/v1/diagnostics", get(diagnostics::diagnostics))
         .route("/v1/capabilities", get(health::capabilities))
         .route("/v1/commands", get(commands::list))
+        .route("/v1/mcp/servers", get(mcp::servers))
+        .route("/v1/mcp/servers/{server}/restart", post(mcp::restart))
+        .route("/v1/mcp/servers/{server}/resources", get(mcp::resources))
+        .route(
+            "/v1/mcp/servers/{server}/resources/read",
+            post(mcp::read_resource),
+        )
+        .route("/v1/mcp/servers/{server}/prompts", get(mcp::prompts))
+        .route(
+            "/v1/mcp/servers/{server}/prompts/{prompt}",
+            post(mcp::prompt),
+        )
         .route(
             "/v1/commands/{name}",
             get(commands::get).post(commands::invoke),

@@ -21,6 +21,7 @@ pub mod health;
 pub mod host;
 pub mod identity;
 pub mod limits;
+pub mod mcp;
 pub mod memory;
 pub mod package;
 pub mod plan;
@@ -79,6 +80,11 @@ pub use host::{
 };
 pub use identity::{scopes, Principal};
 pub use limits::{Capacity, Limits, Usage};
+pub use mcp::{
+    McpCapabilityInventory, McpFailureView, McpPromptArgument, McpPromptContent,
+    McpPromptDescriptor, McpPromptMessage, McpPromptRequest, McpResourceContent,
+    McpResourceDescriptor, McpResourceReadRequest, McpServerInventory,
+};
 pub use memory::{KnowledgeFact, MemoryItem};
 pub use package::{
     protocol_in_range, BuildEvidence, Instance, PackageManifest, Release, ReleaseMetadata,
