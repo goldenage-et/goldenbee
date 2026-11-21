@@ -9,8 +9,11 @@ export interface SessionTabsProps {
   groups: SessionGroup[]
   activeGroupId: string
   backgroundChatIds: string[]
+  inspectorOpen: boolean
   onSelectGroup(id: string): void
   onNewSession(): void
+  onSplit(): void
+  onToggleInspector(): void
   onRequestNewGroup(): void
   onRequestRename(group: SessionGroup): void
   onRequestClose(group: SessionGroup): void
@@ -20,8 +23,11 @@ export function SessionTabs({
   groups,
   activeGroupId,
   backgroundChatIds,
+  inspectorOpen,
   onSelectGroup,
   onNewSession,
+  onSplit,
+  onToggleInspector,
   onRequestNewGroup,
   onRequestRename,
   onRequestClose,
@@ -117,6 +123,27 @@ export function SessionTabs({
           >
             <PlusIcon aria-hidden="true" />
             New
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            aria-label="Split focused session"
+            onClick={onSplit}
+          >
+            Split
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            aria-label={
+              inspectorOpen ? "Close session inspector" : "Open session inspector"
+            }
+            aria-pressed={inspectorOpen}
+            onClick={onToggleInspector}
+          >
+            Inspector
           </Button>
           <Button
             type="button"

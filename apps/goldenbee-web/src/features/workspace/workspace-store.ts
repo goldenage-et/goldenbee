@@ -10,8 +10,12 @@ import { createStore, type StoreApi } from "zustand/vanilla"
  */
 
 export const workspaceStorageKey = "goldenbee.workspace.v1"
-const STORAGE_VERSION = 1
+const STORAGE_VERSION = 2
+const LEGACY_STORAGE_VERSION = 1
 const MAX_GROUP_NAME_LENGTH = 60
+
+/** The workspace never renders more than four concurrent chat panels. */
+export const MAX_VISIBLE_CHATS = 4
 
 export interface SessionGroup {
   id: string
@@ -22,6 +26,7 @@ export interface SessionGroup {
 export interface WorkspaceState {
   groups: SessionGroup[]
   activeGroupId: string
+  /** Focused local chat; it drives the inspector only, never execution. */
   activeChatId: string | null
   backgroundChatIds: string[]
   createGroup(name?: string): string
@@ -29,10 +34,28 @@ export interface WorkspaceState {
   closeGroup(groupId: string): void
   selectGroup(groupId: string): void
   /** Add a local chat to the active group, or focus it if it already exists. */
-  addChat(chatId: string): void
-  selectChat(chatId: string): void
-  backgroundChat(chatId: string): void
-  restoreChat(chatId: string): void
+  addChat(chatId: string): boolean
+  /** Focus a chat for the inspector; restores it first when it is backgrounded. */
+  selectChat(chatId: string): boolean
+  /** Explicit name for the inspector-focus action. */
+  focusChat(chatId: string): boolean
+  /** Add a new local chat panel to the active group and focus it. */
+  split(): string | null
+  /** Hide every other visible chat in this chat's group and focus this one. */
+  solo(chatId: string): boolean
+  backgroundChat(chatId: string): boolean
+  restoreChat(chatId: string): boolean
+}
+
+/** Visible chats in display order. A chat is visible when it is not backgrounded. */
+export function visibleChats(
+  group: SessionGroup | undefined,
+  backgroundChatIds: string[],
+): string[] {
+  if (!group) {
+    return []
+  }
+  return group.chatIds.filter((chatId) => !backgroundChatIds.includes(chatId))
 }
 
 export interface WorkspaceDeps {
@@ -131,7 +154,10 @@ function sanitize(
     }
   }
 
-  if (!isRecord(raw) || raw.version !== STORAGE_VERSION) {
+  if (
+    !isRecord(raw) ||
+    (raw.version !== STORAGE_VERSION && raw.version !== LEGACY_STORAGE_VERSION)
+  ) {
     return createDefault()
   }
   if (!Array.isArray(raw.groups) || raw.groups.length === 0) {
@@ -179,12 +205,42 @@ function sanitize(
       ? raw.activeGroupId
       : groups[0]!.id
   const activeGroup = groups.find((group) => group.id === activeGroupId)
-  const activeChatId =
+  let activeChatId =
     typeof raw.activeChatId === "string" &&
     activeGroup?.chatIds.includes(raw.activeChatId) &&
     !backgroundChatIds.includes(raw.activeChatId)
       ? raw.activeChatId
       : firstVisibleChat(activeGroup, backgroundChatIds)
+
+  // Ticket 13 had one visible chat per group. A legacy record may carry more
+  // chats without background markers; keep the focused chat and up to three
+  // others visible, then mark the rest as background instead of dropping them.
+  for (const group of groups) {
+    const visible = group.chatIds.filter(
+      (chatId) => !backgroundChatIds.includes(chatId),
+    )
+    if (visible.length <= MAX_VISIBLE_CHATS) {
+      continue
+    }
+    const keep = new Set(visible.slice(0, MAX_VISIBLE_CHATS))
+    if (
+      group.id === activeGroupId &&
+      activeChatId !== null &&
+      visible.includes(activeChatId) &&
+      !keep.has(activeChatId)
+    ) {
+      keep.delete(visible[MAX_VISIBLE_CHATS - 1]!)
+      keep.add(activeChatId)
+    }
+    for (const chatId of visible) {
+      if (!keep.has(chatId)) {
+        backgroundChatIds.push(chatId)
+      }
+    }
+  }
+  if (activeChatId !== null && backgroundChatIds.includes(activeChatId)) {
+    activeChatId = firstVisibleChat(activeGroup, backgroundChatIds)
+  }
 
   return {
     version: STORAGE_VERSION,
@@ -325,19 +381,12 @@ export function createWorkspaceStore(deps: WorkspaceDeps): WorkspaceStore {
 
     addChat(chatId) {
       if (!chatId) {
-        return
+        return false
       }
       const state = get()
       const owner = state.groups.find((group) => group.chatIds.includes(chatId))
       if (owner) {
-        set({
-          activeGroupId: owner.id,
-          activeChatId: chatId,
-          backgroundChatIds: state.backgroundChatIds.filter(
-            (candidate) => candidate !== chatId,
-          ),
-        })
-        return
+        return get().focusChat(chatId)
       }
       const active =
         state.groups.find((group) => group.id === state.activeGroupId) ??
@@ -352,7 +401,12 @@ export function createWorkspaceStore(deps: WorkspaceDeps): WorkspaceStore {
             (candidate) => candidate !== chatId,
           ),
         })
-        return
+        return true
+      }
+      if (
+        visibleChats(active, state.backgroundChatIds).length >= MAX_VISIBLE_CHATS
+      ) {
+        return false
       }
       set({
         groups: state.groups.map((group) =>
@@ -366,29 +420,88 @@ export function createWorkspaceStore(deps: WorkspaceDeps): WorkspaceStore {
           (candidate) => candidate !== chatId,
         ),
       })
+      return true
     },
 
-    selectChat(chatId) {
+    focusChat(chatId) {
       const state = get()
       const owner = state.groups.find((group) => group.chatIds.includes(chatId))
       if (!owner) {
-        get().addChat(chatId)
-        return
+        return get().addChat(chatId)
+      }
+      if (state.backgroundChatIds.includes(chatId)) {
+        return get().restoreChat(chatId)
       }
       set({
         activeGroupId: owner.id,
+        activeChatId: chatId,
+      })
+      return true
+    },
+
+    selectChat(chatId) {
+      return get().focusChat(chatId)
+    },
+
+    split() {
+      const state = get()
+      const active =
+        state.groups.find((group) => group.id === state.activeGroupId) ??
+        state.groups[0]
+      if (!active) {
+        return null
+      }
+      if (
+        visibleChats(active, state.backgroundChatIds).length >= MAX_VISIBLE_CHATS
+      ) {
+        return null
+      }
+      const chatId = createId("chat")
+      set({
+        groups: state.groups.map((group) =>
+          group.id === active.id
+            ? { ...group, chatIds: [...group.chatIds, chatId] }
+            : group,
+        ),
+        activeGroupId: active.id,
         activeChatId: chatId,
         backgroundChatIds: state.backgroundChatIds.filter(
           (candidate) => candidate !== chatId,
         ),
       })
+      return chatId
+    },
+
+    solo(chatId) {
+      const state = get()
+      const owner = state.groups.find((group) => group.chatIds.includes(chatId))
+      if (!owner) {
+        return false
+      }
+      const backgroundChatIds = [...state.backgroundChatIds]
+      for (const candidate of owner.chatIds) {
+        if (
+          candidate !== chatId &&
+          !backgroundChatIds.includes(candidate)
+        ) {
+          backgroundChatIds.push(candidate)
+        }
+      }
+      set({
+        activeGroupId: owner.id,
+        activeChatId: chatId,
+        backgroundChatIds: state.backgroundChatIds.includes(chatId)
+          ? backgroundChatIds.filter((candidate) => candidate !== chatId)
+          : backgroundChatIds,
+      })
+      return true
     },
 
     backgroundChat(chatId) {
       const state = get()
       const owner = state.groups.find((group) => group.chatIds.includes(chatId))
       if (!owner) {
-        return
+        return false
       }
       const backgroundChatIds = state.backgroundChatIds.includes(chatId)
         ? state.backgroundChatIds
@@ -398,6 +511,7 @@ export function createWorkspaceStore(deps: WorkspaceDeps): WorkspaceStore {
           ? firstVisibleChat(owner, backgroundChatIds)
           : state.activeChatId
       set({ backgroundChatIds, activeChatId })
+      return true
     },
 
     restoreChat(chatId) {
@@ -407,12 +521,22 @@ export function createWorkspaceStore(deps: WorkspaceDeps): WorkspaceStore {
         (candidate) => candidate !== chatId,
       )
       if (owner) {
+        if (!state.backgroundChatIds.includes(chatId)) {
+          set({ activeGroupId: owner.id, activeChatId: chatId })
+          return true
+        }
+        if (
+          visibleChats(owner, state.backgroundChatIds).length >=
+          MAX_VISIBLE_CHATS
+        ) {
+          return false
+        }
         set({
           activeGroupId: owner.id,
           activeChatId: chatId,
           backgroundChatIds,
         })
-        return
+        return true
       }
       // A chat from a closed group has no group left; restore it into the
       // active group without creating a second local chat record.
@@ -420,8 +544,12 @@ export function createWorkspaceStore(deps: WorkspaceDeps): WorkspaceStore {
         state.groups.find((group) => group.id === state.activeGroupId) ??
         state.groups[0]
       if (!active) {
-        get().addChat(chatId)
-        return
+        return get().addChat(chatId)
+      }
+      if (
+        visibleChats(active, state.backgroundChatIds).length >= MAX_VISIBLE_CHATS
+      ) {
+        return false
       }
       set({
         groups: state.groups.map((group) =>
@@ -433,9 +561,13 @@ export function createWorkspaceStore(deps: WorkspaceDeps): WorkspaceStore {
         activeChatId: chatId,
         backgroundChatIds,
       })
+      return true
     },
   }))
 
+  // Rewrite the normalized layout immediately so a migrated ticket 13 record
+  // is stored in the current schema even before the first user action.
+  persist(storage, key, store.getState())
   store.subscribe((state) => persist(storage, key, state))
   return store
 }

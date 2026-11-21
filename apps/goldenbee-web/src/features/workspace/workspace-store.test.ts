@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  MAX_VISIBLE_CHATS,
   createWorkspaceStore,
+  visibleChats,
   workspaceStorageKey,
   type WorkspaceStore,
 } from "./workspace-store"
@@ -115,7 +117,7 @@ describe("workspace session layout", () => {
     expect(raw).not.toContain("token")
     expect(raw).not.toContain("Authorization")
     expect(JSON.parse(raw)).toMatchObject({
-      version: 1,
+      version: 2,
       activeChatId: "chat-a",
     })
 
@@ -135,6 +137,136 @@ describe("workspace session layout", () => {
       createId: () => "group-once",
     })
     expect(restored.getState().groups[0]?.id).toBe("group-once")
+  })
+
+  it("shows several chats at once and tracks one focused chat", () => {
+    const store = storeWithIds(memoryStorage())
+    store.getState().addChat("chat-a")
+    store.getState().addChat("chat-b")
+    store.getState().addChat("chat-c")
+
+    expect(store.getState().backgroundChatIds).toEqual([])
+    expect(
+      visibleChats(
+        store.getState().groups[0],
+        store.getState().backgroundChatIds,
+      ),
+    ).toEqual(["chat-a", "chat-b", "chat-c"])
+
+    expect(store.getState().focusChat("chat-b")).toBe(true)
+    expect(store.getState().activeChatId).toBe("chat-b")
+    expect(store.getState().backgroundChatIds).toEqual([])
+  })
+
+  it("splits into a new focused chat and refuses a fifth visible panel", () => {
+    const store = storeWithIds(memoryStorage())
+    const first = store.getState().split()
+    expect(first).toMatch(/^chat-/)
+    expect(store.getState().activeChatId).toBe(first)
+
+    for (let index = 0; index < MAX_VISIBLE_CHATS - 1; index += 1) {
+      expect(store.getState().split()).not.toBeNull()
+    }
+    expect(
+      visibleChats(
+        store.getState().groups[0],
+        store.getState().backgroundChatIds,
+      ),
+    ).toHaveLength(MAX_VISIBLE_CHATS)
+
+    expect(store.getState().split()).toBeNull()
+    expect(store.getState().addChat("chat-overflow")).toBe(false)
+    expect(
+      visibleChats(
+        store.getState().groups[0],
+        store.getState().backgroundChatIds,
+      ),
+    ).toHaveLength(MAX_VISIBLE_CHATS)
+  })
+
+  it("solos one chat by backgrounding the other visible panels", () => {
+    const store = storeWithIds(memoryStorage())
+    store.getState().addChat("chat-a")
+    store.getState().addChat("chat-b")
+    store.getState().addChat("chat-c")
+
+    expect(store.getState().solo("chat-b")).toBe(true)
+
+    expect(store.getState().activeChatId).toBe("chat-b")
+    expect(store.getState().backgroundChatIds).toEqual(["chat-a", "chat-c"])
+    expect(
+      visibleChats(
+        store.getState().groups[0],
+        store.getState().backgroundChatIds,
+      ),
+    ).toEqual(["chat-b"])
+    // The chats stay in the group; only their panels are hidden.
+    expect(store.getState().groups[0]?.chatIds).toEqual([
+      "chat-a",
+      "chat-b",
+      "chat-c",
+    ])
+  })
+
+  it("restores a background chat without exceeding the visible limit", () => {
+    const store = storeWithIds(memoryStorage())
+    for (const chatId of ["chat-a", "chat-b", "chat-c", "chat-d", "chat-e"]) {
+      store.getState().addChat(chatId)
+    }
+    expect(store.getState().addChat("chat-e")).toBe(false)
+
+    const storeWithFour = storeWithIds(memoryStorage())
+    storeWithFour.getState().addChat("chat-a")
+    storeWithFour.getState().addChat("chat-b")
+    storeWithFour.getState().addChat("chat-c")
+    storeWithFour.getState().addChat("chat-d")
+    storeWithFour.getState().backgroundChat("chat-d")
+    storeWithFour.getState().addChat("chat-e")
+
+    expect(storeWithFour.getState().restoreChat("chat-d")).toBe(false)
+    expect(storeWithFour.getState().backgroundChatIds).toEqual(["chat-d"])
+
+    storeWithFour.getState().backgroundChat("chat-e")
+    expect(storeWithFour.getState().restoreChat("chat-d")).toBe(true)
+    expect(storeWithFour.getState().activeChatId).toBe("chat-d")
+  })
+
+  it("migrates a ticket 13 record and caps visible panels at four", () => {
+    const storage = memoryStorage()
+    storage.setItem(
+      workspaceStorageKey,
+      JSON.stringify({
+        version: 1,
+        groups: [
+          {
+            id: "g1",
+            name: "One",
+            chatIds: ["chat-a", "chat-b", "chat-c", "chat-d", "chat-e"],
+          },
+        ],
+        activeGroupId: "g1",
+        activeChatId: "chat-e",
+        backgroundChatIds: [],
+      }),
+    )
+    const store = createWorkspaceStore({
+      storage,
+      createId: () => "group-new",
+    })
+
+    expect(
+      visibleChats(
+        store.getState().groups[0],
+        store.getState().backgroundChatIds,
+      ),
+    ).toHaveLength(MAX_VISIBLE_CHATS)
+    // The chat that was visible before the upgrade keeps its focus.
+    expect(store.getState().backgroundChatIds).toEqual(["chat-d"])
+    expect(store.getState().activeChatId).toBe("chat-e")
+
+    const persisted = JSON.parse(storage.getItem(workspaceStorageKey) ?? "{}")
+    expect(persisted.version).toBe(2)
+    expect(persisted.groups[0].chatIds).toHaveLength(5)
   })
 
   it("drops duplicate chats and a dangling active chat from stored state", () => {
