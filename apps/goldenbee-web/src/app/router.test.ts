@@ -36,4 +36,39 @@ describe("app hash routes", () => {
       parseRoute(routeHref({ name: "instance", instance: "general b" })),
     ).toEqual({ name: "instance", instance: "general b" })
   })
+
+  it("round-trips team routes", () => {
+    expect(parseRoute("#/teams")).toEqual({ name: "teams" })
+    expect(routeHref({ name: "teams" })).toBe("#/teams")
+    expect(parseRoute("#/teams/research")).toEqual({
+      name: "team",
+      team: "research",
+    })
+    expect(parseRoute(routeHref({ name: "team", team: "team alpha" }))).toEqual({
+      name: "team",
+      team: "team alpha",
+    })
+  })
+
+  it("round-trips Worker-scoped profile routes", () => {
+    expect(parseRoute("#/profiles")).toEqual({ name: "profiles" })
+    expect(routeHref({ name: "profiles" })).toBe("#/profiles")
+    expect(parseRoute("#/profiles/general-a")).toEqual({
+      name: "profiles",
+      worker: "general-a",
+    })
+    expect(
+      parseRoute(routeHref({ name: "profiles", worker: "general a" })),
+    ).toEqual({ name: "profiles", worker: "general a" })
+    expect(parseRoute("#/profiles/general-a/research")).toEqual({
+      name: "profile",
+      worker: "general-a",
+      profile: "research",
+    })
+    expect(
+      parseRoute(
+        routeHref({ name: "profile", worker: "general a", profile: "deep/dive" }),
+      ),
+    ).toEqual({ name: "profile", worker: "general a", profile: "deep/dive" })
+  })
 })

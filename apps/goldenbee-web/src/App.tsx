@@ -24,6 +24,18 @@ import {
 } from "@/features/providers/provider-gateway"
 import { ProvidersScreen } from "@/features/providers/providers-screen"
 import {
+  createProfileGatewayClient,
+  type ProfileClientFactory,
+} from "@/features/runtime-profiles/profile-gateway"
+import { ProfileDetailPage } from "@/features/runtime-profiles/profile-detail-page"
+import { ProfilesPage } from "@/features/runtime-profiles/profiles-page"
+import { TeamDetailPage } from "@/features/teams/team-detail-page"
+import {
+  createTeamGatewayClient,
+  type TeamClientFactory,
+} from "@/features/teams/team-gateway"
+import { TeamsPage } from "@/features/teams/teams-page"
+import {
   clientSettingsStore,
   type ClientSettingsStore,
 } from "@/features/workspace/client-settings"
@@ -44,6 +56,10 @@ export interface AppProps {
   history?: ChatHistoryStore | null
   /** Test seam; production uses the browser Gateway client. */
   createProviderClient?: ProviderClientFactory
+  /** Test seam for team administration. */
+  createTeamClient?: TeamClientFactory
+  /** Test seam for Worker-owned Runtime Profile administration. */
+  createProfileClient?: ProfileClientFactory
   /** Local session layout; one record set per browser profile. */
   workspace?: WorkspaceStore
   /** Local presentation preferences. */
@@ -58,6 +74,8 @@ export function App({
   store = connectionStore,
   history = defaultChatHistory,
   createProviderClient,
+  createTeamClient,
+  createProfileClient,
   workspace = workspaceStore,
   preferences = clientSettingsStore,
   profiles = gatewayProfilesStore,
@@ -65,9 +83,16 @@ export function App({
   const connected = useConnection((state) => state.status === "connected", store)
   const gatewayUrl = useConnection((state) => state.gatewayUrl, store)
   const token = useConnection((state) => state.token, store)
+  const workers = useConnection((state) => state.workers, store)
   const route = useAppRoute()
   const [factory] = useState<ProviderClientFactory>(
     () => createProviderClient ?? createProviderGatewayClient,
+  )
+  const [teamFactory] = useState<TeamClientFactory>(
+    () => createTeamClient ?? createTeamGatewayClient,
+  )
+  const [profileFactory] = useState<ProfileClientFactory>(
+    () => createProfileClient ?? createProfileGatewayClient,
   )
 
   const controller = useWorkspaceController({
@@ -94,6 +119,16 @@ export function App({
     [connected, gatewayUrl, token],
   )
 
+  const teamClient = useMemo(
+    () => (connected ? teamFactory({ baseUrl: gatewayUrl, token }) : null),
+    [connected, teamFactory, gatewayUrl, token],
+  )
+
+  const profileClient = useMemo(
+    () => (connected ? profileFactory({ baseUrl: gatewayUrl, token }) : null),
+    [connected, profileFactory, gatewayUrl, token],
+  )
+
   function connectedContent() {
     switch (route.name) {
       case "chat":
@@ -107,6 +142,29 @@ export function App({
       case "instance":
         return hostClient ? (
           <InstanceDetailPage client={hostClient} instance={route.instance} />
+        ) : null
+      case "teams":
+        return teamClient ? <TeamsPage client={teamClient} /> : null
+      case "team":
+        return teamClient ? (
+          <TeamDetailPage client={teamClient} name={route.team} />
+        ) : null
+      case "profiles":
+        return profileClient ? (
+          <ProfilesPage
+            key={route.worker ?? "default"}
+            client={profileClient}
+            workers={workers}
+            worker={route.worker}
+          />
+        ) : null
+      case "profile":
+        return profileClient ? (
+          <ProfileDetailPage
+            client={profileClient}
+            worker={route.worker}
+            name={route.profile}
+          />
         ) : null
       case "providers":
         return providerClient ? <ProvidersScreen client={providerClient} /> : null

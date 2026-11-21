@@ -317,6 +317,8 @@ export function CommandCenterShell({
     const navigation: Array<[string, string, AppRoute]> = [
       ["overview", "Open Gateway overview", { name: "overview" }],
       ["attention", "Open attention queue", { name: "attention" }],
+      ["teams", "Open teams", { name: "teams" }],
+      ["profiles", "Open Runtime Profiles", { name: "profiles" }],
       ["packages", "Open packages", { name: "packages" }],
       ["instances", "Open instances", { name: "instances" }],
       ["providers", "Open providers", { name: "providers" }],
