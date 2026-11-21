@@ -14,6 +14,7 @@ pub(crate) mod parse;
 use crate::agents::definition::AgentSpec;
 use crate::agents::skills::SkillDisclosure;
 use crate::agents::{AgentDescriptor, SkillAsset};
+use crate::context::ContextBundle;
 use crate::data::memory::NativeMemory;
 use crate::execution::plugins::AgentCallbacks;
 use crate::execution::providers::ProviderRegistry;
@@ -129,6 +130,7 @@ pub(crate) struct CommandInput<'a> {
     pub declared_models: &'a BTreeSet<String>,
     pub required_permissions: &'a [String],
     pub disclosure: &'a SkillDisclosure,
+    pub context: &'a ContextBundle,
 }
 
 /// Loaded commands and the prebuilt narrowed agents they route to.
@@ -198,6 +200,7 @@ pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
             skills: input.skills,
             skill_disclosure: input.disclosure,
             kernel: input.kernel,
+            context: input.context,
             callbacks: input.callbacks,
             memory: input.memory,
         };

@@ -1,5 +1,6 @@
 //! Operator TOML configuration and resolved Worker settings.
 
+use crate::context::ContextConfig;
 use crate::mcp::{McpConfig, McpServerConfig};
 use crate::worker::assets::Assets;
 use crate::worker::WorkerResult;
@@ -83,6 +84,7 @@ impl WorkerSettings {
             }
         }
         validate_models(&file)?;
+        file.context.validate()?;
         validate_mcp(&file.mcp)?;
         file.mcp.validate()?;
         file.permissions.validate().map_err(|message| {
@@ -356,6 +358,9 @@ pub struct FileConfig {
     /// Generic file/search tool workspace and runtime limits.
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// Configured memory-file assembly. The runtime hardcodes no filename.
+    #[serde(default)]
+    pub context: ContextConfig,
     /// Skill disclosure and bounded skill output.
     #[serde(default)]
     pub skills: SkillsConfig,

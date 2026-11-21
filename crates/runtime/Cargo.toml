@@ -55,6 +55,8 @@ serde_json.workspace = true
 # Checkpoint diff preview. One reviewed diff implementation; the runtime owns
 # bounded typed hunks, never a hand-written patch parser.
 similar = "2.7"
+# Configured memory-file discovery (paths and globs) for context assembly.
+glob = "0.3"
 toml = "0.8"
 sha2.workspace = true
 hmac.workspace = true

@@ -10,7 +10,10 @@ use crate::serving::WorkerState;
 use axum::extract::{Path, State};
 use axum::response::Json;
 use axum::Extension;
-use common::{Principal, SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionView};
+use common::{
+    Principal, SessionCompaction, SessionForkRequest, SessionRenameRequest, SessionTranscript,
+    SessionView,
+};
 
 pub(super) async fn list(
     State(state): State<WorkerState>,
@@ -73,6 +76,20 @@ pub(super) async fn rename(
     state
         .runtime
         .rename_session(&principal, &session, &request)
+        .await
+        .map(Json)
+        .map_err(failure)
+}
+
+/// Schedule native compaction for the next model turn.
+pub(super) async fn compact(
+    State(state): State<WorkerState>,
+    Extension(principal): Extension<Principal>,
+    Path(session): Path<String>,
+) -> JsonResult<SessionCompaction> {
+    state
+        .runtime
+        .request_session_compaction(&principal, &session)
         .await
         .map(Json)
         .map_err(failure)

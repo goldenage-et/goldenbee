@@ -3,6 +3,7 @@
 use crate::agents::definition::AgentSpec;
 use crate::agents::graph::GraphRuntime;
 use crate::agents::{AgentDefinition, AgentDescriptor, AgentOrigin, SkillAsset};
+use crate::context::ContextBundle;
 use crate::data::graph::NativeKnowledgeGraph;
 use crate::data::knowledge_tools::{ObserveKnowledgeTool, RecallKnowledgeTool};
 use crate::data::memory::{NativeMemory, RememberMemoryTool};
@@ -30,6 +31,8 @@ pub(super) struct Assets {
     pub(super) specs: BTreeMap<String, AgentSpec>,
     pub(super) agent_providers: BTreeMap<String, String>,
     pub(super) agent_requirements: BTreeMap<String, AgentRequirement>,
+    /// Configured memory files for this immutable asset revision.
+    pub(super) context: ContextBundle,
     /// Discoverable commands and their prepared inventory.
     pub(super) commands: Arc<crate::commands::CommandRegistry>,
     /// Prebuilt narrowed agents for Worker-defined commands.
@@ -153,6 +156,7 @@ impl Assets {
             );
         }
         let prompts = load_prompts(settings.prompts_dir.as_deref())?;
+        let context = ContextBundle::load(&settings.file.context, &settings.config_dir)?;
         let skills = load_skills(settings.skills_dir.as_deref())?;
         let definitions = load_definitions(settings.agents_dir.as_deref())?;
         let ManualResolution {
@@ -192,6 +196,7 @@ impl Assets {
                 skills: &skills,
                 skill_disclosure: &skill_disclosure,
                 kernel: kernel.as_ref(),
+                context: &context,
                 effect_tools: effect_approvals.keys().cloned().collect(),
                 callbacks,
                 memory,
@@ -294,6 +299,7 @@ impl Assets {
             declared_models: &declared_models,
             required_permissions,
             disclosure: &skill_disclosure,
+            context: &context,
         })?;
 
         agent_providers.extend(loaded_commands.providers.clone());
@@ -307,6 +313,7 @@ impl Assets {
             specs,
             agent_providers,
             agent_requirements,
+            context,
             commands: loaded_commands.registry,
             command_agents: loaded_commands.agents,
             command_mcp: loaded_commands.mcp,

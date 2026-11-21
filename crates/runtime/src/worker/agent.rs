@@ -5,6 +5,7 @@ use crate::agents::skills::{self, SkillDisclosure};
 use crate::agents::{AgentDefinition, SkillAsset};
 use crate::commands::parse;
 use crate::commands::CommandAsset;
+use crate::context::ContextBundle;
 use crate::data::memory::{preload_callback, NativeMemory};
 use crate::execution::plugins::AgentCallbacks;
 use crate::execution::providers::{ProviderRegistry, ProviderRequirements};
@@ -25,6 +26,7 @@ pub(crate) struct AgentBindings<'a> {
     pub(crate) skills: &'a [SkillAsset],
     pub(crate) skill_disclosure: &'a SkillDisclosure,
     pub(crate) kernel: Option<&'a ToolKernel>,
+    pub(crate) context: &'a ContextBundle,
     pub(crate) callbacks: Option<&'a (dyn Fn() -> AgentCallbacks + Send + Sync)>,
     pub(crate) memory: Option<&'a Arc<NativeMemory>>,
 }
@@ -52,7 +54,7 @@ pub(crate) fn build_loaded_agent(
         &requirements,
         providers,
     )?;
-    let instruction = prompts.get(&definition.prompt).cloned().ok_or_else(|| {
+    let prompt = prompts.get(&definition.prompt).cloned().ok_or_else(|| {
         ApiError::new(
             "asset.prompt_missing",
             format!(
@@ -61,6 +63,7 @@ pub(crate) fn build_loaded_agent(
             ),
         )
     })?;
+    let instruction = bindings.context.apply_to_instruction(&prompt);
     for name in &definition.skills {
         if !skills.iter().any(|skill| &skill.name == name) {
             return Err(ApiError::new(
@@ -183,6 +186,7 @@ pub(crate) fn build_command_agent(
     };
     let model = resolve_model(&command.name, model_reference, &requirements, providers)?;
     let template = Arc::new(command.clone());
+    let context_text = bindings.context.text.clone();
     let description = if command.description.trim().is_empty() {
         format!("Worker command '{}'", command.name)
     } else {
@@ -193,6 +197,7 @@ pub(crate) fn build_command_agent(
         .model(model)
         .instruction_provider(Box::new(move |ctx| {
             let template = template.clone();
+            let context_text = context_text.clone();
             Box::pin(async move {
                 let input = ctx
                     .user_content()
@@ -205,7 +210,13 @@ pub(crate) fn build_command_agent(
                     .collect::<Vec<_>>()
                     .join("\n");
                 parse::prepare(&template, &input)
-                    .map(|prepared| prepared.prompt)
+                    .map(|prepared| {
+                        if context_text.is_empty() {
+                            prepared.prompt
+                        } else {
+                            format!("{}\n\n{}", prepared.prompt, context_text)
+                        }
+                    })
                     .map_err(|error| {
                         adk_rust::AdkError::agent(format!("{}: {}", error.code, error.message))
                     })

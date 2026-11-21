@@ -399,6 +399,48 @@ digest, not copied into events. Each mutating call also writes a redacted
 outcome is committed. A tool deadline returns `tool.timeout`; cancellation
 returns `tool.cancelled`; neither is reported as success.
 
+## Configured memory files
+
+`[context]` assembles operator-selected memory files into the instruction of
+every loaded agent and profile composition. The runtime hardcodes no vendor
+filename; the operator names the files, globs, and precedence.
+
+```toml
+[context]
+max_memory_bytes = 262144        # per-file ceiling
+max_context_bytes = 1048576      # assembled ceiling
+max_memory_files = 128
+max_import_depth = 8
+
+[[context.memory]]
+id = "project"
+paths = ["AGENTS.md", "docs/conventions.md"]
+globs = ["notes/*.md"]
+precedence = 100                 # higher is assembled first
+imports = true                   # follow `@path` lines
+optional = false                 # a missing file fails startup
+```
+
+- Sources are ordered by precedence descending, then by id. Declared `paths`
+  keep their order and glob matches are sorted, so the same configuration
+  produces the same context across restarts and profile revisions.
+- `@relative/path` lines import another file relative to the importing file.
+  Cycles, excessive depth, duplicate files, and the configured file/byte
+  ceilings are reported with `context.memory_*` errors or diagnostics.
+- A required source fails startup. An `optional = true` source records a typed
+  diagnostic in the task `context.manifest` event instead of being silently
+  omitted.
+- Every admitted task appends a durable `context.manifest` event containing the
+  ordered source identities, content digests, memory configuration digest,
+  selected skills/tools, profile and asset revisions, and the effective
+  instruction digest. Prompt and memory text are not copied into the event.
+- Memory files are context input, not native long-term memory. The native
+  `NativeMemory` service and `remember_memory` tool remain separate.
+- A manual `session compact` or `POST /v1/sessions/{id}/compact` schedules the
+  native compaction path for the next model turn. The pinned ADK Runner exposes
+  no public immediate-compaction method, so the response reports
+  `applies_on = "next_model_turn"`; canonical session events are retained.
+
 ## Permission modes and rules
 
 The operator selects one mode and may add ordered rules. The policy is data in
@@ -851,6 +893,10 @@ general --config worker.toml profile create long-chat \
   references.
 - Absent a compaction setting, revisions keep the pinned Runner default and no
   compaction occurs.
+- A configured cost budget requires operator-declared input and candidate
+  pricing on the selected provider and every declared fallback. Without that
+  basis the profile or task is rejected with `budget.cost_unverifiable` before
+  admission instead of reporting invented usage.
 
 ## Lifecycle and native hooks
 

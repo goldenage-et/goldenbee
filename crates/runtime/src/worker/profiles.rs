@@ -365,6 +365,12 @@ impl Runtime {
                 "configured model has no text modality",
             ));
         }
+        crate::execution::budget::validate_admission(&revision.limits, provider, &revision.model)?;
+        for fallback in &provider.fallbacks {
+            if let Some(target) = self.config().providers.get(fallback) {
+                crate::execution::budget::validate_admission(&revision.limits, target, fallback)?;
+            }
+        }
         if let Some(compaction) = &revision.compaction {
             self.providers()
                 .validate_compaction(&revision.model, compaction)?;
@@ -608,9 +614,10 @@ impl Runtime {
         &self,
         revision: &ProfileRevision,
         agent: &str,
-        max_tokens: u64,
+        limits: &common::Limits,
         compaction: Option<&ContextCompaction>,
     ) -> Result<Option<ResolvedModel>> {
+        let max_tokens = limits.max_tokens;
         let (provider, requirements) = if revision.members.is_empty() {
             let Some(provider) = self.config().agent_providers.get(agent).cloned() else {
                 if compaction.is_some() {
@@ -671,6 +678,18 @@ impl Runtime {
             // by the revision, before any task is recorded.
             self.providers()
                 .validate_compaction(&provider, compaction)?;
+        }
+        let selected = self.config().providers.get(&provider).ok_or_else(|| {
+            ApiError::new(
+                "profile.model_unsupported",
+                format!("model '{provider}' is not configured"),
+            )
+        })?;
+        crate::execution::budget::validate_admission(limits, selected, &provider)?;
+        for fallback in &selected.fallbacks {
+            if let Some(target) = self.config().providers.get(fallback) {
+                crate::execution::budget::validate_admission(limits, target, fallback)?;
+            }
         }
         self.providers()
             .record(&provider, revision.revision, &requirements)

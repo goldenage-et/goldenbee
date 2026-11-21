@@ -47,6 +47,7 @@ revision store and never create a second profile loader or authority.
 | `/v1/sessions/{session}` | New | Resume one canonical session by identity. |
 | `/v1/sessions/{session}/fork` | New | Create an independent branch. Requires `session:write`. |
 | `/v1/sessions/{session}/rename` | New | Set a durable session title. Requires `session:write`. |
+| `/v1/sessions/{session}/compact` | New | Schedule native compaction for the next model turn. Requires `session:write`. |
 | `/v1/sessions/{session}/transcript` | New | `GET` reads or `POST` creates a durable transcript export. |
 | `/v1/tasks/{id}/artifacts` | New | Artifact metadata for one visible task. |
 | `/v1/tasks/{id}/cancel` | New | Precise task cancellation. |
@@ -563,6 +564,11 @@ second role/text transcript and never adopts a reference thread store.
   id, encoded through the existing unambiguous native user identity. A
   colliding session id under another caller or namespace is reported as
   `session.not_found`, not disclosed.
+- `POST /v1/sessions/{id}/compact` records a manual compaction request. The
+  pinned ADK Runner has no immediate "compact now" entry point, so the response
+  reports `state = "scheduled"` and `applies_on = "next_model_turn"`. The next
+  turn applies native truncation and emits `context.compacted`; canonical
+  session events remain intact.
 - `GET /v1/sessions/latest` is the continue target; `GET /v1/sessions/{id}` is
   resume. Both require `session:read` and return the same canonical turns.
 - `POST .../fork` copies state and events into a new session id, records

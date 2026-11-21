@@ -58,6 +58,7 @@ pub(super) struct WorkerInner {
     pub(super) assets: RwLock<Arc<Assets>>,
     pub(super) runtime: Runtime,
     pub(super) sessions: Arc<dyn SessionService>,
+    pub(super) file_sessions: Arc<crate::sessions::FileSessionService>,
     pub(super) executor: RwLock<Arc<NativeExecutor>>,
     pub(super) graph: Option<Arc<NativeKnowledgeGraph>>,
     pub(super) manifest: PackageManifest,
@@ -285,6 +286,7 @@ impl WorkerInstance {
             &graphs,
             crate::worker::ExecutorServices {
                 sessions: self.inner.sessions.clone(),
+                file_sessions: self.inner.file_sessions.clone(),
                 plugins: self.inner.plugins.clone(),
                 callbacks: self.inner.callbacks.clone(),
                 artifacts: self.inner.runtime.artifact_store(),

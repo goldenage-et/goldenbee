@@ -9,6 +9,7 @@ mod agents;
 pub mod browser;
 pub mod checkpoints;
 pub(crate) mod commands;
+pub mod context;
 mod core;
 mod data;
 mod execution;
