@@ -979,6 +979,8 @@ impl Worker {
                         })?;
                     if task.state.is_terminal() {
                         if json {
+                            let effect_evidence =
+                                instance.runtime().effect_evidence(&task.id).await;
                             println!(
                                 "{}",
                                 serde_json::json!({
@@ -988,6 +990,8 @@ impl Worker {
                                     "evidence": task.evidence,
                                     "error": task.error,
                                     "usage": task.usage,
+                                    "trace_id": task.trace_id,
+                                    "effect_evidence": effect_evidence,
                                     "asset_revision": task.asset_revision,
                                     "profile_revision": task.profile_revision,
                                     "resolved_model": task.resolved_model,

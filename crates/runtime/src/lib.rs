@@ -35,6 +35,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// compatible with a host policy that pins the runtime release.
 pub const RUNTIME_VERSION: &str = VERSION;
 
+pub use common::{EffectEvidence, OperationView};
 pub use core::config::{
     AgentRequirement, ProviderProfile, RetentionPolicy, RuntimeConfig, DEFAULT_MAX_STREAMS,
     DEFAULT_STREAM_BUFFER, DEFAULT_STREAM_KEEPALIVE_MS,
@@ -51,8 +52,8 @@ pub use core::{config, crypto};
 pub use data::artifacts::ArtifactContent;
 pub use data::retention::{BlockedStep, LifecycleOwner, LifecycleReport};
 pub use execution::operations::{
-    BeginOutcome, EffectApprovalPolicy, EffectEvidence, EffectPolicy, EffectReconciler,
-    EffectRecovery, EffectStatus, EffectTerminal, OperationView,
+    BeginOutcome, EffectApprovalPolicy, EffectPolicy, EffectReconciler, EffectRecovery,
+    EffectStatus, EffectTerminal,
 };
 pub use execution::providers::{
     EnvironmentSecrets, MemorySecrets, ProviderRegistry, ProviderRequirements, ProviderView,
@@ -96,8 +97,8 @@ pub mod native {
     };
     pub use crate::execution::model::{model_for, DeterministicModel, HttpModel};
     pub use crate::execution::operations::{
-        EffectApprovalPolicy, EffectEvidence, EffectPolicy, EffectReconciler, EffectRecovery,
-        EffectStatus, EffectTerminal, OperationView,
+        EffectApprovalPolicy, EffectPolicy, EffectReconciler, EffectRecovery, EffectStatus,
+        EffectTerminal,
     };
     pub use crate::execution::profile::ProfileAgentBuilder;
     pub use crate::execution::providers::{
@@ -115,6 +116,7 @@ pub mod native {
     pub use crate::tools::EffectTool;
     pub use crate::tools::WebPolicy;
     pub use common::KnowledgeFact;
+    pub use common::{EffectEvidence, OperationView};
 
     pub mod artifact {
         pub use crate::data::artifacts::{

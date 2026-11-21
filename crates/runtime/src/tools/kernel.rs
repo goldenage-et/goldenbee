@@ -1175,8 +1175,8 @@ impl Tool for KernelTool {
                 ToolObservation {
                     ok: false,
                     error_code: Some("tool.not_enabled".to_string()),
-                    duration: Duration::ZERO,
-                    queue_wait: Duration::ZERO,
+                    duration: None,
+                    queue_wait: None,
                     truncated: false,
                     output_bytes: 0,
                     result_digest: String::new(),
@@ -1239,8 +1239,8 @@ impl Tool for KernelTool {
             let observation = ToolObservation {
                 ok: false,
                 error_code: Some(violation.code.clone()),
-                duration: Duration::ZERO,
-                queue_wait: Duration::ZERO,
+                duration: None,
+                queue_wait: None,
                 truncated: false,
                 output_bytes: 0,
                 result_digest: String::new(),
@@ -1333,8 +1333,8 @@ impl Tool for KernelTool {
                 ToolObservation {
                     ok: false,
                     error_code: Some(code.to_string()),
-                    duration: Duration::ZERO,
-                    queue_wait: Duration::ZERO,
+                    duration: None,
+                    queue_wait: None,
                     truncated: false,
                     output_bytes: 0,
                     result_digest: String::new(),
@@ -1408,8 +1408,8 @@ impl Tool for KernelTool {
                     ToolObservation {
                         ok: false,
                         error_code: Some(code.clone()),
-                        duration: started.elapsed(),
-                        queue_wait,
+                        duration: Some(started.elapsed()),
+                        queue_wait: Some(queue_wait),
                         truncated: false,
                         output_bytes: 0,
                         result_digest: String::new(),
@@ -1471,8 +1471,8 @@ impl Tool for KernelTool {
                         ToolObservation {
                             ok: false,
                             error_code: Some(error.code.to_string()),
-                            duration,
-                            queue_wait,
+                            duration: Some(duration),
+                            queue_wait: Some(queue_wait),
                             truncated: false,
                             output_bytes: 0,
                             result_digest: String::new(),
@@ -1524,8 +1524,8 @@ impl Tool for KernelTool {
         let observation = ToolObservation {
             ok: error_code.is_none(),
             error_code: error_code.clone(),
-            duration,
-            queue_wait,
+            duration: Some(duration),
+            queue_wait: Some(queue_wait),
             truncated,
             output_bytes,
             result_digest: result_digest.clone(),
@@ -1550,6 +1550,14 @@ impl Tool for KernelTool {
             &observation,
         )
         .await;
+        self.record_diff(
+            &effective,
+            ctx.as_ref(),
+            task.as_ref(),
+            &relative,
+            &observation,
+        )
+        .await;
         Ok(bounded)
     }
 }
@@ -1558,8 +1566,8 @@ impl Tool for KernelTool {
 struct ToolObservation {
     ok: bool,
     error_code: Option<String>,
-    duration: Duration,
-    queue_wait: Duration,
+    duration: Option<Duration>,
+    queue_wait: Option<Duration>,
     truncated: bool,
     output_bytes: usize,
     result_digest: String,
@@ -1720,7 +1728,7 @@ impl KernelTool {
         let Some(runtime) = self.kernel.inner.runtime.get() else {
             return;
         };
-        let payload = json!({
+        let mut payload = json!({
             "tool": self.inner.name(),
             "call_id": ctx.function_call_id(),
             "invocation": ctx.invocation_id(),
@@ -1730,8 +1738,6 @@ impl KernelTool {
             "effect": self.descriptor.effect.as_str(),
             "ok": observation.ok,
             "error_code": observation.error_code,
-            "duration_ms": observation.duration.as_millis() as u64,
-            "queue_wait_ms": observation.queue_wait.as_millis() as u64,
             "truncated": observation.truncated,
             "output_bytes": observation.output_bytes,
             "result_digest": observation.result_digest,
@@ -1743,28 +1749,36 @@ impl KernelTool {
             "sandbox": self.sandbox(effective),
             "redaction": Self::redaction(),
         });
+        // A denied or rejected call was not executed, so it has no measured
+        // duration or queue wait. The fields are omitted instead of reported
+        // as zero.
+        if let Some(duration) = observation.duration {
+            payload["duration_ms"] = json!(duration.as_millis() as u64);
+        }
+        if let Some(wait) = observation.queue_wait {
+            payload["queue_wait_ms"] = json!(wait.as_millis() as u64);
+        }
         let _ = runtime
             .append_event(&task.id, "tool.completed", payload, true)
             .await;
-        let attributes = BTreeMap::from([
-            ("tool".into(), self.inner.name().to_string()),
-            ("capability".into(), self.descriptor.capability.clone()),
-            ("effect".into(), self.descriptor.effect.as_str().to_string()),
-            ("ok".into(), observation.ok.to_string()),
-            (
-                "duration_ms".into(),
-                observation.duration.as_millis().to_string(),
-            ),
-        ]);
-        let _ = runtime
-            .trace(
-                &task.trace_id,
-                &task.id,
-                "tool.execute",
-                observation.duration.as_millis() as u64,
-                attributes,
-            )
-            .await;
+        if let Some(duration) = observation.duration {
+            let attributes = BTreeMap::from([
+                ("tool".into(), self.inner.name().to_string()),
+                ("capability".into(), self.descriptor.capability.clone()),
+                ("effect".into(), self.descriptor.effect.as_str().to_string()),
+                ("ok".into(), observation.ok.to_string()),
+                ("duration_ms".into(), duration.as_millis().to_string()),
+            ]);
+            let _ = runtime
+                .trace(
+                    &task.trace_id,
+                    &task.id,
+                    "tool.execute",
+                    duration.as_millis() as u64,
+                    attributes,
+                )
+                .await;
+        }
         if self.descriptor.audit && !self.descriptor.effect.is_mutation() {
             let outcome = if observation.ok { "ok" } else { "failed" };
             let detail = format!(
@@ -1773,7 +1787,10 @@ impl KernelTool {
                 self.descriptor.capability,
                 observation.ok,
                 observation.error_code.as_deref().unwrap_or(""),
-                observation.duration.as_millis(),
+                observation
+                    .duration
+                    .map(|duration| duration.as_millis().to_string())
+                    .unwrap_or_default(),
             );
             let _ = runtime
                 .audit_with_trace(
@@ -1786,6 +1803,58 @@ impl KernelTool {
                 )
                 .await;
         }
+    }
+
+    /// Record the ordered diff produced by a mutating tool call.
+    ///
+    /// `tool.completed` already carries the bounded diff summary for one call.
+    /// This durable event gives Clients a diff stream position without parsing
+    /// every tool payload, and it never includes file content or host paths.
+    async fn record_diff(
+        &self,
+        _effective: &EffectiveConfig,
+        ctx: &dyn ToolContext,
+        task: Option<&common::Task>,
+        relative: &[String],
+        observation: &ToolObservation,
+    ) {
+        if !self.descriptor.effect.is_mutation() {
+            return;
+        }
+        let files = observation
+            .diff
+            .get("files")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if files.is_empty() {
+            return;
+        }
+        let Some(task) = task else { return };
+        let Some(runtime) = self.kernel.inner.runtime.get() else {
+            return;
+        };
+        let mut payload = json!({
+            "tool": self.inner.name(),
+            "call_id": ctx.function_call_id(),
+            "invocation": ctx.invocation_id(),
+            "agent": ctx.agent_name(),
+            "paths": relative,
+            "files": files,
+            "ok": observation.ok,
+            "redaction": {
+                "paths": "workspace-relative",
+                "content": "omitted",
+            },
+        });
+        for key in ["additions", "deletions", "exact"] {
+            if let Some(value) = observation.diff.get(key) {
+                payload[key] = value.clone();
+            }
+        }
+        let _ = runtime
+            .append_event(&task.id, "diff.recorded", payload, true)
+            .await;
     }
 
     async fn effect_evidence(

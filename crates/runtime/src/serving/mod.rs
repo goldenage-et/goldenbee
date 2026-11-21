@@ -99,6 +99,7 @@ pub fn api_router(state: WorkerState) -> Router {
         .route("/v1/tasks", get(tasks::list).post(tasks::submit))
         .route("/v1/tasks/{id}", get(tasks::task))
         .route("/v1/tasks/{id}/operations", get(tasks::operations))
+        .route("/v1/tasks/{id}/audit", get(tasks::audit))
         .route("/v1/tasks/{id}/events", get(tasks::events))
         .route("/v1/tasks/{id}/events/stream", get(tasks::stream))
         .route("/v1/tasks/{id}/artifacts", get(artifacts::task_artifacts))

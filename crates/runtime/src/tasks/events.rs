@@ -1,5 +1,6 @@
 //! Durable task event streams with replay and explicit cursor expiry.
 
+use crate::core::redaction::Redactor;
 use crate::{new_id, now, Runtime, State};
 use common::{ApiError, StreamEvent, StreamPage, EVENT_SCHEMA_VERSION};
 use serde_json::Value;
@@ -39,7 +40,7 @@ impl Runtime {
             schema_version: EVENT_SCHEMA_VERSION,
             kind: kind.to_string(),
             durable,
-            payload: redact_json(payload),
+            payload: self.redactor().json(payload),
             trace_id,
             at: now(),
         };
@@ -105,6 +106,7 @@ pub(crate) fn push_event(
     source: &str,
     incarnation: &str,
     retention: usize,
+    redactor: &Redactor,
     task_id: &str,
     seq: u64,
     kind: &str,
@@ -138,7 +140,7 @@ pub(crate) fn push_event(
         schema_version: EVENT_SCHEMA_VERSION,
         kind: kind.to_string(),
         durable,
-        payload: redact_json(payload),
+        payload: redactor.json(payload),
         trace_id,
         at: now(),
     };
@@ -149,39 +151,4 @@ pub(crate) fn push_event(
         stream.drain(0..remove);
     }
     Ok(event)
-}
-
-fn redact_json(value: Value) -> Value {
-    match value {
-        Value::String(text) => Value::String(common::redact(&text)),
-        Value::Array(values) => Value::Array(values.into_iter().map(redact_json).collect()),
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, value)| {
-                    let lower = key.to_ascii_lowercase();
-                    // Numeric accounting fields are evidence, not credentials.
-                    // Keep them visible while still redacting secret-bearing
-                    // keys such as `token`, `access_token`, and `password`.
-                    let accounting = matches!(
-                        lower.as_str(),
-                        "prompt_tokens"
-                            | "candidate_tokens"
-                            | "estimated_tokens"
-                            | "max_tokens"
-                            | "tokens_used"
-                    );
-                    if !accounting
-                        && (lower.contains("secret")
-                            || lower.contains("token")
-                            || lower.contains("password"))
-                    {
-                        (key, Value::String("[REDACTED]".into()))
-                    } else {
-                        (key, redact_json(value))
-                    }
-                })
-                .collect(),
-        ),
-        other => other,
-    }
 }

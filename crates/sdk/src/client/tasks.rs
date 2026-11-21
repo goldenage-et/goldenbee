@@ -3,7 +3,8 @@
 use super::transport::{get, post_empty, post_reconciling};
 use super::Client;
 use common::{
-    ApiError, GatewaySubmitRequest, GatewaySubmitResponse, GatewayTask, StreamPage, MAX_EVENT_PAGE,
+    ApiError, AuditEntry, EffectEvidence, GatewaySubmitRequest, GatewaySubmitResponse, GatewayTask,
+    StreamPage, MAX_EVENT_PAGE,
 };
 
 impl Client {
@@ -43,5 +44,24 @@ impl Client {
     /// Cancel a routed task.
     pub async fn cancel(&self, task_id: &str) -> Result<GatewayTask, ApiError> {
         post_empty(self, &format!("/v1/tasks/{task_id}/cancel")).await
+    }
+
+    /// Read protected-effect evidence for one task from a Worker app-server.
+    ///
+    /// The client base must be the owning Worker Instance (or another hop that
+    /// proxies this route). The projection links every operation to the task,
+    /// attempt, native invocation, and terminal result without exposing
+    /// credential values.
+    pub async fn operations(&self, task_id: &str) -> Result<EffectEvidence, ApiError> {
+        get(self, &format!("/v1/tasks/{task_id}/operations")).await
+    }
+
+    /// Read typed, redacted audit evidence for one task.
+    ///
+    /// Each entry names the principal, action, decision, reason, and affected
+    /// resource. The same payload is available over the Worker HTTP contract
+    /// without any Client presentation layer.
+    pub async fn audit(&self, task_id: &str) -> Result<Vec<AuditEntry>, ApiError> {
+        get(self, &format!("/v1/tasks/{task_id}/audit")).await
     }
 }

@@ -247,6 +247,7 @@ impl WorkerSettings {
         config.max_queue = self.file.max_queue;
         config.per_principal = self.file.per_principal.max(1);
         config.event_retention = self.file.event_retention.max(1);
+        config.redaction_roots.push(self.tool_workspace());
         config.drain_timeout_ms = self.file.drain_timeout_ms.max(1);
         config.max_streams = self.file.max_streams.max(1);
         config.stream_buffer = self.file.stream_buffer.max(1);
