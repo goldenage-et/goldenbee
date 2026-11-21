@@ -187,6 +187,7 @@ mod tests {
     fn config(reference: &str, expires_at: i64, revoked: bool) -> McpConfig {
         McpConfig {
             servers: BTreeMap::new(),
+            allow_plugin_servers: false,
             credentials: vec![McpCredentialConfig {
                 reference: reference.into(),
                 source: format!("env:{}", variable(reference)),

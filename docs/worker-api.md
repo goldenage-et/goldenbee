@@ -33,6 +33,12 @@ revision store and never create a second profile loader or authority.
 | `/v1/capabilities` | New | Authenticated manifest, command inventory, and durability disclosure. |
 | `/v1/commands` | New | List runtime and Worker-defined commands. Requires `task:read`. |
 | `/v1/commands/{name}` | New | Read one command descriptor, or invoke it with `POST`. Invocation requires `task:submit`. |
+| `/v1/mcp/servers` | New | Configured MCP connections with transport, state, restart count, and redacted last failure. Requires `operate`. |
+| `/v1/mcp/servers/{server}/restart` | New | Restart one connection and audit the outcome. Requires `operate`. |
+| `/v1/mcp/servers/{server}/resources` | New | List allowlisted resources with stable namespaced ids. Requires `operate`. |
+| `/v1/mcp/servers/{server}/resources/read` | New | Read one allowlisted resource with bounded text and a decoded blob length. Requires `operate`. |
+| `/v1/mcp/servers/{server}/prompts` | New | List allowlisted prompts. Requires `operate`. |
+| `/v1/mcp/servers/{server}/prompts/{name}` | New | Retrieve one allowlisted prompt with bounded messages. Requires `operate`. |
 | `/v1/drain` | New | Authorized bounded drain. Requires `instance:admin`. |
 | `/v1/tasks` | New | Durable task admission with caller-scoped idempotency. |
 | `/v1/runs` | New | One-shot headless run over the same durable task path. Returns the structured `RunResult`. Requires `task:submit`. |

@@ -1210,6 +1210,7 @@ impl Worker {
         let remote_mcp = RemoteMcpRegistry::new(
             settings.file.mcp.clone(),
             runtime.mcp_credentials(),
+            &settings.file.grants,
             Some(self.kernel.clone()),
         );
         let plugins = build_plugins(std::mem::take(&mut self.plugins));

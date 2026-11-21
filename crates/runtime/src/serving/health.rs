@@ -36,6 +36,23 @@ pub(super) async fn status(
             .subsystems
             .insert("browser".into(), browser.readiness().await.to_string());
     }
+    let mut mcp_servers = Vec::new();
+    if let Some(local) = &state.mcp {
+        mcp_servers.extend(local.inventory().await);
+    }
+    if let Some(remote) = &state.remote_mcp {
+        mcp_servers.extend(remote.inventory().await);
+    }
+    if !mcp_servers.is_empty() {
+        let connected = mcp_servers
+            .iter()
+            .filter(|server| server.state == "connected")
+            .count();
+        health.subsystems.insert(
+            "mcp".into(),
+            format!("{connected}/{} connected", mcp_servers.len()),
+        );
+    }
     Ok(Json(health))
 }
 
@@ -75,6 +92,17 @@ pub(super) async fn capabilities(
         }
         None => None,
     };
+    let mut mcp_servers = Vec::new();
+    if let Some(local) = &state.mcp {
+        mcp_servers.extend(local.inventory().await);
+    }
+    if let Some(remote) = &state.remote_mcp {
+        mcp_servers.extend(remote.inventory().await);
+    }
+    mcp_servers.sort_by(|left, right| left.id.cmp(&right.id));
+    let mcp = (!mcp_servers.is_empty()).then_some(common::McpCapabilityInventory {
+        servers: mcp_servers,
+    });
     Ok(Json(CapabilityInventory {
         package: state.manifest.name.clone(),
         version: state.manifest.version.clone(),
@@ -101,5 +129,6 @@ pub(super) async fn capabilities(
         },
         plugins: state.plugins.iter().cloned().map(Into::into).collect(),
         browser,
+        mcp,
     }))
 }

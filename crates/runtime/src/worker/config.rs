@@ -194,6 +194,14 @@ impl WorkerSettings {
         self.plugin_skills = plugins.skills.clone();
         self.plugin_commands = plugins.commands.clone();
         for (id, server) in &plugins.mcp {
+            if !self.file.mcp.allow_plugin_servers {
+                return Err(ApiError::new(
+                    "plugin.mcp_not_allowed",
+                    format!(
+                        "plugin MCP server '{id}' requires mcp.allow_plugin_servers in operator configuration"
+                    ),
+                ));
+            }
             if self.file.mcp.servers.contains_key(id) {
                 return Err(ApiError::new(
                     "plugin.collision",
@@ -1134,6 +1142,20 @@ fn validate_mcp_server(id: &str, server: &McpServerConfig) -> WorkerResult<()> {
             ));
         }
     }
+    crate::mcp::validate_surface(
+        id,
+        "resource",
+        &server.allowed_resources,
+        &server.protected_resources,
+        512,
+    )?;
+    crate::mcp::validate_surface(
+        id,
+        "prompt",
+        &server.allowed_prompts,
+        &server.protected_prompts,
+        128,
+    )?;
     if server.startup_timeout_ms == 0 || server.startup_timeout_ms > 300_000 {
         return Err(ApiError::new(
             "config.invalid",

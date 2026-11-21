@@ -139,6 +139,16 @@ impl WorkerInstance {
         self.inner.browser.clone()
     }
 
+    /// Instance-owned local MCP connection registry.
+    pub fn mcp(&self) -> Arc<McpRegistry> {
+        self.inner.mcp.clone()
+    }
+
+    /// Instance-owned remote MCP connection registry.
+    pub fn remote_mcp(&self) -> Arc<crate::mcp::RemoteMcpRegistry> {
+        self.inner.remote_mcp.clone()
+    }
+
     /// Configured default agent.
     pub async fn default_agent(&self) -> String {
         self.inner.settings.read().await.file.default_agent.clone()
@@ -329,6 +339,7 @@ impl WorkerInstance {
             .mcp
             .reconcile(&settings.file.mcp.servers, &settings.file.grants)
             .await;
+        self.inner.remote_mcp.set_grants(&settings.file.grants);
         self.inner.runtime.set_mcp_policies(settings.mcp_policies());
         self.inner
             .runtime

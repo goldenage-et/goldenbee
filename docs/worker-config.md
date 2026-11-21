@@ -610,6 +610,78 @@ and any protected-path exceptions. A denial also writes a redacted
 executes; a denied mutation produces only a failed `tool.effect` record, never a
 committed one.
 
+## MCP servers
+
+`[mcp.servers.<id>]` declares one instance-owned MCP connection. A definition
+with `endpoint` is remote; a definition with `command` is a local stdio child.
+Both share the same registry, credential checks, allowlists, event evidence, and
+management routes.
+
+```toml
+[mcp.servers.docs]
+endpoint = "https://mcp.example.test/mcp"
+transport = "http"                     # http (default for a remote) or sse
+allowed_tools = ["search", "read_doc"]
+allowed_resources = ["file:///handbook/intro.md"]
+protected_prompts = ["summarize"]
+credential = "secret://mcp/docs"
+required_scopes = ["mcp:call"]
+allowed_hosts = ["mcp.example.test"]
+call_timeout_ms = 30000
+max_output_bytes = 262144
+
+[[mcp.credentials]]
+reference = "secret://mcp/docs"
+source = "env:GOLDENBEE_MCP_DOCS_TOKEN"
+audience = "https://mcp.example.test/mcp"
+scopes = ["mcp:call"]
+```
+
+- `allowed_tools`, `allowed_resources`, and `allowed_prompts` are the operator
+  ceiling. Discovery and every later call re-read them. An empty list exposes
+  none of that surface; a profile or plugin cannot add an entry.
+- `protected_tools`, `protected_resources`, and `protected_prompts` must also
+  appear in the matching allowlist and additionally require an exact grant:
+  `mcp:<server>:<tool>`, `mcp:<server>:resource:<uri>`, or
+  `mcp:<server>:prompt:<name>`.
+- `transport = "sse"` selects the documented legacy HTTP+SSE compatibility
+  adapter. It is not the native ADK transport: rmcp 3.11.0 exposes stdio and
+  Streamable HTTP only. The adapter keeps destination, TLS, DNS-pinning,
+  redirect, and credential policy identical to Streamable HTTP and rejects a
+  message URL on another origin.
+- Credential values come only from `env:NAME` sources. The runtime resolves the
+  reference at call time and never writes the value to configuration, events,
+  diagnostics, or the capability inventory.
+- A local child gets a cleared environment; only explicit `env` entries and the
+  resolved credential variable are passed.
+- `[mcp] allow_plugin_servers = true` is required before a trusted plugin may
+  declare an additional server. It is off by default: loading a plugin is not
+  authority to widen the MCP surface.
+
+Management routes use the `operate` scope:
+
+- `GET /v1/mcp/servers` and `GET /v1/capabilities` report `connected`,
+  `unavailable`, `disabled`, or `restarting` per server, restart count,
+  connected time, and a redacted last failure. A live entry is probed; a dead
+  child is reported `unavailable` and dependent calls fail closed until restart.
+- `POST /v1/mcp/servers/{server}/restart` restarts one connection and audits
+  the result.
+- `GET /v1/mcp/servers/{server}/resources` and
+  `POST /v1/mcp/servers/{server}/resources/read` list and read allowlisted
+  resources. Results are bounded by `max_output_bytes`; binary content reports a
+  decoded byte length, never the bytes.
+- `GET /v1/mcp/servers/{server}/prompts` and
+  `POST /v1/mcp/servers/{server}/prompts/{name}` list and retrieve allowlisted
+  prompts. Message count and text are bounded.
+
+Resource and prompt operations return typed `mcp.*` errors:
+`mcp.resource_denied`, `mcp.resource_unknown`, `mcp.prompt_denied`,
+`mcp.prompt_unknown`, `mcp.timeout`, and `mcp.transport_unavailable`.
+
+Verified gap in the pinned client: ADK 2.3.0 has an `OAuth2Config` helper, but
+the Worker resolves only operator-owned static credential references; it does
+not run an interactive OAuth authorization flow or own a token vault.
+
 ## Agent definitions
 
 Agent files live in the configured `agents` directory. Each `*.toml` is one

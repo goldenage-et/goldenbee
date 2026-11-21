@@ -8,7 +8,10 @@
 
 use crate::mcp::config::{McpConfig, McpServerConfig};
 use crate::mcp::credentials::{CredentialGrant, McpCredentials};
+use crate::mcp::health::{self, McpServerHealth, McpState};
+use crate::mcp::names;
 use crate::mcp::policy::{DestinationPolicy, VettedDestination};
+use crate::mcp::surface;
 use adk_rust::{
     AdkError, ErrorCategory, ErrorComponent, ReadonlyContext, Result as AdkResult, Toolset,
 };
@@ -17,12 +20,19 @@ use adk_tool::mcp::rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
 use adk_tool::mcp::rmcp::ServiceExt;
-use adk_tool::mcp::{AdkClientHandler, AutoDeclineElicitationHandler, McpSchemaLimits, McpToolset};
+use adk_tool::mcp::{
+    AdkClientHandler, AutoDeclineElicitationHandler, ClientLifecycleMode, ClientServiceExt,
+    McpSchemaLimits, McpToolset,
+};
 use async_trait::async_trait;
-use common::{ApiError, ProfileRevision};
+use common::{
+    ApiError, McpPromptContent, McpPromptDescriptor, McpResourceContent, McpResourceDescriptor,
+    ProfileRevision,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
@@ -33,6 +43,7 @@ const MAX_ERROR_CHARS: usize = 512;
 pub struct RemoteMcpRegistry {
     servers: BTreeMap<String, Arc<RemoteServer>>,
     uncertainty: Mutex<BTreeMap<String, String>>,
+    grants: RwLock<BTreeSet<String>>,
     kernel: Option<crate::tools::ToolKernel>,
 }
 
@@ -41,6 +52,7 @@ impl RemoteMcpRegistry {
     pub fn new(
         config: McpConfig,
         credentials: McpCredentials,
+        grants: &[String],
         kernel: Option<crate::tools::ToolKernel>,
     ) -> Arc<Self> {
         let servers = config
@@ -61,8 +73,132 @@ impl RemoteMcpRegistry {
         Arc::new(Self {
             servers,
             uncertainty: Mutex::new(BTreeMap::new()),
+            grants: RwLock::new(grants.iter().cloned().collect()),
             kernel,
         })
+    }
+
+    /// Whether the operator configured this connection id.
+    pub fn known(&self, id: &str) -> bool {
+        self.servers.contains_key(id)
+    }
+
+    /// Record the instance grants in effect after a validated reload.
+    pub fn set_grants(&self, grants: &[String]) {
+        if let Ok(mut current) = self.grants.write() {
+            *current = grants.iter().cloned().collect();
+        }
+    }
+
+    fn granted(&self, id: &str) -> bool {
+        let grant = self
+            .servers
+            .get(id)
+            .map(|server| server.grant())
+            .unwrap_or_else(|| names::connection_grant(id));
+        self.grants
+            .read()
+            .map(|grants| names::granted(&grants, &grant))
+            .unwrap_or(false)
+    }
+
+    /// Observable state of every configured remote connection.
+    pub async fn health(&self) -> Vec<McpServerHealth> {
+        let mut health = Vec::new();
+        for (id, server) in &self.servers {
+            health.push(server.health(id, self.granted(id)).await);
+        }
+        health
+    }
+
+    /// Inventory projection for `/v1/capabilities` and `/v1/mcp/servers`.
+    pub async fn inventory(&self) -> Vec<common::McpServerInventory> {
+        let mut inventory = Vec::new();
+        for (id, server) in &self.servers {
+            let record = server.health(id, self.granted(id)).await;
+            inventory.push(record.inventory(&server.config));
+        }
+        inventory
+    }
+
+    /// Restart one remote connection with the current credential generation.
+    pub async fn restart(&self, id: &str) -> Result<(), ApiError> {
+        let Some(server) = self.servers.get(id) else {
+            return Err(ApiError::new(
+                "mcp.connection_unknown",
+                format!("MCP connection '{id}' is not configured"),
+            ));
+        };
+        if !self.granted(id) {
+            return Err(ApiError::new(
+                "mcp.grant_denied",
+                "connection is outside instance authority",
+            ));
+        }
+        server.restart().await
+    }
+
+    /// Discover allowlisted resources for one remote connection.
+    pub async fn resources(&self, id: &str) -> Result<Vec<McpResourceDescriptor>, ApiError> {
+        let (toolset, config) = self.client(id).await?;
+        let grants = self.grant_snapshot();
+        let policy = surface::policy(&config, id, &grants);
+        surface::list_resources(&toolset, &policy).await
+    }
+
+    /// Read one allowlisted resource with a bounded result.
+    pub async fn read_resource(&self, id: &str, uri: &str) -> Result<McpResourceContent, ApiError> {
+        let (toolset, config) = self.client(id).await?;
+        let grants = self.grant_snapshot();
+        let policy = surface::policy(&config, id, &grants);
+        surface::read_resource(&toolset, &policy, uri).await
+    }
+
+    /// Discover allowlisted prompts for one remote connection.
+    pub async fn prompts(&self, id: &str) -> Result<Vec<McpPromptDescriptor>, ApiError> {
+        let (toolset, config) = self.client(id).await?;
+        let grants = self.grant_snapshot();
+        let policy = surface::policy(&config, id, &grants);
+        surface::list_prompts(&toolset, &policy).await
+    }
+
+    /// Retrieve one allowlisted prompt with a bounded result.
+    pub async fn prompt(
+        &self,
+        id: &str,
+        name: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<McpPromptContent, ApiError> {
+        let (toolset, config) = self.client(id).await?;
+        let grants = self.grant_snapshot();
+        let policy = surface::policy(&config, id, &grants);
+        surface::get_prompt(&toolset, &policy, name, arguments).await
+    }
+
+    async fn client(
+        &self,
+        id: &str,
+    ) -> Result<(Arc<McpToolset<AdkClientHandler>>, McpServerConfig), ApiError> {
+        let server = self.servers.get(id).ok_or_else(|| {
+            ApiError::new(
+                "mcp.connection_unknown",
+                format!("MCP connection '{id}' is not configured"),
+            )
+        })?;
+        if !self.granted(id) {
+            return Err(ApiError::new(
+                "mcp.grant_denied",
+                "connection is outside instance authority",
+            ));
+        }
+        server.live().await
+    }
+
+    fn grant_snapshot(&self) -> BTreeSet<String> {
+        self.grants
+            .read()
+            .map(|grants| grants.clone())
+            .unwrap_or_default()
     }
 
     /// Validate profile-scoped connection ids, grants, credentials, and
@@ -177,24 +313,20 @@ impl adk_rust::Toolset for RemoteMcpToolset {
                 adk_error(category_for_code(&error.code), &error.code, &error.message)
             })?;
             for snapshot in snapshots {
-                if tools
-                    .iter()
-                    .any(|existing| existing.name() == snapshot.name)
-                {
+                let exposed = names::tool_id(&server.id, &snapshot.name);
+                if tools.iter().any(|existing| existing.name() == exposed) {
                     return Err(AdkError::new(
                         ErrorComponent::Tool,
                         ErrorCategory::Internal,
                         "mcp.tool_conflict",
-                        format!(
-                            "MCP toolsets expose duplicate tool name '{}'",
-                            snapshot.name
-                        ),
+                        format!("MCP toolsets expose duplicate tool name '{exposed}'"),
                     ));
                 }
                 let tool = Arc::new(PinnedMcpTool {
                     registry: Arc::clone(&self.registry),
                     server: server.clone(),
-                    name: snapshot.name,
+                    original: snapshot.name,
+                    name: exposed,
                     description: snapshot.description,
                     parameters: snapshot.parameters,
                     response: snapshot.response,
@@ -202,11 +334,7 @@ impl adk_rust::Toolset for RemoteMcpToolset {
                     long_running: snapshot.long_running,
                 }) as Arc<dyn adk_rust::Tool>;
                 tools.push(match &self.registry.kernel {
-                    Some(kernel) => kernel.wrap(
-                        tool,
-                        crate::tools::ToolDescriptor::new("mcp:call")
-                            .risk(crate::tools::ToolRisk::Medium),
-                    ),
+                    Some(kernel) => kernel.wrap(tool, crate::mcp::toolset::descriptor(&server.id)),
                     None => tool,
                 });
             }
@@ -219,6 +347,7 @@ impl adk_rust::Toolset for RemoteMcpToolset {
 struct PinnedMcpTool {
     registry: Arc<RemoteMcpRegistry>,
     server: Arc<RemoteServer>,
+    original: String,
     name: String,
     description: String,
     parameters: Option<Value>,
@@ -255,7 +384,7 @@ impl adk_rust::Tool for PinnedMcpTool {
 
     async fn execute(&self, ctx: Arc<dyn adk_rust::ToolContext>, args: Value) -> AdkResult<Value> {
         self.server
-            .call(&self.registry, &self.name, ctx, args)
+            .call(&self.registry, &self.original, ctx, args, self.read_only)
             .await
     }
 }
@@ -275,6 +404,7 @@ struct LiveConnection {
     cancel: RunningServiceCancellationToken,
     fingerprint: String,
     generation: u64,
+    connected_at: i64,
     tools: BTreeMap<String, (ToolSnapshot, Arc<dyn adk_rust::Tool>)>,
 }
 
@@ -284,6 +414,9 @@ struct RemoteServer {
     credentials: McpCredentials,
     policy: DestinationPolicy,
     state: Mutex<Option<LiveConnection>>,
+    lifecycle: Mutex<()>,
+    failure: Mutex<Option<ApiError>>,
+    restarts: AtomicU32,
 }
 
 impl RemoteServer {
@@ -295,11 +428,86 @@ impl RemoteServer {
             credentials,
             policy,
             state: Mutex::new(None),
+            lifecycle: Mutex::new(()),
+            failure: Mutex::new(None),
+            restarts: AtomicU32::new(0),
         }
     }
 
     fn grant(&self) -> String {
         self.config.grant_for(&self.id)
+    }
+
+    fn transport(&self) -> &'static str {
+        if self.config.uses_sse() {
+            "sse"
+        } else {
+            "http"
+        }
+    }
+
+    async fn health(&self, id: &str, granted: bool) -> McpServerHealth {
+        let live = {
+            let state = self.state.lock().await;
+            state
+                .as_ref()
+                .map(|connection| (connection.toolset.clone(), connection.connected_at))
+        };
+        let state = if !self.config.enabled {
+            McpState::Disabled
+        } else if let Some((toolset, connected_at)) = live {
+            let deadline = std::time::Duration::from_millis(self.config.timeout_ms.clamp(1, 1_000));
+            let alive = !toolset.is_closed().await
+                && matches!(timeout(deadline, toolset.list_prompts()).await, Ok(Ok(_)));
+            if alive {
+                let mut health = health::record(
+                    id,
+                    &self.config,
+                    McpState::Connected,
+                    self.restarts.load(Ordering::SeqCst),
+                    Some(connected_at),
+                    None,
+                );
+                health.transport = self.transport().into();
+                return health;
+            }
+            {
+                let mut current = self.state.lock().await;
+                if let Some(dead) = current.take() {
+                    dead.cancel.cancel();
+                }
+            }
+            *self.failure.lock().await = Some(ApiError::new(
+                "mcp.connection_closed",
+                "MCP server is no longer responding",
+            ));
+            McpState::Unavailable
+        } else {
+            McpState::Unavailable
+        };
+        let failure = self
+            .failure
+            .lock()
+            .await
+            .as_ref()
+            .map(|error| common::McpFailureView {
+                code: error.code.clone(),
+                message: common::redact(&error.message),
+            });
+        let mut health = health::record(
+            id,
+            &self.config,
+            if granted {
+                state
+            } else {
+                McpState::Unavailable
+            },
+            self.restarts.load(Ordering::SeqCst),
+            None,
+            failure,
+        );
+        health.transport = self.transport().into();
+        health
     }
 
     async fn preflight(&self) -> Result<(), ApiError> {
@@ -337,6 +545,49 @@ impl RemoteServer {
             }
         }
         Ok(grant)
+    }
+
+    /// Ensure a live client and return it with the configuration snapshot.
+    async fn live(&self) -> Result<(Arc<McpToolset<AdkClientHandler>>, McpServerConfig), ApiError> {
+        let grant = self.authorize()?;
+        let mut state = self.state.lock().await;
+        self.ensure_connected(&mut state, &grant).await?;
+        let connection = state.as_ref().ok_or_else(|| {
+            ApiError::new("mcp.transport_unavailable", "MCP connection is not live")
+        })?;
+        Ok((connection.toolset.clone(), self.config.clone()))
+    }
+
+    /// Restart the connection with the current credential generation.
+    async fn restart(&self) -> Result<(), ApiError> {
+        let _lifecycle = self.lifecycle.lock().await;
+        if !self.config.enabled {
+            return Err(ApiError::new(
+                "mcp.connection_disabled",
+                "MCP connection is disabled for this instance",
+            ));
+        }
+        let grant = self.authorize()?;
+        {
+            let mut state = self.state.lock().await;
+            if let Some(old) = state.take() {
+                old.cancel.cancel();
+            }
+        }
+        let destination = self.policy.vet(self.config.endpoint()).await?;
+        match self.connect(destination, &grant).await {
+            Ok(connection) => {
+                let mut state = self.state.lock().await;
+                *state = Some(connection);
+                self.restarts.fetch_add(1, Ordering::SeqCst);
+                *self.failure.lock().await = None;
+                Ok(())
+            }
+            Err(error) => {
+                *self.failure.lock().await = Some(error.clone());
+                Err(error)
+            }
+        }
     }
 
     async fn discover(&self, ctx: Arc<dyn ReadonlyContext>) -> Result<Vec<ToolSnapshot>, ApiError> {
@@ -405,6 +656,7 @@ impl RemoteServer {
         name: &str,
         ctx: Arc<dyn adk_rust::ToolContext>,
         args: Value,
+        read_only: bool,
     ) -> AdkResult<Value> {
         let session = ctx.session_id().to_string();
         if registry.has_uncertainty(&session).await {
@@ -449,28 +701,60 @@ impl RemoteServer {
             };
             tool.clone()
         };
-        match tool.execute(ctx, args).await {
-            Ok(value) => Ok(value),
-            Err(error) => {
-                let code = classify_error_code(&error.to_string());
-                if code == "mcp.outcome_unknown" {
-                    // The call may have committed remotely. Do not retry and do
-                    // not report a definite failure.
-                    registry
-                        .mark_uncertain(
-                            &session,
-                            "remote MCP write outcome is unknown after transport loss",
-                        )
-                        .await;
-                }
-                Err(AdkError::new(
-                    ErrorComponent::Tool,
-                    category_for_code(code),
-                    static_code(code),
-                    format!("{code}: {}", safe_message(code)),
-                ))
-            }
+        let deadline = std::time::Duration::from_millis(self.config.call_timeout_ms.max(1));
+        enum Outcome {
+            Done(AdkResult<Value>),
+            TimedOut,
+            Cancelled,
         }
+        let outcome = tokio::select! {
+            biased;
+            _ = wait_for_cancel(ctx.clone()) => Outcome::Cancelled,
+            result = timeout(deadline, tool.execute(ctx, args)) => match result {
+                Err(_) => Outcome::TimedOut,
+                Ok(result) => Outcome::Done(result),
+            },
+        };
+        let code = match outcome {
+            Outcome::Done(Ok(value)) => {
+                *self.failure.lock().await = None;
+                return Ok(surface::bound_value(
+                    value,
+                    self.config.max_output_bytes.max(1),
+                ));
+            }
+            Outcome::Done(Err(error)) => {
+                let lower = error.to_string().to_ascii_lowercase();
+                if is_ambiguous_transport(&lower) {
+                    "mcp.outcome_unknown"
+                } else {
+                    classify_error_code(&error.to_string())
+                }
+            }
+            Outcome::TimedOut if read_only => "mcp.timeout",
+            Outcome::TimedOut => "mcp.outcome_unknown",
+            Outcome::Cancelled if read_only => "mcp.cancelled",
+            Outcome::Cancelled => "mcp.outcome_unknown",
+        };
+        if code == "mcp.outcome_unknown" {
+            // The call may have committed remotely. Do not retry and do not
+            // report a definite failure.
+            registry
+                .mark_uncertain(
+                    &session,
+                    "remote MCP write outcome is unknown after transport loss or cancellation",
+                )
+                .await;
+        }
+        if code != "mcp.cancelled" && code != "mcp.timeout" {
+            *self.failure.lock().await = Some(ApiError::new(code, safe_message(code)));
+        }
+        Err(AdkError::new(
+            ErrorComponent::Tool,
+            category_for_code(code),
+            static_code(code),
+            format!("{code}: {}", safe_message(code)),
+        ))
     }
 
     async fn ensure_connected(
@@ -487,8 +771,16 @@ impl RemoteServer {
                 old.cancel.cancel();
             }
             let destination = self.policy.vet(self.config.endpoint()).await?;
-            let connection = self.connect(destination, grant).await?;
-            *state = Some(connection);
+            match self.connect(destination, grant).await {
+                Ok(connection) => {
+                    *state = Some(connection);
+                    *self.failure.lock().await = None;
+                }
+                Err(error) => {
+                    *self.failure.lock().await = Some(error.clone());
+                    return Err(error);
+                }
+            }
         }
         Ok(())
     }
@@ -499,22 +791,46 @@ impl RemoteServer {
         grant: &CredentialGrant,
     ) -> Result<LiveConnection, ApiError> {
         let client = self.policy.client(&destination)?;
-        let config = StreamableHttpClientTransportConfig::with_uri(self.config.endpoint())
-            // A session re-init retries the in-flight request. Refuse it so
-            // an interrupted write cannot be repeated by the transport.
-            .reinit_on_expired_session(false)
-            .auth_header(grant.value.expose().to_string());
-        let transport = StreamableHttpClientTransport::with_client(client, config);
         let handler = AdkClientHandler::new(Arc::new(AutoDeclineElicitationHandler));
-        let service = timeout(self.policy_timeout(), handler.serve(transport))
+        let service = if self.config.uses_sse() {
+            let (transport, _) = crate::mcp::sse::connect(
+                self.config.endpoint(),
+                &destination,
+                client,
+                Some(grant.value.expose().to_string()),
+                self.policy_timeout(),
+                self.config.max_output_bytes.max(1024),
+            )
+            .await?;
+            timeout(
+                self.policy_timeout(),
+                handler.serve_with_lifecycle(transport, ClientLifecycleMode::Initialize),
+            )
             .await
             .map_err(|_| {
                 ApiError::new(
                     "mcp.transport_unavailable",
-                    "MCP server handshake exceeded its deadline",
+                    "legacy MCP SSE handshake exceeded its deadline",
                 )
             })?
-            .map_err(|error| classify_transport_error(&error.to_string(), true))?;
+            .map_err(|error| classify_transport_error(&error.to_string(), true))?
+        } else {
+            let config = StreamableHttpClientTransportConfig::with_uri(self.config.endpoint())
+                // A session re-init retries the in-flight request. Refuse it so
+                // an interrupted write cannot be repeated by the transport.
+                .reinit_on_expired_session(false)
+                .auth_header(grant.value.expose().to_string());
+            let transport = StreamableHttpClientTransport::with_client(client, config);
+            timeout(self.policy_timeout(), handler.serve(transport))
+                .await
+                .map_err(|_| {
+                    ApiError::new(
+                        "mcp.transport_unavailable",
+                        "MCP server handshake exceeded its deadline",
+                    )
+                })?
+                .map_err(|error| classify_transport_error(&error.to_string(), true))?
+        };
         let toolset = Arc::new(
             McpToolset::new(service)
                 .with_name(self.id.clone())
@@ -528,6 +844,7 @@ impl RemoteServer {
             cancel,
             fingerprint: grant.fingerprint(),
             generation: grant.generation,
+            connected_at: common::now_ms(),
             tools: BTreeMap::new(),
         })
     }
@@ -541,6 +858,16 @@ impl RemoteServer {
         if let Some(connection) = state.take() {
             connection.cancel.cancel();
         }
+    }
+}
+
+/// Stop waiting when the owning invocation is cancelled.
+async fn wait_for_cancel(ctx: Arc<dyn adk_rust::ToolContext>) {
+    loop {
+        if ctx.is_cancelled() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
 
@@ -559,6 +886,8 @@ fn static_code(code: &str) -> &'static str {
         "mcp.tool_denied" => "mcp.tool_denied",
         "mcp.tool_failed" => "mcp.tool_failed",
         "mcp.outcome_unknown" => "mcp.outcome_unknown",
+        "mcp.cancelled" => "mcp.cancelled",
+        "mcp.timeout" => "mcp.timeout",
         _ => "mcp.error",
     }
 }
@@ -568,7 +897,8 @@ fn category_for_code(code: &str) -> ErrorCategory {
         ErrorCategory::Unauthorized
     } else if code.contains("denied") || code.contains("grant") {
         ErrorCategory::Forbidden
-    } else if code.contains("unavailable") || code.contains("transport") {
+    } else if code.contains("unavailable") || code.contains("transport") || code.contains("timeout")
+    {
         ErrorCategory::Unavailable
     } else {
         ErrorCategory::Internal
@@ -599,6 +929,8 @@ fn safe_message(code: &str) -> &'static str {
         }
         "mcp.credential_scope_denied" => "MCP credential does not carry a required scope",
         "mcp.tool_denied" => "the tool is outside the pinned MCP exposure",
+        "mcp.cancelled" => "the MCP tool call was cancelled",
+        "mcp.timeout" => "the MCP tool call exceeded its deadline",
         _ => "remote MCP tool call failed",
     }
 }

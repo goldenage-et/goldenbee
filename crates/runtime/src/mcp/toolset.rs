@@ -1,9 +1,10 @@
 //! Default-deny toolset and tool adapter for one MCP connection.
 
+use super::names;
 use super::registry::McpRegistry;
 use adk_rust::{AdkError, ReadonlyContext, Tool, ToolContext, Toolset};
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -77,7 +78,7 @@ impl Toolset for McpToolsetView {
             if !self.permitted(&connection.config, &original) {
                 continue;
             }
-            let exposed = format!("mcp__{}__{}", sanitize(&self.server), sanitize(&original));
+            let exposed = names::tool_id(&self.server, &original);
             if !exposed_names.insert(exposed.clone()) {
                 continue;
             }
@@ -94,12 +95,7 @@ impl Toolset for McpToolsetView {
                 grants: self.grants.clone(),
             }) as Arc<dyn Tool>;
             let guard = match &self.kernel {
-                Some(kernel) => kernel.wrap(
-                    guard,
-                    crate::tools::ToolDescriptor::new("mcp:call")
-                        .risk(crate::tools::ToolRisk::Medium)
-                        .effect(crate::tools::ToolEffect::None),
-                ),
+                Some(kernel) => kernel.wrap(guard, descriptor(&self.server)),
                 None => guard,
             };
             tools.push(guard);
@@ -111,11 +107,18 @@ impl Toolset for McpToolsetView {
 impl McpToolsetView {
     fn permitted(&self, config: &super::config::McpServerConfig, tool: &str) -> bool {
         if config.protected_tools.iter().any(|name| name == tool) {
-            return self.grants.contains("*")
-                || self.grants.contains(&format!("mcp:{}:{tool}", self.server));
+            return names::granted(&self.grants, &names::tool_grant(&self.server, tool));
         }
         true
     }
+}
+
+/// Runtime descriptor shared by local and remote MCP tool adapters.
+pub(super) fn descriptor(server: &str) -> crate::tools::ToolDescriptor {
+    crate::tools::ToolDescriptor::new(format!("mcp:{server}:call"))
+        .risk(crate::tools::ToolRisk::Medium)
+        .audit()
+        .external_effect()
 }
 
 struct McpToolGuard {
@@ -175,10 +178,10 @@ impl Tool for McpToolGuard {
             .protected_tools
             .iter()
             .any(|name| name == &self.original)
-            && !self.grants.contains("*")
-            && !self
-                .grants
-                .contains(&format!("mcp:{}:{}", self.server, self.original))
+            && !names::granted(
+                &self.grants,
+                &names::tool_grant(&self.server, &self.original),
+            )
         {
             return Err(AdkError::tool(format!(
                 "mcp.denied: protected tool '{}' has no profile grant",
@@ -205,55 +208,42 @@ impl Tool for McpToolGuard {
                     self.original
                 ))
             })?;
-        let result = tokio::time::timeout(
-            Duration::from_millis(self.call_timeout_ms.max(1)),
-            inner.execute(ctx, args),
-        )
-        .await
-        .map_err(|_| {
-            AdkError::tool(format!(
-                "mcp.timeout: tool '{}' exceeded {} ms",
-                self.original, self.call_timeout_ms
-            ))
-        })?
-        .map_err(|error| {
-            AdkError::tool(format!(
-                "mcp.call_failed: {}",
-                common::redact(&error.to_string())
-            ))
-        })?;
-        Ok(bounded(result, self.max_output_bytes.max(1)))
+        let outcome = tokio::select! {
+            biased;
+            _ = wait_for_cancel(ctx.clone()) => Ok(json!({
+                "error": "mcp.cancelled",
+                "message": "MCP tool call was cancelled; a remote effect may have been attempted",
+            })),
+            result = tokio::time::timeout(
+                Duration::from_millis(self.call_timeout_ms.max(1)),
+                inner.execute(ctx, args),
+            ) => match result {
+                Err(_) => Err(AdkError::tool(format!(
+                    "mcp.timeout: tool '{}' exceeded {} ms",
+                    self.original, self.call_timeout_ms
+                ))),
+                Ok(Err(error)) => Err(AdkError::tool(format!(
+                    "mcp.call_failed: {}",
+                    common::redact(&error.to_string())
+                ))),
+                Ok(Ok(value)) => Ok(value),
+            },
+        }?;
+        Ok(super::surface::bound_value(
+            outcome,
+            self.max_output_bytes.max(1),
+        ))
     }
 }
 
-/// Bound the serialized result before it reaches the model or event stream.
-fn bounded(value: Value, max_bytes: usize) -> Value {
-    let text = value.to_string();
-    if text.len() <= max_bytes {
-        return value;
+/// Stop waiting when the owning invocation is cancelled.
+async fn wait_for_cancel(ctx: Arc<dyn ToolContext>) {
+    loop {
+        if ctx.is_cancelled() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let mut end = max_bytes.min(text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    serde_json::json!({
-        "truncated": true,
-        "original_bytes": text.len(),
-        "preview": &text[..end],
-    })
-}
-
-fn sanitize(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 /// Discovery needs a context. The inner native toolset ignores it for

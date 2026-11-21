@@ -170,6 +170,15 @@ configuration surface.
 - Ticket 26 verifies remote MCP Streamable HTTP through the native `McpToolset`
   and `Runner`, plus a Worker-owned destination/credential adapter. See the
   remote MCP tests.
+- Runtime CLI parity ticket 12 reuses the pinned `adk_tool::mcp::McpToolset` for
+  stdio and Streamable HTTP and for `resources/list`, `resources/templates/list`,
+  `resources/read`, `prompts/list`, and `prompts/get`. `rmcp` 3.11.0 exposes no
+  HTTP+SSE client transport, so `runtime::mcp::sse` is a Worker-owned
+  `Transport<RoleClient>` compatibility adapter handed to the same native
+  `McpToolset`; it is not a second MCP client. OAuth is limited to static
+  operator-owned credential references: `adk_tool::mcp::OAuth2Config` is not an
+  authorization-flow or token-vault substitute. See `mcp_surface.rs` and
+  `mcp_sse.rs`.
 - Ticket 24 verifies native `SKILL.md` parsing and selection through
   `adk_skill::SkillIndex`, `LlmAgentBuilder::with_skills`, and
   `adk_agent::team::WorkflowArchitectureTemplate` binding for profile workflow
