@@ -213,6 +213,7 @@ pub struct NativeExecutor {
     mcp_declarations: BTreeMap<String, Vec<String>>,
     remote_mcp: Option<Arc<RemoteMcpRegistry>>,
     effect_approvals: BTreeMap<String, crate::EffectApprovalPolicy>,
+    max_tool_concurrency: Option<usize>,
 }
 
 impl NativeExecutor {
@@ -266,6 +267,7 @@ impl NativeExecutor {
             mcp_declarations: BTreeMap::new(),
             remote_mcp: None,
             effect_approvals: BTreeMap::new(),
+            max_tool_concurrency: None,
         })
     }
 
@@ -332,6 +334,12 @@ impl NativeExecutor {
         approvals: BTreeMap<String, crate::EffectApprovalPolicy>,
     ) -> Self {
         self.effect_approvals = approvals;
+        self
+    }
+
+    /// Bound native parallel tool dispatch with the runtime limit.
+    pub fn with_tool_concurrency(mut self, max_parallel: usize) -> Self {
+        self.max_tool_concurrency = Some(max_parallel.max(1));
         self
     }
 
@@ -863,6 +871,12 @@ impl crate::Executor for NativeExecutor {
                 .await;
         }
         let mut run_config = runner.run_config().clone();
+        if let Some(max_parallel) = self.max_tool_concurrency {
+            run_config.tool_concurrency = adk_rust::ToolConcurrencyConfig {
+                max_concurrency: Some(max_parallel),
+                ..Default::default()
+            };
+        }
         if !self.effect_approvals.is_empty() {
             run_config.tool_confirmation_handler = Some(Arc::new(EffectConfirmationHandler {
                 runtime: runtime.clone(),

@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub fn worker() -> Result<Worker, String> {
     Ok(Worker::new("general", env!("CARGO_PKG_VERSION"))
         .required_permissions(["task:submit", "session:write"])
-        .model_agent(
+        .model_agent_with_settings(
             "manual",
             "Manual native ADK diagnostic agent",
             MANUAL_MODEL,

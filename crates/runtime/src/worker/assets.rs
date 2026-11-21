@@ -93,20 +93,51 @@ impl Assets {
     ) -> WorkerResult<Self> {
         let mcp_ids: BTreeSet<String> = settings.file.mcp.servers.keys().cloned().collect();
         let mut tools = tools.clone();
+        let kernel = settings.tool_kernel();
         if let Some(memory) = memory {
-            tools.insert(
-                "remember_memory".into(),
-                Arc::new(RememberMemoryTool::new(memory.clone())) as Arc<dyn Tool>,
-            );
+            let tool: Arc<dyn Tool> = Arc::new(RememberMemoryTool::new(memory.clone()));
+            let tool = kernel
+                .as_ref()
+                .map(|kernel| {
+                    kernel.wrap(
+                        tool.clone(),
+                        crate::tools::ToolDescriptor::new("session:write")
+                            .risk(crate::tools::ToolRisk::Medium),
+                    )
+                })
+                .unwrap_or(tool);
+            tools.insert("remember_memory".into(), tool);
         }
         if let Some(graph) = graph {
+            let observe: Arc<dyn Tool> = Arc::new(ObserveKnowledgeTool::new(graph.clone()));
+            let observe = kernel
+                .as_ref()
+                .map(|kernel| {
+                    kernel.wrap(
+                        observe.clone(),
+                        crate::tools::ToolDescriptor::new("knowledge:ingest")
+                            .risk(crate::tools::ToolRisk::Medium),
+                    )
+                })
+                .unwrap_or(observe);
             tools.insert(
                 crate::data::knowledge_tools::KNOWLEDGE_OBSERVE_TOOL.into(),
-                Arc::new(ObserveKnowledgeTool::new(graph.clone())) as Arc<dyn Tool>,
+                observe,
             );
+            let recall: Arc<dyn Tool> = Arc::new(RecallKnowledgeTool::new(graph.clone()));
+            let recall = kernel
+                .as_ref()
+                .map(|kernel| {
+                    kernel.wrap(
+                        recall.clone(),
+                        crate::tools::ToolDescriptor::new("knowledge:read")
+                            .risk(crate::tools::ToolRisk::Low),
+                    )
+                })
+                .unwrap_or(recall);
             tools.insert(
                 crate::data::knowledge_tools::KNOWLEDGE_RECALL_TOOL.into(),
-                Arc::new(RecallKnowledgeTool::new(graph.clone())) as Arc<dyn Tool>,
+                recall,
             );
         }
         let prompts = load_prompts(settings.prompts_dir.as_deref())?;
@@ -116,7 +147,7 @@ impl Assets {
             agents: manual_agents,
             providers: mut agent_providers,
             requirements: mut agent_requirements,
-        } = resolve_manual_agents(manual_agents, providers)?;
+        } = resolve_manual_agents(manual_agents, providers, settings)?;
         let mut names: BTreeSet<String> = manual_agents.keys().cloned().collect();
         for id in graphs.keys() {
             if !names.insert(id.clone()) {
@@ -247,6 +278,7 @@ struct ManualResolution {
 fn resolve_manual_agents(
     definitions: &BTreeMap<String, ManualAgent>,
     providers: &Arc<ProviderRegistry>,
+    settings: &WorkerSettings,
 ) -> WorkerResult<ManualResolution> {
     let mut agents = BTreeMap::new();
     let mut agent_providers = BTreeMap::new();
@@ -274,7 +306,13 @@ fn resolve_manual_agents(
                             ),
                         )
                     })?;
-                let agent = (definition.factory)(resolved.model).map_err(|message| {
+                let agent = match &definition.build {
+                    crate::worker::ManualAgentBuild::Model(factory) => factory(resolved.model),
+                    crate::worker::ManualAgentBuild::WithSettings(factory) => {
+                        factory(resolved.model, settings)
+                    }
+                }
+                .map_err(|message| {
                     ApiError::new(
                         "asset.agent_build_failed",
                         format!("agent '{id}' failed to build: {}", common::redact(&message)),

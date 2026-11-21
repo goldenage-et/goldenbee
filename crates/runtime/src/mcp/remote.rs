@@ -33,11 +33,16 @@ const MAX_ERROR_CHARS: usize = 512;
 pub struct RemoteMcpRegistry {
     servers: BTreeMap<String, Arc<RemoteServer>>,
     uncertainty: Mutex<BTreeMap<String, String>>,
+    kernel: Option<crate::tools::ToolKernel>,
 }
 
 impl RemoteMcpRegistry {
     /// Create the registry after configuration validation.
-    pub fn new(config: McpConfig, credentials: McpCredentials) -> Arc<Self> {
+    pub fn new(
+        config: McpConfig,
+        credentials: McpCredentials,
+        kernel: Option<crate::tools::ToolKernel>,
+    ) -> Arc<Self> {
         let servers = config
             .servers
             .iter()
@@ -56,6 +61,7 @@ impl RemoteMcpRegistry {
         Arc::new(Self {
             servers,
             uncertainty: Mutex::new(BTreeMap::new()),
+            kernel,
         })
     }
 
@@ -185,7 +191,7 @@ impl adk_rust::Toolset for RemoteMcpToolset {
                         ),
                     ));
                 }
-                tools.push(Arc::new(PinnedMcpTool {
+                let tool = Arc::new(PinnedMcpTool {
                     registry: Arc::clone(&self.registry),
                     server: server.clone(),
                     name: snapshot.name,
@@ -194,7 +200,15 @@ impl adk_rust::Toolset for RemoteMcpToolset {
                     response: snapshot.response,
                     read_only: snapshot.read_only,
                     long_running: snapshot.long_running,
-                }));
+                }) as Arc<dyn adk_rust::Tool>;
+                tools.push(match &self.registry.kernel {
+                    Some(kernel) => kernel.wrap(
+                        tool,
+                        crate::tools::ToolDescriptor::new("mcp:call")
+                            .risk(crate::tools::ToolRisk::Medium),
+                    ),
+                    None => tool,
+                });
             }
         }
         Ok(tools)

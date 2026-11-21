@@ -16,6 +16,7 @@ pub(super) struct McpToolsetView {
     server: String,
     name: String,
     grants: BTreeSet<String>,
+    kernel: Option<crate::tools::ToolKernel>,
 }
 
 impl McpToolsetView {
@@ -23,6 +24,7 @@ impl McpToolsetView {
         registry: Weak<McpRegistry>,
         server: String,
         grants: BTreeSet<String>,
+        kernel: Option<crate::tools::ToolKernel>,
     ) -> Self {
         let name = format!("mcp:{server}");
         Self {
@@ -30,6 +32,7 @@ impl McpToolsetView {
             server,
             name,
             grants,
+            kernel,
         }
     }
 }
@@ -78,7 +81,7 @@ impl Toolset for McpToolsetView {
             if !exposed_names.insert(exposed.clone()) {
                 continue;
             }
-            tools.push(Arc::new(McpToolGuard {
+            let guard = Arc::new(McpToolGuard {
                 registry: self.registry.clone(),
                 server: self.server.clone(),
                 original,
@@ -89,7 +92,17 @@ impl Toolset for McpToolsetView {
                 call_timeout_ms: connection.config.call_timeout_ms,
                 max_output_bytes: connection.config.max_output_bytes,
                 grants: self.grants.clone(),
-            }));
+            }) as Arc<dyn Tool>;
+            let guard = match &self.kernel {
+                Some(kernel) => kernel.wrap(
+                    guard,
+                    crate::tools::ToolDescriptor::new("mcp:call")
+                        .risk(crate::tools::ToolRisk::Medium)
+                        .effect(crate::tools::ToolEffect::None),
+                ),
+                None => guard,
+            };
+            tools.push(guard);
         }
         Ok(tools)
     }

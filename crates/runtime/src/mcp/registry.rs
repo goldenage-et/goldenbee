@@ -20,14 +20,16 @@ struct RegistryState {
 pub struct McpRegistry {
     grants: RwLock<BTreeSet<String>>,
     state: RwLock<RegistryState>,
+    kernel: Option<crate::tools::ToolKernel>,
 }
 
 impl McpRegistry {
     /// Create an empty registry bound to the instance grants in effect.
-    pub fn new(grants: &[String]) -> Self {
+    pub fn new(grants: &[String], kernel: Option<crate::tools::ToolKernel>) -> Self {
         Self {
             grants: RwLock::new(grants.iter().cloned().collect()),
             state: RwLock::new(RegistryState::default()),
+            kernel,
         }
     }
 
@@ -124,6 +126,7 @@ impl McpRegistry {
             Arc::downgrade(self),
             id.to_string(),
             grants,
+            self.kernel.clone(),
         ))
     }
 

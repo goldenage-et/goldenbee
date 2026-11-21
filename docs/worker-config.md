@@ -204,6 +204,67 @@ downloads_dir = "browser-downloads"
   profile `secret_refs` remain Worker-owned references and are not exposed to
   the page.
 
+## Generic file and search tools
+
+A package opts in with `.file_tools()` (all seven) or `.file_tool(...)` /
+`.builtin_tools([...])` for a narrower set. Configuration cannot create a tool
+the package did not declare. A package that declares nothing exposes no generic
+file or search tool.
+
+| Tool | Source | Permission | Effect |
+| --- | --- | --- | --- |
+| `read_file` | pinned `adk_devtools::ReadFileTool` | `workspace:read` | none |
+| `glob` | pinned `adk_devtools::GlobTool` | `workspace:read` | none |
+| `grep` | pinned `adk_devtools::GrepTool` | `workspace:read` | none |
+| `write_file` | pinned `adk_devtools::WriteFileTool` | `workspace:write` | `file_write` |
+| `edit_file` | pinned `adk_devtools::EditFileTool` | `workspace:write` | `file_write` |
+| `multi_edit` | runtime adapter over the same workspace writer | `workspace:write` | `file_write` |
+| `apply_patch` | runtime adapter for the Codex `*** Begin Patch` format | `workspace:write` | `file_write` |
+
+`multi_edit` applies `{ "path", "edits": [{ "old_string", "new_string",
+"replace_all"? }] }` sequentially in memory and writes once. `apply_patch`
+accepts `{ "patch" }` with `*** Add File:`, `*** Update File:` (optionally
+`*** Move to:`), and `*** Delete File:` operations. Both reject paths outside
+the configured workspace.
+
+```toml
+[tools]
+workspace = "workspace"      # default: <storage>/workspace
+timeout_ms = 120000          # per-call wall-clock deadline
+max_output_bytes = 1048576   # serialized result ceiling
+max_parallel = 4             # concurrent wrapped tool calls
+```
+
+Every declared and enabled tool appears in `capabilities --config <path>` as a
+`tool` capability with its workspace permission. A disabled tool is absent from
+the inventory, absent from agent binding, and denied by the runtime gate if a
+model requests its name directly.
+
+All tool sources share one runtime kernel: package registration,
+`Worker::toolset` discovery, MCP toolset views, profile-built agents, and package
+agent factories that use `settings.tool_kernel()`. The kernel applies the
+timeout, cancellation, output ceiling, path lock, bounded concurrency, evidence,
+and audit described below.
+
+### Tool events and evidence
+
+Mutating calls append durable `tool.started`, `tool.completed`, and `tool.effect`
+events to the task stream before the terminal task event. Non-mutating calls
+append `tool.started` and `tool.completed`. The stable payload fields are:
+
+- identity: `tool`, `call_id`, `invocation`, `agent`;
+- policy: `capability`, `risk`, `permission`, `sandbox`, `redaction`;
+- bounds: `timeout_ms`, `max_output_bytes`, `queue_wait_ms`, `duration_ms`,
+  `output_bytes`, `truncated`;
+- evidence: `schema_digest`, `arguments_digest`, `result_digest`, `post_digest`,
+  `diff`, and `effect_evidence` (`kind`, `paths`, `digest`, `post_digest`).
+
+Paths are workspace-relative. Argument and result content is represented by a
+digest, not copied into events. Each mutating call also writes a redacted
+`tool.effect` audit entry with outcome `committed` or `failed` before the task
+outcome is committed. A tool deadline returns `tool.timeout`; cancellation
+returns `tool.cancelled`; neither is reported as success.
+
 ## Agent definitions
 
 Agent files live in the configured `agents` directory. Each `*.toml` is one
@@ -565,12 +626,18 @@ The Coding Worker uses the same shared runtime and operator-selected
 configuration. It adds two compiled native agents and one instance-scoped
 service:
 
-- `developer` is a writable `adk_agent::coding::CodingAgent` bound to the
-  instance worktree. Its native `bash` tool is disabled; commands run through
-  the shared runtime sandbox as `exec_command`.
-- `reviewer` is the same native `CodingAgent` over a read-only workspace. The
-  native devtools toolset omits `write_file`, `edit_file`, and `bash`, and no
+- `developer` is a writable native coding agent bound to the instance worktree.
+  It composes the pinned `adk_agent::coding::CODING_SYSTEM_PROMPT`,
+  `adk_agent::coding::TodoTool`, and `adk_devtools::DevToolset` through
+  `LlmAgentBuilder` so the shared runtime tool kernel wraps every developer
+  tool. Its native `bash` tool is disabled; commands run through the shared
+  runtime sandbox as `exec_command`.
+- `reviewer` uses the same composition over a read-only workspace. The native
+  devtools toolset omits `write_file`, `edit_file`, and `bash`, and no
   `exec_command` tool is attached.
+- `adk_agent::coding::CodingAgent` itself does not accept an externally wrapped
+  toolset, so the package composes the same pinned ADK primitives directly
+  rather than binding an un-wrapped convenience agent.
 - Repository, worktree, build, and evidence services are package-owned and
   constructed once per process. A changed repository setting requires a restart
   rather than silently rebinding a live checkout.
