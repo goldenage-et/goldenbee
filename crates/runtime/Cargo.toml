@@ -24,8 +24,9 @@ provider-crypto = { path = "../provider-crypto" }
 adk-rust = { version = "=2.3.0", default-features = false, features = ["agents", "runner", "sessions", "openrouter", "ollama", "openai", "skills", "plugin", "server", "a2a"] }
 # Delegate team relationships lower to native AgentTools. The facade's `tools`
 # feature would also add unrelated toolsets, so enable the narrower upstream
-# feature on the pinned agent crate directly.
-adk-agent = { version = "=2.3.0", default-features = false, features = ["team-tools"] }
+# feature on the pinned agent crate directly. `coding` exposes the pinned
+# `TodoTool` only; the runtime binds no coding prompt or coding agent.
+adk-agent = { version = "=2.3.0", default-features = false, features = ["team-tools", "coding"] }
 # The A2A v1 extension point (`TaskStore`) and its wire types live in
 # a2a-protocol-types. Pin the exact version adk-server 2.3.0 resolves so the
 # adapter implements the same trait and serializes the same wire values.
@@ -59,6 +60,9 @@ base64.workspace = true
 # keeps its own contained-write helper private, so the two adapters that ADK
 # does not provide repeat the same final-component guard.
 libc = "0.2"
+# Interactive PTY sessions for the opt-in process tools. The child is still the
+# validated `prlimit`/`bubblewrap` vector; the PTY only carries its terminal.
+portable-pty = "0.9"
 uuid.workspace = true
 zeroize.workspace = true
 tokio = { workspace = true }

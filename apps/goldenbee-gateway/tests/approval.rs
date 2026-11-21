@@ -582,6 +582,7 @@ fn gateway_forwards_the_exact_digest_and_approval_resumes_one_worker_effect() {
             &ApprovalDecision {
                 decision: "approved".into(),
                 digest: pending.approval.digest.clone(),
+                answer: None,
             },
         ))
         .expect("sdk decision is forwarded");
@@ -899,6 +900,7 @@ fn socket_approval_replays_the_recorded_worker_outcome_without_a_second_effect()
             decision: ApprovalDecision {
                 decision: "approved".into(),
                 digest: pending.approval.digest.clone(),
+                answer: None,
             },
         },
     );

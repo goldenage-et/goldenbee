@@ -203,6 +203,7 @@ impl Runtime {
                     for id in &terminal {
                         state.tasks.remove(id);
                         state.events.remove(id);
+                        state.task_plans.remove(id);
                         state.task_index.retain(|_, value| value != id);
                         state
                             .approvals
@@ -847,8 +848,10 @@ impl Runtime {
                     for id in &terminal {
                         state.tasks.remove(id);
                         state.events.remove(id);
+                        state.task_plans.remove(id);
                         state.task_index.retain(|_, value| value != id);
                     }
+                    state.task_plans.retain(|id, _| !task_set.contains(id));
                     let mut scrubbed = 0usize;
                     for task in state.tasks.values_mut() {
                         if task_set.contains(&task.id) && !task.state.is_terminal() {

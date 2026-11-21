@@ -586,6 +586,7 @@ async fn authorized_erasure_denies_foreign_namespace_and_reports_obligations() {
                     decided_by: None,
                     decided_at: None,
                     receipt: Some("alice receipt".into()),
+                    answer: None,
                     created_at: common::now_ms(),
                 },
             );
@@ -605,6 +606,7 @@ async fn authorized_erasure_denies_foreign_namespace_and_reports_obligations() {
                     decided_by: None,
                     decided_at: None,
                     receipt: None,
+                    answer: None,
                     created_at: common::now_ms(),
                 },
             );

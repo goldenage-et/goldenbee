@@ -47,6 +47,30 @@ impl TaskState {
     }
 }
 
+/// One item in a task-owned plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanItem {
+    /// What the step does.
+    pub content: String,
+    /// One of `pending`, `in_progress`, or `completed`.
+    pub status: String,
+}
+
+/// Per-task plan state recorded by the planning tool.
+///
+/// The plan belongs to exactly one task. It is replaced in full on each update
+/// and is removed when the task record is retained or erased.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskPlan {
+    /// Owning task.
+    pub task_id: String,
+    /// Current ordered plan.
+    #[serde(default)]
+    pub items: Vec<PlanItem>,
+    /// Last update time in milliseconds.
+    pub updated_at: i64,
+}
+
 /// Request to submit a task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmitTaskRequest {

@@ -3,6 +3,7 @@
 mod approvals;
 mod cancel;
 pub(crate) mod events;
+mod plan;
 mod recover;
 mod resume;
 mod run;

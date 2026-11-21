@@ -133,46 +133,12 @@ impl Sandbox {
     }
 
     fn command(&self, command: &str, guest_dir: &str) -> Command {
-        let mut process = Command::new(&self.policy.prlimit);
+        let argv = self
+            .argv_for(command, guest_dir, true)
+            .expect("a validated guest directory resolves");
+        let mut process = Command::new(argv.program);
         process
-            .arg(format!("--cpu={}", self.policy.limits.cpu_seconds))
-            .arg(format!("--as={}", self.policy.limits.memory_bytes))
-            .arg(format!("--nproc={}", self.policy.limits.max_processes))
-            .arg(format!("--fsize={}", self.policy.limits.max_file_bytes))
-            .arg(format!("--nofile={}", self.policy.limits.max_open_files))
-            .arg("--")
-            .arg(&self.policy.bubblewrap)
-            .arg("--unshare-all")
-            .arg("--unshare-user")
-            .arg("--uid")
-            .arg(self.policy.uid.to_string())
-            .arg("--gid")
-            .arg(self.policy.gid.to_string())
-            .arg("--die-with-parent")
-            .arg("--new-session")
-            .arg("--disable-userns")
-            .arg("--cap-drop")
-            .arg("ALL")
-            .arg("--clearenv");
-        for (key, value) in &self.policy.environment {
-            process.arg("--setenv").arg(key).arg(value);
-        }
-        process.arg("--proc").arg("/proc");
-        process.arg("--dev").arg("/dev");
-        process.arg("--tmpfs").arg("/tmp");
-        for mount in &self.policy.read_only_mounts {
-            process.arg("--ro-bind").arg(mount).arg(mount);
-        }
-        process
-            .arg("--bind")
-            .arg(&self.policy.workspace)
-            .arg("/workspace")
-            .arg("--chdir")
-            .arg(guest_dir)
-            .arg("--")
-            .arg("/bin/sh")
-            .arg("-c")
-            .arg(command)
+            .args(argv.args)
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -182,10 +148,99 @@ impl Sandbox {
         process
     }
 
-    async fn terminate(&self, child: &mut Child, pid: u32) -> Result<(), SandboxError> {
-        // Kill the process group first so cooperative descendants receive the
-        // signal together, then kill the supervisor. `--die-with-parent` and
-        // the PID namespace guarantee the remaining descendants die with it.
+    /// Program and arguments for one contained shell command.
+    ///
+    /// The process supervisor and PTY adapter reuse this exact vector, so a
+    /// background or interactive command cannot choose a weaker boundary than
+    /// the foreground executor.
+    pub(crate) fn argv(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+    ) -> Result<super::SandboxArgv, SandboxError> {
+        let guest_dir = self.guest_working_dir(working_dir)?;
+        self.argv_for(command, &guest_dir, true)
+    }
+
+    /// Program and arguments for one interactive PTY command.
+    ///
+    /// The PTY layer already creates the session and controlling terminal, so
+    /// `--new-session` is omitted. Calling `setsid` twice fails, and the PTY is
+    /// a per-session terminal with no host tty to inject into.
+    pub(crate) fn pty_argv(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+    ) -> Result<super::SandboxArgv, SandboxError> {
+        let guest_dir = self.guest_working_dir(working_dir)?;
+        self.argv_for(command, &guest_dir, false)
+    }
+
+    fn argv_for(
+        &self,
+        command: &str,
+        guest_dir: &str,
+        new_session: bool,
+    ) -> Result<super::SandboxArgv, SandboxError> {
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
+        let mut push = |arg: &str| args.push(std::ffi::OsString::from(arg));
+        push(&format!("--cpu={}", self.policy.limits.cpu_seconds));
+        push(&format!("--as={}", self.policy.limits.memory_bytes));
+        push(&format!("--nproc={}", self.policy.limits.max_processes));
+        push(&format!("--fsize={}", self.policy.limits.max_file_bytes));
+        push(&format!("--nofile={}", self.policy.limits.max_open_files));
+        push("--");
+        push(&self.policy.bubblewrap.to_string_lossy());
+        push("--unshare-all");
+        push("--unshare-user");
+        push("--uid");
+        push(&self.policy.uid.to_string());
+        push("--gid");
+        push(&self.policy.gid.to_string());
+        push("--die-with-parent");
+        if new_session {
+            push("--new-session");
+        }
+        push("--disable-userns");
+        push("--cap-drop");
+        push("ALL");
+        push("--clearenv");
+        for (key, value) in &self.policy.environment {
+            push("--setenv");
+            push(key);
+            push(value);
+        }
+        push("--proc");
+        push("/proc");
+        push("--dev");
+        push("/dev");
+        push("--tmpfs");
+        push("/tmp");
+        for mount in &self.policy.read_only_mounts {
+            push("--ro-bind");
+            push(&mount.to_string_lossy());
+            push(&mount.to_string_lossy());
+        }
+        push("--bind");
+        push(&self.policy.workspace.to_string_lossy());
+        push("/workspace");
+        push("--chdir");
+        push(guest_dir);
+        push("--");
+        push("/bin/sh");
+        push("-c");
+        push(command);
+        Ok(super::SandboxArgv {
+            program: self.policy.prlimit.clone(),
+            args,
+        })
+    }
+
+    /// Terminate one process group with the configured `kill` mechanism.
+    ///
+    /// The group signal is the same mechanism the foreground executor uses, so
+    /// a backed-out background process cannot survive its own tool contract.
+    pub(crate) fn kill_group(&self, pid: u32) {
         let _ = std::process::Command::new(&self.policy.kill)
             .arg("-KILL")
             .arg("--")
@@ -195,6 +250,13 @@ impl Sandbox {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+
+    async fn terminate(&self, child: &mut Child, pid: u32) -> Result<(), SandboxError> {
+        // Kill the process group first so cooperative descendants receive the
+        // signal together, then kill the supervisor. `--die-with-parent` and
+        // the PID namespace guarantee the remaining descendants die with it.
+        self.kill_group(pid);
         let _ = child.start_kill();
         match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
             Ok(Ok(_)) => Ok(()),

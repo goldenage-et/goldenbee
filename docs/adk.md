@@ -70,6 +70,9 @@ assertions above.
 | Artifact runner wiring | `adk_runner::Runner::builder().artifact_service` | [Runner guide](https://adk-rust.com/en/docs/core/runner), `adk-runner-2.3.0/src/builder.rs` |
 | Artifact provenance | `adk_core::EventActions::artifact_delta` | [Events guide](https://adk-rust.com/en/docs/events/events), `adk-core-2.3.0/src/event.rs` |
 | Identity | `adk_core::{UserId, SessionId}` | `adk-core-2.3.0/src/identity.rs` |
+| Planning semantics | `adk_agent::coding::TodoTool`, `adk_agent::coding::TodoItem` | `adk-agent-2.3.0/src/coding/todo.rs` |
+| File/search tools | `adk_devtools::{ReadFileTool, WriteFileTool, EditFileTool, GlobTool, GrepTool, Workspace}` | `adk-devtools-2.3.0/src/*` |
+| Tool contract | `adk_core::{Tool, Toolset, ToolContext, ReadonlyContext}` | `adk-core-2.3.0/src/tool.rs` |
 
 The model adapter is a test boundary, not a replacement engine. It implements
 the native `Llm` trait; the native `Runner`, `LlmAgent`, session service, event
@@ -196,6 +199,17 @@ configuration surface.
   credential revocation, and secret-safe inspection. These checks do not claim
   hosted provider availability or a full Coding/Knowledge package surface; see
   the model provider tests.
+- Ticket 01 verifies `adk_devtools` 2.3.0 file/search tools through the runtime
+  tool kernel. Pinned ADK has no multi-edit or `apply_patch` tool, so those two
+  are runtime adapters over the same `Workspace` containment.
+- Ticket 02 verifies `adk_agent::coding::TodoTool` item semantics through a
+  durable per-task wrapper. Pinned ADK 2.3.0 supplies no PTY, background
+  process, wait, kill, generic web fetch/search, image-view, or ask-user tool.
+  Those are Goldenbee adapters over the existing sandbox process vector,
+  approval record, task event stream, and store. The OS boundary remains
+  `prlimit`/`bubblewrap`; the PTY uses `portable_pty` only as the terminal
+  carrier and omits bubblewrap `--new-session` because the PTY already creates
+  the session.
 - Shared wire types in `common`, Client applications, and the client SDK must
   not link native ADK execution. Worker Packages and shared Worker runtime
   modules may carry it. Gateway may use verified native A2A transport without
