@@ -58,7 +58,12 @@ pub(crate) fn developer(
         exec,
         ToolDescriptor::new("exec:command")
             .risk(ToolRisk::High)
-            .effect(ToolEffect::None),
+            .effect(ToolEffect::None)
+            .command(|args| {
+                args.get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            }),
     );
     let instruction = format!("{CODING_SYSTEM_PROMPT}\n\n{instruction}");
     let agent = LlmAgentBuilder::new("developer")

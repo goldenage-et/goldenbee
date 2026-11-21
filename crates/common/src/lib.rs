@@ -78,8 +78,8 @@ pub use plan::{
     PlanControlRequest, PlanCriterion,
 };
 pub use profile::{
-    Approval, ApprovalDecision, ContextCompaction, CreateProfileRequest, DeletedProfile, Profile,
-    ProfileRevision, ProfileVersionRequest, ReviseProfileRequest,
+    Approval, ApprovalAction, ApprovalDecision, ContextCompaction, CreateProfileRequest,
+    DeletedProfile, Profile, ProfileRevision, ProfileVersionRequest, ReviseProfileRequest,
 };
 pub use providers::{
     adapter_discovers_models, CreatePairCodeRequest, CreateProviderRequest, PairCodeResponse,

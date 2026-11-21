@@ -49,13 +49,15 @@ impl Worker {
         )) as Arc<dyn Tool>;
         let id = id.into();
         worker.effect_reconcilers.insert(native_name, reconciler);
-        let wrapped = worker.kernel.wrap(
-            wrapper,
-            ToolDescriptor::new("effect:call")
-                .risk(ToolRisk::High)
-                .effect(ToolEffect::None)
-                .no_timeout(),
-        );
+        // The Worker's effect policy owns approval for this tool. The kernel
+        // still enforces deny rules and explicit ask rules; a mode ask is
+        // delegated so the effect policy remains authoritative.
+        let descriptor = ToolDescriptor::new("effect:call")
+            .risk(ToolRisk::High)
+            .effect(ToolEffect::None)
+            .tool_owned_approval()
+            .no_timeout();
+        let wrapped = worker.kernel.wrap(wrapper, descriptor);
         worker.insert_registered(id, wrapped, Vec::new())
     }
 
@@ -79,6 +81,22 @@ impl Worker {
             .cloned()
             .unwrap_or_else(|| "tool:call".into());
         let descriptor = ToolDescriptor::new(capability).risk(ToolRisk::Medium);
+        let wrapped = self.kernel.wrap(tool, descriptor);
+        self.insert_registered(id.into(), wrapped, permissions)
+    }
+
+    /// Register a native tool with complete runtime descriptor metadata.
+    ///
+    /// Package tools that execute commands, reach a network domain, or mutate
+    /// files use this so permission rules can match the observed command, paths,
+    /// and domain instead of a model-supplied label.
+    pub fn tool_with_descriptor(
+        self,
+        id: impl Into<String>,
+        tool: Arc<dyn Tool>,
+        descriptor: ToolDescriptor,
+    ) -> Self {
+        let permissions = vec![descriptor.capability.clone()];
         let wrapped = self.kernel.wrap(tool, descriptor);
         self.insert_registered(id.into(), wrapped, permissions)
     }

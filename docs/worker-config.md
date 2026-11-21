@@ -265,6 +265,112 @@ digest, not copied into events. Each mutating call also writes a redacted
 outcome is committed. A tool deadline returns `tool.timeout`; cancellation
 returns `tool.cancelled`; neither is reported as success.
 
+## Permission modes and rules
+
+The operator selects one mode and may add ordered rules. The policy is data in
+the Worker configuration; it is evaluated before every tool dispatch in the
+shared kernel, for package tools, built-in tools, MCP toolset views, and tools
+bound by profile or package agents.
+
+```toml
+[permissions]
+mode = "default"          # default | accept-edits | plan | full-auto
+approval_wait_ms = 30000  # bounded in-tool wait before a truthful pending result
+approval_ttl_ms = 900000  # how long a decision can authorize a retry
+
+[[permissions.rules]]
+id = "allow-git-status"
+decision = "allow"        # allow | deny | ask
+tools = ["exec_command"]
+command_prefix = ["git", "status"]
+priority = 10
+
+[[permissions.rules]]
+id = "deny-secrets"
+decision = "deny"
+paths = ["secrets/*"]
+priority = 100
+
+[[permissions.rules]]
+id = "ask-remote"
+decision = "ask"
+domains = ["*.example.com"]
+```
+
+| Mode | Reads | File writes/edits | Deletes, commands, network, high risk |
+| --- | --- | --- | --- |
+| `default` | allow | ask | ask |
+| `accept-edits` | allow | allow | ask |
+| `plan` | allow | deny | deny |
+| `full-auto` | allow | allow | allow |
+
+A rule matches by tool-name glob (`*` and `?`), command argv prefix, resolved
+workspace-relative path glob, and network host glob. Empty predicates do not
+constrain that dimension. A `paths` rule matches only when at least one resolved
+path matches; a `command_prefix` rule matches only when the call actually
+carries a command; a `domains` rule matches only when the call actually carries
+a host. Matching never trusts a model-supplied label of the tool, path, command,
+or domain.
+
+Rules are ordered data. The highest-priority matching rule group decides; at
+equal priority `deny` outranks `ask`, which outranks `allow`, and the first rule
+in configuration order wins an exact tie. A mode is a ceiling: an `allow` rule
+can upgrade a default ask, but it cannot widen `plan`. An explicit `deny` always
+wins, including in `full-auto`; `full-auto` auto-approves `ask` rules because the
+mode exists to remove prompts.
+
+### Approval identity
+
+An ask creates one durable approval bound to the exact tool, canonical argument
+digest, resolved paths, command, network domain, sandbox profile, requesting
+principal, and pinned profile revision. The canonical digest of that action is
+the approval digest. Repeating the same action finds the recorded decision; any
+changed field produces a new digest and therefore a new decision. Argument
+content appears as a digest, not as plaintext in events or audit. The
+`approval.requested` event and the approval record carry the exact action, the
+mode, and the matching rule, so a Client can render why work paused.
+
+An approval can be approved or rejected through the existing approval routes.
+Only the task caller or an administrator in the task namespace may decide, and
+the decision must carry the digest the approver saw.
+
+### Ask behavior
+
+A decision is requested inside the tool call and waits up to
+`approval_wait_ms`. The turn releases its execution permit while it waits, as
+with any native approval.
+
+- If a decision arrives in time, an approval allows that exact call and a
+  rejection or expiry returns `permission.denied` without executing.
+- If no decision arrives, the call returns a typed `approval.pending` result,
+  appends an `approval.pending` event, and the native turn continues. The
+  approval stays durable for a later decision, but a later retry is a new call
+  and must produce the same exact action to reuse it.
+- Ordinary, non-graph tasks are not resumable from a pending approval. The
+  runtime does not claim that continuing the turn authorizes the action, and it
+  does not claim checkpoint-based resume for a non-graph task.
+
+### Evidence and audit
+
+Every decision appends a `permission.decision` event before dispatch with the
+final `decision`, the evaluated `evaluated` value, `mode`, `rule`, `reason`,
+`paths`, `command`, `domain`, `action_digest`, the sandbox profile, and a
+`policy` snapshot (`revision`, `digest`, `mode`, `rule_count`). `tool.started`
+and `tool.completed` carry the same decision under `permission`.
+
+Protected effect tools keep their own exact operation approval. When the mode
+would ask for an effect tool, the kernel records the handoff through
+`tool.started`/`tool.completed` and does not create a second approval; the
+effect tool's `approval.requested` remains the decision evidence. An explicit
+ask rule is still enforced by the kernel.
+
+Denied calls do not execute. They append the same event and a redacted
+`permission.decision` audit record whose detail names the matching rule and
+decision without argument or command plaintext. An operator policy change
+advances the policy revision and records a `permission.policy` audit entry.
+Each tool call snapshots the policy when it starts, so a change applies only to
+later calls and earlier evidence keeps the revision that actually decided it.
+
 ## Agent definitions
 
 Agent files live in the configured `agents` directory. Each `*.toml` is one
