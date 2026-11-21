@@ -75,6 +75,7 @@ pub(super) struct WorkerInner {
     pub(super) revision: Arc<AtomicU64>,
     pub(super) cancel: CancellationToken,
     pub(super) shutdown: OnceCell<ShutdownReport>,
+    pub(super) kernel: crate::tools::ToolKernel,
 }
 
 impl WorkerInstance {
@@ -191,7 +192,8 @@ impl WorkerInstance {
     /// continue unaffected. A failed candidate leaves the active revision and
     /// executor untouched.
     pub async fn reload(&self) -> WorkerResult<u64> {
-        let settings = WorkerSettings::load(&self.inner.config_path)?;
+        let mut settings = WorkerSettings::load(&self.inner.config_path)?;
+        settings.kernel = Some(self.inner.kernel.clone());
         if let Some(name) = &settings.file.name {
             if name != &self.inner.name {
                 return Err(ApiError::new(
@@ -273,6 +275,7 @@ impl WorkerInstance {
                 remote_mcp: self.inner.remote_mcp.clone(),
                 providers,
                 effect_approvals: self.inner.effect_approvals.clone(),
+                max_parallel: settings.file.tools.max_parallel.max(1),
             },
         )?);
         // Reconcile after the candidate executor is built so a build failure

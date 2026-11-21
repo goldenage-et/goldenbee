@@ -1,17 +1,19 @@
 //! Native CodingAgent compositions for writable and read-only roles.
 //!
 //! The developer and reviewer are agents in one package, not extra binaries.
-//! Both use the pinned native `CodingAgent` and `adk-devtools`; this module only
-//! binds the instance worktree, compiled sandbox command tool, and repository
-//! instruction data.
+//! Both use the pinned native `adk-devtools` tools, ADK coding prompt, and
+//! `TodoTool`; this module binds the instance worktree, compiled sandbox
+//! command tool, and repository instruction data through the shared runtime
+//! tool kernel.
 
 use crate::package::CodingPackage;
 use crate::tool::CodingCommandTool;
-use adk_agent::coding::CodingAgent;
-use adk_devtools::Workspace;
+use adk_agent::coding::{TodoTool, CODING_SYSTEM_PROMPT};
+use adk_devtools::{DevToolset, Workspace};
+use adk_rust::prelude::LlmAgentBuilder;
 use common::ApiError;
 use runtime::native::model_for;
-use runtime::worker::WorkerSettings;
+use runtime::worker::{ToolDescriptor, ToolEffect, ToolRisk, WorkerSettings};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -37,20 +39,43 @@ pub(crate) fn developer(
          Make checks executable through exec_command; the native bash tool is deliberately absent.\n\n{}",
         repository_instructions(&services.worktree_path())
     );
-    let agent = CodingAgent::builder()
-        .name("developer")
+    // The ADK `CodingAgent` convenience wrapper binds its own un-wrapped
+    // `DevToolset`. Compose the same pinned ADK pieces directly so the shared
+    // runtime kernel can wrap every tool this package agent exposes.
+    let kernel = settings.tool_kernel().ok_or_else(|| {
+        ApiError::new(
+            "coding.tool_kernel_unavailable",
+            "the shared runtime tool kernel is not configured",
+        )
+    })?;
+    let devtools = kernel.wrap_toolset_with(
+        Arc::new(DevToolset::new(workspace).with_bash(false)),
+        Arc::new(developer_descriptor),
+    );
+    let todos = TodoTool::new();
+    let exec: Arc<dyn adk_rust::Tool> = Arc::new(CodingCommandTool::new(package.clone()));
+    let exec = kernel.wrap(
+        exec,
+        ToolDescriptor::new("exec:command")
+            .risk(ToolRisk::High)
+            .effect(ToolEffect::None),
+    );
+    let instruction = format!("{CODING_SYSTEM_PROMPT}\n\n{instruction}");
+    let agent = LlmAgentBuilder::new("developer")
+        .description("Writable native coding agent in an isolated repository worktree")
         .model(model)
-        .workspace(workspace)
         .instruction(instruction)
-        .tool(Arc::new(CodingCommandTool::new(package.clone())))
+        .toolset(devtools)
+        .tool(kernel.wrap_tool(Arc::new(todos)))
+        .tool(exec)
         .build()
         .map_err(|error| {
             ApiError::new(
                 "coding.agent_build_failed",
-                format!("developer CodingAgent failed to build: {error}"),
+                format!("developer agent failed to build: {error}"),
             )
         })?;
-    Ok(agent.into_agent())
+    Ok(Arc::new(agent))
 }
 
 pub(crate) fn reviewer(
@@ -72,19 +97,49 @@ pub(crate) fn reviewer(
          You cannot edit files or execute commands; no write or exec tool is granted.\n\n{}",
         repository_instructions(&services.worktree_path())
     );
-    let agent = CodingAgent::builder()
-        .name("reviewer")
+    let kernel = settings.tool_kernel().ok_or_else(|| {
+        ApiError::new(
+            "coding.tool_kernel_unavailable",
+            "the shared runtime tool kernel is not configured",
+        )
+    })?;
+    let devtools = kernel.wrap_toolset_with(
+        Arc::new(DevToolset::new(workspace).with_bash(false)),
+        Arc::new(developer_descriptor),
+    );
+    let instruction = format!("{CODING_SYSTEM_PROMPT}\n\n{instruction}");
+    let agent = LlmAgentBuilder::new("reviewer")
+        .description("Read-only native coding agent that inspects without write or exec tools")
         .model(model)
-        .workspace(workspace)
         .instruction(instruction)
+        .toolset(devtools)
         .build()
         .map_err(|error| {
             ApiError::new(
                 "coding.agent_build_failed",
-                format!("reviewer CodingAgent failed to build: {error}"),
+                format!("reviewer agent failed to build: {error}"),
             )
         })?;
-    Ok(agent.into_agent())
+    Ok(Arc::new(agent))
+}
+
+fn developer_descriptor(tool: &dyn adk_rust::Tool) -> ToolDescriptor {
+    match tool.name() {
+        "read_file" | "glob" | "grep" => ToolDescriptor::new("workspace:read")
+            .risk(ToolRisk::Low)
+            .typed_errors(),
+        "write_file" | "edit_file" => ToolDescriptor::new("workspace:write")
+            .risk(ToolRisk::Medium)
+            .effect(ToolEffect::FileWrite)
+            .typed_errors()
+            .paths(|args| {
+                args.get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|path| vec![path.to_string()])
+                    .unwrap_or_default()
+            }),
+        _ => ToolDescriptor::new("tool:call").risk(ToolRisk::Medium),
+    }
 }
 
 /// Repository instructions are untrusted input data. They are quoted into the

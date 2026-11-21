@@ -1,8 +1,12 @@
 //! Tool registration and runtime-owned builtin tool bindings.
 
+pub mod builtin;
 pub mod effect;
+pub mod kernel;
 
+pub use builtin::BuiltinTool;
 pub use effect::EffectTool;
+pub use kernel::{ToolDescriptor, ToolEffect, ToolKernel, ToolKernelConfig, ToolRisk};
 
 use crate::worker::Worker;
 use adk_rust::{Tool, Toolset};
@@ -10,6 +14,10 @@ use std::sync::Arc;
 
 impl Worker {
     /// Register an additional native tool referenced by loaded agents.
+    ///
+    /// Every registered tool is wrapped by the runtime [`ToolKernel`] so that
+    /// package tools, built-in tools, loaded agents, profiles, and MCP views
+    /// share one execution pipeline.
     pub fn tool(self, id: impl Into<String>, tool: Arc<dyn Tool>) -> Self {
         self.tool_with_permissions(id, tool, std::iter::empty::<&str>())
     }
@@ -41,7 +49,14 @@ impl Worker {
         )) as Arc<dyn Tool>;
         let id = id.into();
         worker.effect_reconcilers.insert(native_name, reconciler);
-        worker.tool_with_permissions(id, wrapper, std::iter::empty::<&str>())
+        let wrapped = worker.kernel.wrap(
+            wrapper,
+            ToolDescriptor::new("effect:call")
+                .risk(ToolRisk::High)
+                .effect(ToolEffect::None)
+                .no_timeout(),
+        );
+        worker.insert_registered(id, wrapped, Vec::new())
     }
 
     /// Register a native tool with the permissions it actually exercises.
@@ -49,7 +64,7 @@ impl Worker {
     /// Signed release metadata exposes these declarations so the installer can
     /// gate a package before its executable is accepted.
     pub fn tool_with_permissions<I, S>(
-        mut self,
+        self,
         id: impl Into<String>,
         tool: Arc<dyn Tool>,
         permissions: I,
@@ -58,18 +73,22 @@ impl Worker {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let id = id.into();
-        if self.tools.insert(id.clone(), tool).is_some() {
-            self.duplicate_ids.insert(id.clone());
-        }
-        self.tool_permissions
-            .insert(id, permissions.into_iter().map(Into::into).collect());
-        self
+        let permissions: Vec<String> = permissions.into_iter().map(Into::into).collect();
+        let capability = permissions
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "tool:call".into());
+        let descriptor = ToolDescriptor::new(capability).risk(ToolRisk::Medium);
+        let wrapped = self.kernel.wrap(tool, descriptor);
+        self.insert_registered(id.into(), wrapped, permissions)
     }
 
     /// Register an additional native toolset referenced by loaded agents.
+    ///
+    /// Dynamic toolset tools are wrapped at discovery time by the same kernel.
     pub fn toolset(mut self, id: impl Into<String>, toolset: Arc<dyn Toolset>) -> Self {
         let id = id.into();
+        let toolset = self.kernel.wrap_toolset(toolset);
         if self.toolsets.insert(id.clone(), toolset).is_some() {
             self.duplicate_ids.insert(id);
         }

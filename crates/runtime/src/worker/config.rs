@@ -28,6 +28,8 @@ pub struct WorkerSettings {
     pub data_dir: PathBuf,
     /// Validated optional browser capability.
     pub browser: Option<crate::browser::BrowserSettings>,
+    /// Process-wide tool pipeline, when package agent factories need it.
+    pub(crate) kernel: Option<crate::tools::ToolKernel>,
 }
 
 impl WorkerSettings {
@@ -93,8 +95,23 @@ impl WorkerSettings {
                 Some(options) => Some(options.resolve(&config_dir)?),
                 None => None,
             },
+            kernel: None,
             file,
         })
+    }
+
+    /// Workspace used by generic file/search tools. Defaults below storage so
+    /// an instance never writes into the package or configuration directory.
+    pub(crate) fn tool_workspace(&self) -> std::path::PathBuf {
+        match self.file.tools.workspace.as_deref() {
+            Some(value) => self.resolve_path(value),
+            None => self.data_dir.join("workspace"),
+        }
+    }
+
+    /// Process-wide tool pipeline, when startup configured it.
+    pub fn tool_kernel(&self) -> Option<crate::tools::ToolKernel> {
+        self.kernel.clone()
     }
 
     /// Effective provider profiles: local-safe defaults overridden by operator
@@ -308,6 +325,51 @@ pub struct FileConfig {
     /// Optional native browser capability.
     #[serde(default)]
     pub browser: Option<crate::browser::BrowserOptions>,
+    /// Generic file/search tool workspace and runtime limits.
+    #[serde(default)]
+    pub tools: ToolsConfig,
+}
+
+/// Generic file/search tool configuration. It narrows or configures compiled
+/// package capabilities; it cannot create a tool the package did not declare.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolsConfig {
+    /// Workspace root. Relative paths resolve against the configuration file.
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// Per-call wall-clock timeout in milliseconds.
+    #[serde(default = "default_tool_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Serialized result ceiling in bytes.
+    #[serde(default = "default_tool_output_bytes")]
+    pub max_output_bytes: usize,
+    /// Maximum concurrently executing wrapped tools.
+    #[serde(default = "default_tool_parallel")]
+    pub max_parallel: usize,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            workspace: None,
+            timeout_ms: default_tool_timeout_ms(),
+            max_output_bytes: default_tool_output_bytes(),
+            max_parallel: default_tool_parallel(),
+        }
+    }
+}
+
+fn default_tool_timeout_ms() -> u64 {
+    120_000
+}
+
+fn default_tool_output_bytes() -> usize {
+    1_048_576
+}
+
+fn default_tool_parallel() -> usize {
+    4
 }
 
 /// Optional per-owner retention overrides loaded from Worker configuration.

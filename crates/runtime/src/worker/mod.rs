@@ -21,6 +21,7 @@ mod profiles;
 
 pub use crate::agents::{AgentDefinition, AgentDescriptor, AgentOrigin, SkillAsset};
 pub use crate::execution::plugins::AgentCallbacks;
+pub use crate::tools::{BuiltinTool, ToolDescriptor, ToolEffect, ToolKernel, ToolRisk};
 pub use config::{
     FileConfig, GatewayConfig, ModelsConfig, PathsConfig, ResolvedModels, StorageConfig,
     TokenConfig, WorkerSettings,
@@ -44,6 +45,7 @@ use crate::execution::providers::ProviderRegistry;
 use crate::execution::runner::NativeExecutor;
 use crate::mcp::{McpRegistry, RemoteMcpRegistry};
 use crate::sessions::FileSessionService;
+use crate::tools::ToolKernelConfig;
 use crate::worker::assets::Assets;
 use crate::worker::config::canonical_config;
 use crate::worker::hooks::CompositeHooks;
@@ -82,6 +84,19 @@ struct AgentFactory {
 pub type ManualAgentFactory =
     Arc<dyn Fn(Arc<dyn Llm>) -> std::result::Result<Arc<dyn Agent>, String> + Send + Sync>;
 
+/// Package-supplied agent factory that also receives the resolved instance
+/// settings, including the runtime [`ToolKernel`].
+pub type ManualAgentFactoryWithSettings = Arc<
+    dyn Fn(Arc<dyn Llm>, &WorkerSettings) -> std::result::Result<Arc<dyn Agent>, String>
+        + Send
+        + Sync,
+>;
+
+pub(crate) enum ManualAgentBuild {
+    Model(ManualAgentFactory),
+    WithSettings(ManualAgentFactoryWithSettings),
+}
+
 /// A manually registered agent whose model reference is resolved through the
 /// instance's effective provider configuration.
 pub struct ManualAgentDefinition {
@@ -92,7 +107,7 @@ pub struct ManualAgentDefinition {
     /// Number of tools the factory binds, used for provider preflight.
     pub tools: usize,
     /// Native agent factory.
-    pub factory: ManualAgentFactory,
+    pub(crate) build: ManualAgentBuild,
 }
 
 pub(crate) enum ManualAgent {
@@ -123,6 +138,10 @@ pub struct Worker {
     pub(crate) tools: BTreeMap<String, Arc<dyn Tool>>,
     pub(crate) tool_permissions: BTreeMap<String, Vec<String>>,
     pub(crate) toolsets: BTreeMap<String, Arc<dyn Toolset>>,
+    /// One process-wide pipeline applied to every tool source.
+    pub(crate) kernel: ToolKernel,
+    /// Package-declared generic file/search capabilities.
+    builtin_tools: BTreeSet<BuiltinTool>,
     /// Worker-owned status interfaces for protected effects.
     pub(crate) effect_reconcilers:
         BTreeMap<String, Arc<dyn crate::execution::operations::EffectReconciler>>,
@@ -143,6 +162,8 @@ pub struct Worker {
 impl Worker {
     /// Start a package definition with compiled identity.
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        let kernel = ToolKernel::new();
+        let effect_runtime = kernel.bind_runtime();
         Self {
             name: name.into(),
             version: version.into(),
@@ -155,9 +176,11 @@ impl Worker {
             tools: BTreeMap::new(),
             tool_permissions: BTreeMap::new(),
             toolsets: BTreeMap::new(),
+            kernel,
+            builtin_tools: BTreeSet::new(),
             effect_reconcilers: BTreeMap::new(),
             effect_approvals: BTreeMap::new(),
-            effect_runtime: Arc::new(std::sync::OnceLock::new()),
+            effect_runtime,
             hooks: Vec::new(),
             lifecycle: Vec::new(),
             callbacks: None,
@@ -199,6 +222,12 @@ impl Worker {
     }
 
     /// Register an additional native agent. Duplicate ids fail at startup.
+    ///
+    /// A prebuilt agent's tools are already owned by that agent, so package code
+    /// that binds tools directly must wrap them through [`Worker::tool_kernel`]
+    /// or build the agent from an `agent_from`/`model_agent_with_settings`
+    /// factory. `Worker::agent` is intended for tool-free compositions and
+    /// native workflows.
     pub fn agent(mut self, id: impl Into<String>, agent: Arc<dyn Agent>) -> Self {
         let id = id.into();
         let duplicate_graph = self.graphs.contains_key(&id);
@@ -239,7 +268,43 @@ impl Worker {
                     description: description.into(),
                     model: model.into(),
                     tools,
-                    factory: Arc::new(factory),
+                    build: ManualAgentBuild::Model(Arc::new(factory)),
+                }),
+            )
+            .is_some();
+        if duplicate_graph || duplicate_agent {
+            self.duplicate_ids.insert(id);
+        }
+        self
+    }
+
+    /// Register a model-resolved agent that also receives the resolved
+    /// instance settings and the runtime tool kernel.
+    pub fn model_agent_with_settings<F>(
+        mut self,
+        id: impl Into<String>,
+        description: impl Into<String>,
+        model: impl Into<String>,
+        tools: usize,
+        factory: F,
+    ) -> Self
+    where
+        F: Fn(Arc<dyn Llm>, &WorkerSettings) -> std::result::Result<Arc<dyn Agent>, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let id = id.into();
+        let duplicate_graph = self.graphs.contains_key(&id);
+        let duplicate_agent = self
+            .manual_agents
+            .insert(
+                id.clone(),
+                ManualAgent::Defined(ManualAgentDefinition {
+                    description: description.into(),
+                    model: model.into(),
+                    tools,
+                    build: ManualAgentBuild::WithSettings(Arc::new(factory)),
                 }),
             )
             .is_some();
@@ -397,6 +462,48 @@ impl Worker {
         self
     }
 
+    /// Enable every generic file/search tool this package may expose.
+    ///
+    /// The capability is compiled into the package; instance configuration
+    /// supplies only the workspace and runtime limits. A profile can narrow the
+    /// exposed selection, but cannot create a capability the package did not
+    /// declare.
+    pub fn file_tools(self) -> Self {
+        self.builtin_tools(BuiltinTool::ALL)
+    }
+
+    /// Enable one generic file/search tool.
+    pub fn file_tool(self, tool: BuiltinTool) -> Self {
+        self.builtin_tools([tool])
+    }
+
+    /// Enable an explicit generic file/search selection.
+    pub fn builtin_tools<I>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = BuiltinTool>,
+    {
+        self.builtin_tools.extend(tools);
+        self
+    }
+
+    /// One process-wide kernel handle, available to package agent factories.
+    pub fn tool_kernel(&self) -> ToolKernel {
+        self.kernel.clone()
+    }
+
+    pub(crate) fn insert_registered(
+        mut self,
+        id: String,
+        tool: Arc<dyn Tool>,
+        permissions: Vec<String>,
+    ) -> Self {
+        if self.tools.insert(id.clone(), tool).is_some() {
+            self.duplicate_ids.insert(id.clone());
+        }
+        self.tool_permissions.insert(id, permissions);
+        self
+    }
+
     /// Checked inventory of installed executable functionality.
     ///
     /// Configured agent names are deliberately not part of this list.
@@ -463,6 +570,17 @@ impl Worker {
                 });
             }
         }
+        for builtin in &self.builtin_tools {
+            if self.tools.contains_key(builtin.id()) {
+                continue;
+            }
+            capabilities.push(CapabilityDescriptor {
+                id: builtin.id().into(),
+                kind: "tool".into(),
+                description: format!("package-declared generic {} capability", builtin.id()),
+                permissions: vec![builtin.permission().into()],
+            });
+        }
         if self.knowledge {
             for (id, description) in [
                 (
@@ -521,7 +639,7 @@ impl Worker {
             ));
         }
         let config_path = canonical_config(config_path.as_ref())?;
-        let settings = WorkerSettings::load(&config_path)?;
+        let mut settings = WorkerSettings::load(&config_path)?;
         if let Some(name) = &settings.file.name {
             if name != &self.name {
                 return Err(ApiError::new(
@@ -532,6 +650,39 @@ impl Worker {
                     ),
                 ));
             }
+        }
+        settings.kernel = Some(self.kernel.clone());
+        self.kernel
+            .configure(ToolKernelConfig {
+                workspace: (!self.builtin_tools.is_empty()).then(|| settings.tool_workspace()),
+                timeout: std::time::Duration::from_millis(settings.file.tools.timeout_ms.max(1)),
+                max_output_bytes: settings.file.tools.max_output_bytes.max(1),
+                max_parallel: settings.file.tools.max_parallel.max(1),
+                enabled: self
+                    .builtin_tools
+                    .iter()
+                    .map(|tool| tool.id().to_string())
+                    .collect(),
+            })
+            .map_err(|error| {
+                ApiError::new(
+                    "config.tool_kernel",
+                    format!(
+                        "tool kernel limits or workspace are invalid: {}",
+                        common::redact(&error.message)
+                    ),
+                )
+            })?;
+        if !self.builtin_tools.is_empty() {
+            for (id, tool, permissions) in crate::tools::builtin::tools(&self.kernel) {
+                self = self.insert_registered(id, tool, permissions);
+            }
+        }
+        if let Some(id) = self.duplicate_ids.iter().next() {
+            return Err(ApiError::new(
+                "asset.duplicate_id",
+                format!("package registration and a generic file tool both claim id '{id}'"),
+            ));
         }
         let browser = match &self.browser {
             Some(id) => {
@@ -610,7 +761,10 @@ impl Worker {
             &providers,
             graph.as_ref(),
         )?;
-        let local_mcp = Arc::new(McpRegistry::new(&settings.file.grants));
+        let local_mcp = Arc::new(McpRegistry::new(
+            &settings.file.grants,
+            Some(self.kernel.clone()),
+        ));
         local_mcp
             .reconcile(&settings.file.mcp.servers, &settings.file.grants)
             .await;
@@ -650,8 +804,11 @@ impl Worker {
         let hooks = composite_hooks(std::mem::take(&mut self.hooks));
         runtime.set_hooks(hooks.clone()).await;
 
-        let remote_mcp =
-            RemoteMcpRegistry::new(settings.file.mcp.clone(), runtime.mcp_credentials());
+        let remote_mcp = RemoteMcpRegistry::new(
+            settings.file.mcp.clone(),
+            runtime.mcp_credentials(),
+            Some(self.kernel.clone()),
+        );
         let plugins = build_plugins(std::mem::take(&mut self.plugins));
         let executor = build_executor(
             &self.name,
@@ -667,6 +824,7 @@ impl Worker {
                 remote_mcp: remote_mcp.clone(),
                 providers,
                 effect_approvals: self.effect_approvals.clone(),
+                max_parallel: settings.file.tools.max_parallel.max(1),
             },
         )?;
         let executor = Arc::new(executor);
@@ -709,6 +867,7 @@ impl Worker {
                 revision,
                 cancel,
                 shutdown: tokio::sync::OnceCell::new(),
+                kernel: self.kernel.clone(),
             }),
         };
 
@@ -771,6 +930,7 @@ struct ExecutorServices {
     remote_mcp: Arc<RemoteMcpRegistry>,
     providers: Arc<ProviderRegistry>,
     effect_approvals: BTreeMap<String, crate::EffectApprovalPolicy>,
+    max_parallel: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -790,6 +950,7 @@ fn build_executor(
         remote_mcp,
         providers,
         effect_approvals,
+        max_parallel,
     } = services;
     let agents: Vec<(String, Arc<dyn Agent>)> = assets
         .agents
@@ -829,7 +990,8 @@ fn build_executor(
         .with_artifacts(artifacts)
         .with_mcp(mcp, declarations)
         .with_remote_mcp(remote_mcp)
-        .with_effect_approvals(effect_approvals);
+        .with_effect_approvals(effect_approvals)
+        .with_tool_concurrency(max_parallel);
     if let Some(memory) = memory {
         executor = executor.with_memory(memory);
     }
