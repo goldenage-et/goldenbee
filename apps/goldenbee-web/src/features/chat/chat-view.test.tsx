@@ -786,7 +786,7 @@ describe("target selection", () => {
     expect(
       await screen.findByText(/unreachable or not accepting tasks/),
     ).toBeInTheDocument()
-    expect(screen.getByLabelText("Worker")).toHaveValue("down-a")
+    expect(screen.getByLabelText("Worker")).toHaveTextContent(/down-a/)
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
     expect(gateway.submits).toEqual([])
   })
@@ -959,7 +959,8 @@ describe("target selection", () => {
     await sendPrompt(user, "first task")
     expect(await screen.findByText("working")).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText("Agent"), "echo")
+    await user.click(screen.getByLabelText("Agent"))
+    await user.click(await screen.findByRole("option", { name: /echo/ }))
 
     expect(gateway.submits).toHaveLength(1)
     expect(gateway.submits[0]?.agent).toBe("general")

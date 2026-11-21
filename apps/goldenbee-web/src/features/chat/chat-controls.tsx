@@ -8,9 +8,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type { ProfileErrorView } from "@/features/chat/chat-profiles"
 import {
   activeRevision,
@@ -107,66 +110,80 @@ export function ChatControls({
           <Label htmlFor="chat-worker" className="sr-only">
             Worker
           </Label>
-          <NativeSelect
-            id="chat-worker"
-            size="sm"
-            className="max-w-56"
-            value={requestedWorker}
+          <Select
+            value={requestedWorker || null}
             disabled={available.length === 0}
-            aria-label="Worker"
-            onChange={(event) =>
-              onChange({ ...resolved.selection, worker: event.target.value })
+            onValueChange={(value) =>
+              onChange({
+                ...resolved.selection,
+                worker: typeof value === "string" ? value : "",
+              })
             }
           >
-            {available.length === 0 ? (
-              <NativeSelectOption value="">No reachable Worker</NativeSelectOption>
-            ) : null}
-            {requestedWorker && !workerIsListed ? (
-              <NativeSelectOption value={requestedWorker}>
-                {requestedWorker} · unavailable
-              </NativeSelectOption>
-            ) : null}
-            {available.map((candidate) => (
-              <NativeSelectOption key={candidate.id} value={candidate.id}>
-                {candidate.id} · {candidate.package} v{candidate.version}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            <SelectTrigger
+              id="chat-worker"
+              size="sm"
+              className="max-w-56 border-line bg-surface-2"
+              aria-label="Worker"
+            >
+              <SelectValue placeholder="No reachable Worker" />
+            </SelectTrigger>
+            <SelectContent>
+              {requestedWorker && !workerIsListed ? (
+                <SelectItem value={requestedWorker}>
+                  {requestedWorker} · unavailable
+                </SelectItem>
+              ) : null}
+              {available.map((candidate) => (
+                <SelectItem key={candidate.id} value={candidate.id}>
+                  {candidate.id} · {candidate.package} v{candidate.version}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="flex min-w-0 items-center gap-1">
           <Label htmlFor="chat-agent" className="sr-only">
             Agent
           </Label>
-          <NativeSelect
-            id="chat-agent"
-            size="sm"
-            className="max-w-48"
-            value={resolved.selection.agent}
+          <Select
+            value={resolved.selection.agent || null}
             disabled={resolved.agents.length === 0}
-            aria-label="Agent"
-            onChange={(event) =>
-              onChange({ ...resolved.selection, agent: event.target.value })
+            onValueChange={(value) =>
+              onChange({
+                ...resolved.selection,
+                agent: typeof value === "string" ? value : "",
+              })
             }
           >
-            {resolved.agents.length === 0 ? (
-              <NativeSelectOption value="">No agent capability</NativeSelectOption>
-            ) : null}
-            {resolved.selection.agent &&
-            !resolved.agents.some(
-              (capability) => capability.id === resolved.selection.agent,
-            ) ? (
-              <NativeSelectOption value={resolved.selection.agent}>
-                {resolved.selection.agent} · unavailable
-              </NativeSelectOption>
-            ) : null}
-            {resolved.agents.map((capability) => (
-              <NativeSelectOption key={capability.id} value={capability.id}>
-                {capability.id}
-                {capability.description ? ` · ${capability.description}` : ""}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            <SelectTrigger
+              id="chat-agent"
+              size="sm"
+              className="max-w-48 border-line bg-surface-2"
+              aria-label="Agent"
+            >
+              <SelectValue placeholder="No agent capability" />
+            </SelectTrigger>
+            <SelectContent>
+              {resolved.selection.agent &&
+              !resolved.agents.some(
+                (capability) => capability.id === resolved.selection.agent,
+              ) ? (
+                <SelectItem value={resolved.selection.agent}>
+                  {resolved.selection.agent} · unavailable
+                </SelectItem>
+              ) : null}
+              {resolved.agents.map((capability) => (
+                <SelectItem key={capability.id} value={capability.id}>
+                  {capability.id}
+                  {capability.description
+                    ? ` · ${capability.description}`
+                    : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="flex min-w-0 items-center gap-1">
@@ -264,50 +281,69 @@ function ProfileSelect({
 
   if (uniqueProfiles.length === 0) {
     return (
-      <NativeSelect
-        id="chat-profile"
-        size="sm"
-        className="max-w-48"
-        value={value}
+      <Select
+        value={value || null}
         disabled={loading}
-        aria-label="Runtime Profile"
-        onChange={(event) =>
-          onChange({ ...resolved.selection, profile: event.target.value })
+        onValueChange={(next) =>
+          onChange({
+            ...resolved.selection,
+            profile: typeof next === "string" ? next : "",
+          })
         }
       >
-        <NativeSelectOption value="">
-          {loading
-            ? "Loading Runtime Profiles…"
-            : error
-              ? "Worker default (profiles unavailable)"
-              : "Worker default"}
-        </NativeSelectOption>
-        {value && !loading ? (
-          <NativeSelectOption value={value}>{value} · unverified</NativeSelectOption>
-        ) : null}
-      </NativeSelect>
+        <SelectTrigger
+          id="chat-profile"
+          size="sm"
+          className="max-w-48 border-line bg-surface-2"
+          aria-label="Runtime Profile"
+        >
+          <SelectValue
+            placeholder={
+              loading
+                ? "Loading Runtime Profiles…"
+                : error
+                  ? "Worker default (profiles unavailable)"
+                  : "Worker default"
+            }
+          />
+        </SelectTrigger>
+        <SelectContent>
+          {value && !loading ? (
+            <SelectItem value={value}>{value} · unverified</SelectItem>
+          ) : null}
+        </SelectContent>
+      </Select>
     )
   }
 
   return (
-    <NativeSelect
-      id="chat-profile"
-      size="sm"
-      className="max-w-48"
-      value={value}
-      aria-label="Runtime Profile"
-      onChange={(event) =>
-        onChange({ ...resolved.selection, profile: event.target.value })
+    <Select
+      value={value || null}
+      onValueChange={(next) =>
+        onChange({
+          ...resolved.selection,
+          profile: typeof next === "string" ? next : "",
+        })
       }
     >
-      {value && !uniqueProfiles.some((profile) => profile.name === value) ? (
-        <NativeSelectOption value={value}>{value} · unavailable</NativeSelectOption>
-      ) : null}
-      {uniqueProfiles.map((profile) => (
-        <NativeSelectOption key={profile.name} value={profile.name}>
-          {profileLabel(profile)}
-        </NativeSelectOption>
-      ))}
-    </NativeSelect>
+      <SelectTrigger
+        id="chat-profile"
+        size="sm"
+        className="max-w-48 border-line bg-surface-2"
+        aria-label="Runtime Profile"
+      >
+        <SelectValue placeholder="Worker default" />
+      </SelectTrigger>
+      <SelectContent>
+        {value && !uniqueProfiles.some((profile) => profile.name === value) ? (
+          <SelectItem value={value}>{value} · unavailable</SelectItem>
+        ) : null}
+        {uniqueProfiles.map((profile) => (
+          <SelectItem key={profile.name} value={profile.name}>
+            {profileLabel(profile)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }

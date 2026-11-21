@@ -63,7 +63,7 @@ App-local AI Elements composition:
 | `src/features/chat/chat-message.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/message> (Message, MessageContent, Bubble) and <https://ui.shadcn.com/docs/utils/shimmer> (Marker, Spinner, `shimmer`) |
 | `src/features/chat/chat-trace.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/reasoning>, <https://ui.shadcn.com/docs/ai-elements/base/tool>, and <https://ui.shadcn.com/docs/ai-elements/base/task> (Trace, TraceCollapsible); Gateway part mapping lives here, not in the vendored files |
 | `src/features/chat/chat-composer.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/prompt-input> (Input Group, block-end footer; no attachments) |
-| `src/features/chat/chat-controls.tsx` | <https://ui.shadcn.com/docs/components/base/native-select> for Worker, agent, and Runtime Profile in the composer footer |
+| `src/features/chat/chat-controls.tsx` | <https://ui.shadcn.com/docs/components/base/select> for Worker, agent, and Runtime Profile in the composer footer |
 | `src/features/chat/chat-view.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/chat> (Message Scroller, panel header, composer) |
 | `src/features/approvals/approval-card.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/confirmation> (Item, ItemActions, Button) |
 | `src/features/usage/usage-facts.tsx` | <https://ui.shadcn.com/docs/ai-elements/base/context> (usage counters in the focused-session inspector) |
