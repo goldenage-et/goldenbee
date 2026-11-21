@@ -158,7 +158,13 @@ pub fn worker() -> Result<Worker, String> {
             "exec_command",
             Arc::new(CodingCommandTool::new(package.clone())) as Arc<dyn Tool>,
         )
-        .workspace_setting("workspace_root")
+        .workspace_path(|settings| {
+            let config = crate::services::CodingConfig::load(settings)?;
+            Ok(config
+                .workspace_root
+                .join("worktrees")
+                .join(&settings.file.instance))
+        })
         .capability_permissions("developer", ["workspace:write", "exec:command"])
         .capability_permissions("reviewer", ["workspace:read"])
         .capability_permissions("exec_command", ["exec:command"])

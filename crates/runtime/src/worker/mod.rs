@@ -142,6 +142,10 @@ impl ManualAgent {
     }
 }
 
+/// Resolves the exact package workspace that Clients may browse.
+pub(crate) type WorkspacePathResolver =
+    Arc<dyn Fn(&WorkerSettings) -> WorkerResult<std::path::PathBuf> + Send + Sync>;
+
 /// A package authoring entry point. One definition creates one native
 /// composition; loaded file agents are the default path.
 pub struct Worker {
@@ -189,11 +193,11 @@ pub struct Worker {
     /// subagent operations at all.
     subagents: Option<crate::subagents::SubagentConfig>,
     browser: Option<String>,
-    /// Package settings key that names the workspace exposed for browsing.
+    /// Package resolver for the exact workspace exposed for browsing.
     ///
     /// General uses the default `[tools].workspace`; packages with a custom
-    /// workspace (for example coding) name their own setting.
-    workspace_setting: Option<String>,
+    /// workspace (for example coding) resolve their own active worktree.
+    workspace_path: Option<WorkspacePathResolver>,
     pub(crate) duplicate_ids: BTreeSet<String>,
 }
 
@@ -235,7 +239,7 @@ impl Worker {
             progressive_skills: false,
             subagents: None,
             browser: None,
-            workspace_setting: None,
+            workspace_path: None,
             duplicate_ids: BTreeSet::new(),
         }
     }
@@ -555,13 +559,16 @@ impl Worker {
         self
     }
 
-    /// Name the package setting that resolves to the browsable workspace root.
+    /// Resolve the exact package workspace that Clients may browse.
     ///
-    /// The value is resolved against the configuration directory, with the same
-    /// containment rules as other package paths. Packages without a custom
-    /// workspace keep the default `[tools].workspace`.
-    pub fn workspace_setting(mut self, key: impl Into<String>) -> Self {
-        self.workspace_setting = Some(key.into());
+    /// Packages without a resolver keep the default `[tools].workspace`.
+    /// Packages with a claimed worktree (for example coding) return that exact
+    /// worktree so the Client and the agent see the same files.
+    pub fn workspace_path<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&WorkerSettings) -> WorkerResult<std::path::PathBuf> + Send + Sync + 'static,
+    {
+        self.workspace_path = Some(Arc::new(resolver));
         self
     }
 
@@ -1289,7 +1296,7 @@ impl Worker {
                 plugin_views: RwLock::new(plugin_views),
                 plugins,
                 browser,
-                workspace_setting: self.workspace_setting,
+                workspace_path: self.workspace_path,
                 revision,
                 cancel,
                 shutdown: tokio::sync::OnceCell::new(),

@@ -277,6 +277,11 @@ development stack, `scripts/dev.sh` exports `GOLDENBEE_DATA_DIR` to the Worker
 storage directory, so General's shell and the tree both use
 `<storage>/workspace`.
 
+Packages may resolve a more specific root. The coding package exposes the
+claimed instance worktree (`<workspace_root>/worktrees/<instance>`) so the
+browser and the Coding agent see the same files, not the parent directory that
+contains the source repository and worktree bookkeeping.
+
 ## Process, web, image, plan, and question tools
 
 These capabilities are opt-in like the file tools. A package that declares
@@ -423,11 +428,14 @@ append `tool.started` and `tool.completed`. The stable payload fields are:
 - evidence: `schema_digest`, `arguments_digest`, `result_digest`, `post_digest`,
   `diff`, and `effect_evidence` (`kind`, `paths`, `digest`, `post_digest`).
 
-Paths are workspace-relative. Argument and result content is represented by a
-digest, not copied into events. Each mutating call also writes a redacted
-`tool.effect` audit entry with outcome `committed` or `failed` before the task
-outcome is committed. A tool deadline returns `tool.timeout`; cancellation
-returns `tool.cancelled`; neither is reported as success.
+Paths are workspace-relative. For non-mutating tools, `tool.started` also carries
+a redacted, bounded `arguments_preview`, and `tool.completed` carries a
+`result_preview`. These previews are for Client inspection; the digests remain
+the canonical evidence. Mutating tools keep digest-only content fields. Each
+mutating call also writes a redacted `tool.effect` audit entry with outcome
+`committed` or `failed` before the task outcome is committed. A tool deadline
+returns `tool.timeout`; cancellation returns `tool.cancelled`; neither is
+reported as success.
 
 ## Configured memory files
 

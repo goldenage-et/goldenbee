@@ -77,7 +77,7 @@ pub(super) struct WorkerInner {
     pub(super) plugin_views: RwLock<Vec<crate::plugins::PluginView>>,
     pub(super) plugins: Option<Arc<PluginManager>>,
     pub(super) browser: Option<Arc<BrowserController>>,
-    pub(super) workspace_setting: Option<String>,
+    pub(super) workspace_path: Option<crate::worker::WorkspacePathResolver>,
     pub(super) revision: Arc<AtomicU64>,
     pub(super) cancel: CancellationToken,
     pub(super) shutdown: OnceCell<ShutdownReport>,
@@ -489,13 +489,10 @@ impl WorkerInstance {
             return Ok(None);
         }
         let policy = &settings.file.workspace;
-        let root = self
-            .inner
-            .workspace_setting
-            .as_deref()
-            .and_then(|key| settings.file.settings.get(key))
-            .map(|value| settings.resolve_path(value))
-            .unwrap_or_else(|| settings.tool_workspace());
+        let root = match self.inner.workspace_path.as_ref() {
+            Some(resolver) => resolver(&settings)?,
+            None => settings.tool_workspace(),
+        };
         crate::workspace::WorkspaceService::new(
             root,
             policy.max_entries,

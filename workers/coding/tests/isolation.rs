@@ -5,6 +5,53 @@ mod fixture;
 use fixture::{b64, fixed_lib};
 
 #[test]
+fn workspace_tree_shows_the_agent_worktree_not_the_workspace_root() {
+    let _serial = fixture::serial();
+    let root = tempfile::tempdir().unwrap();
+    let fixture = fixture::write(
+        &root.path().join("config"),
+        fixture::Options {
+            instance: "coding-browse".into(),
+            ..Default::default()
+        },
+    );
+    let mut config = std::fs::read_to_string(&fixture.config).unwrap();
+    config.push_str("\n[workspace]\nbrowse = true\n");
+    std::fs::write(&fixture.config, config).unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let server = fixture::start(&fixture, cwd.path());
+    let client = reqwest::blocking::Client::new();
+
+    let tree: serde_json::Value = client
+        .get(format!("{}/v1/workspace/tree", server.base))
+        .bearer_auth(&server.token)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    let paths = tree["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"src"), "{paths:?}");
+    assert!(paths.contains(&"tests"), "{paths:?}");
+    assert!(!paths.contains(&"repo"), "{paths:?}");
+    assert!(!paths.contains(&"worktrees"), "{paths:?}");
+
+    let file: serde_json::Value = client
+        .get(format!("{}/v1/workspace/file", server.base))
+        .query(&[("path", "src/lib.rs")])
+        .bearer_auth(&server.token)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert!(file["text"].as_str().unwrap_or_default().contains("a - b"));
+}
+
+#[test]
 fn read_only_reviewer_cannot_write_or_execute() {
     let _serial = fixture::serial();
     let root = tempfile::tempdir().unwrap();
