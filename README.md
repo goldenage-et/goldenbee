@@ -43,6 +43,7 @@ is TypeScript/TSX. `bun.lock` is committed at the repository root.
 
 ```sh
 bun install --frozen-lockfile
+bun run check:workspace
 bun run check:ts-only
 bun run typecheck
 bun run lint
@@ -50,11 +51,20 @@ bun test
 bun run build
 ```
 
-CI uses the same commands. The browser bundle remains static; Bun is the package
-manager and JavaScript runtime for build, test, and development only, not a
-deployed Node server. `bun test` runs the `@goldenbee/sdk` contract suite on
-Bun's native runner. The web app's React DOM suite needs jsdom and runs through
-Vitest invoked by Bun.
+The browser acceptance suite is the real-Gateway seam. It needs built
+`gb-gateway`, `general`, and `effect-fixture` binaries and Chromium:
+
+```sh
+cargo build --bin gb-gateway --bin general --bin effect-fixture
+bun run --filter goldenbee-web e2e:install
+bun run --filter goldenbee-web e2e
+```
+
+CI runs the same commands in a separate `web-e2e` job. The browser bundle
+remains static; Bun is the package manager and JavaScript runtime for build,
+test, and development only, not a deployed Node server. `bun test` runs the
+`@goldenbee/sdk` contract suite on Bun's native runner. The web app's React DOM
+suite needs jsdom and runs through Vitest invoked by Bun.
 
 
 Install the Gateway directly from GitHub:

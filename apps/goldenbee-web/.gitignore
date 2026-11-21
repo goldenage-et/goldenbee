@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# E2E stack state and Playwright output
+e2e/.stack/
+test-results/
+playwright-report/
+blob-report/
