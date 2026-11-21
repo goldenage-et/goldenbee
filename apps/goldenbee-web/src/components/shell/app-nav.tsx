@@ -2,9 +2,31 @@ import { cn } from "cn"
 
 import { useAppRoute, routeHref, type AppRoute } from "@/app/router"
 
-const items: Array<{ route: AppRoute; label: string; match: string }> = [
-  { route: { name: "overview" }, label: "Overview", match: "overview" },
-  { route: { name: "providers" }, label: "Providers", match: "providers" },
+const items: Array<{
+  route: AppRoute
+  label: string
+  active: (route: AppRoute) => boolean
+}> = [
+  {
+    route: { name: "overview" },
+    label: "Overview",
+    active: (route) => route.name === "overview",
+  },
+  {
+    route: { name: "packages" },
+    label: "Packages",
+    active: (route) => route.name === "packages",
+  },
+  {
+    route: { name: "instances" },
+    label: "Instances",
+    active: (route) => route.name === "instances" || route.name === "instance",
+  },
+  {
+    route: { name: "providers" },
+    label: "Providers",
+    active: (route) => route.name === "providers" || route.name === "provider",
+  },
 ]
 
 export function AppNav() {
@@ -13,10 +35,7 @@ export function AppNav() {
     <nav aria-label="Primary">
       <ul className="flex items-center gap-1">
         {items.map((item) => {
-          const active =
-            item.match === "providers"
-              ? route.name === "providers" || route.name === "provider"
-              : route.name === "overview"
+          const active = item.active(route)
           return (
             <li key={item.label}>
               <a

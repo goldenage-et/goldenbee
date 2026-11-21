@@ -10,12 +10,16 @@ import {
   type ConnectionStore,
 } from "@/features/connection/connection-store"
 import { ConnectionScreen } from "@/features/connection/connection-screen"
+import { InstanceDetailPage } from "@/features/host/instance-detail-page"
+import { InstancesPage } from "@/features/host/instances-page"
+import { PackagesPage } from "@/features/host/packages-page"
 import { ProviderDetailScreen } from "@/features/providers/provider-detail-screen"
 import {
   createProviderGatewayClient,
   type ProviderClientFactory,
 } from "@/features/providers/provider-gateway"
 import { ProvidersScreen } from "@/features/providers/providers-screen"
+import { createGatewayClient } from "@goldenbee/sdk"
 
 export interface AppProps {
   store?: ConnectionStore
@@ -37,11 +41,29 @@ export function App({ store = connectionStore, createProviderClient }: AppProps)
     [connected, factory, gatewayUrl, token],
   )
 
+  const hostClient = useMemo(
+    () =>
+      connected
+        ? createGatewayClient({
+            baseUrl: gatewayUrl,
+            token,
+            fetch: (input, init) => fetch(input, init),
+          })
+        : null,
+    [connected, gatewayUrl, token],
+  )
+
   function connectedContent() {
-    if (!providerClient) {
+    if (!providerClient || !hostClient) {
       return null
     }
     switch (route.name) {
+      case "packages":
+        return <PackagesPage client={hostClient} />
+      case "instances":
+        return <InstancesPage client={hostClient} />
+      case "instance":
+        return <InstanceDetailPage client={hostClient} instance={route.instance} />
       case "providers":
         return <ProvidersScreen client={providerClient} />
       case "provider":

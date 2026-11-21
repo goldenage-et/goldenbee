@@ -7,6 +7,23 @@ embedded Gateway asset.
 Ticket 01 covers the connection shell. Chat, approvals, task detail, Worker
 management, and other Gateway routes start in later tickets.
 
+## Routes
+
+Routing is hash-based so the static build needs no server SPA fallback:
+
+| Route | Screen |
+| --- | --- |
+| `#/` | Connection overview and visible Workers |
+| `#/packages` | Installed packages and verified package install |
+| `#/instances` | Local instance list and deployment |
+| `#/instances/<name>` | Instance detail, lifecycle controls, and logs |
+| `#/providers` | Model provider catalog |
+| `#/providers/<id>` | Provider detail, credential, and discovery |
+
+Package and instance pages require `instance:read` to inspect and
+`instance:admin` for install, deploy, start, stop, restart, upgrade, and
+rollback. Denied scopes render as an explicit access-denied state.
+
 ## Requirements
 
 - Bun 1.2 or newer
@@ -66,11 +83,17 @@ because it needs jsdom; the SDK does not depend on Vitest.
 - `src/features/connection/` owns connection state, token persistence, and the
   connection screen. Zustand holds in-memory connection state; the token store
   is the only module that touches sessionStorage.
+- `src/features/host/` owns package sources, package install, local instance
+  deployment, lifecycle controls, and instance logs. It passes one stable
+  operation id through a provision, upgrade, or rollback retry and treats a
+  lost response as an uncertain outcome, never as success.
+- `src/features/providers/` owns model provider administration and write-only
+  credential entry.
 - `src/components/ui/` contains vendored shadcn/ui and AI Elements base
   components. `src/components/ai-elements/` holds app-local presentational
   compositions. Sources are recorded in
   [docs/ai-elements.md](docs/ai-elements.md).
-- TanStack Query is the server-state boundary for later collection and detail
+- TanStack Query owns package, instance, and provider collections and detail
   queries. It is deliberately unused by the connection handshake, which is
   connection state rather than a cached server collection.
 - All authored source and configuration in this app is TypeScript/TSX. The
@@ -106,9 +129,11 @@ because it needs jsdom; the SDK does not depend on Vitest.
 
 The `@goldenbee/sdk` suite covers the full typed Gateway surface against a fake
 fetch transport. The app suite covers token persistence, connection state
-transitions, and connection screen states. Run both with `bun run test` from the
-repository root. The repository-level Playwright seam against a real Gateway is
-a later ticket.
+transitions, connection screen states, package install (URL and Gateway-host
+folder), deployment, lifecycle controls, operation-id retry, denied scopes, and
+an unconfigured local host. Run both with `bun run test` from the repository
+root. The repository-level Playwright seam against a real Gateway is a later
+ticket.
 
 ## Dependencies
 

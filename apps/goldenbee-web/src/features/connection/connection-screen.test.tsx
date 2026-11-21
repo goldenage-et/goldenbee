@@ -183,4 +183,19 @@ describe("connection screen", () => {
 
     expect(await screen.findByText("Saved for this tab")).toBeInTheDocument()
   })
+
+  it("adds package and instance navigation after connecting", async () => {
+    const { user } = renderApp({ status: "connected", health, workers })
+
+    await submitCredentials(user)
+
+    expect(await screen.findByRole("link", { name: "Packages" })).toHaveAttribute(
+      "href",
+      "#/packages",
+    )
+    expect(screen.getByRole("link", { name: "Instances" })).toHaveAttribute(
+      "href",
+      "#/instances",
+    )
+  })
 })

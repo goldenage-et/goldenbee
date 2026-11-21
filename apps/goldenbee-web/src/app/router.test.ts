@@ -20,4 +20,16 @@ describe("app hash routes", () => {
       id: "team alpha",
     })
   })
+
+  it("round-trips package and instance routes", () => {
+    expect(parseRoute("#/packages")).toEqual({ name: "packages" })
+    expect(parseRoute("#/instances")).toEqual({ name: "instances" })
+    expect(parseRoute("#/instances/general-a")).toEqual({
+      name: "instance",
+      instance: "general-a",
+    })
+    expect(
+      parseRoute(routeHref({ name: "instance", instance: "general b" })),
+    ).toEqual({ name: "instance", instance: "general b" })
+  })
 })

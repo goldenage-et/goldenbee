@@ -2,6 +2,9 @@ import { useSyncExternalStore } from "react"
 
 export type AppRoute =
   | { name: "overview" }
+  | { name: "packages" }
+  | { name: "instances" }
+  | { name: "instance"; instance: string }
   | { name: "providers" }
   | { name: "provider"; id: string }
 
@@ -17,6 +20,14 @@ export function parseRoute(hash: string): AppRoute {
     return { name: "overview" }
   }
   const [section, id] = raw.split("/")
+  if (section === "packages") {
+    return { name: "packages" }
+  }
+  if (section === "instances") {
+    return id
+      ? { name: "instance", instance: decodeURIComponent(id) }
+      : { name: "instances" }
+  }
   if (section === "providers") {
     return id ? { name: "provider", id: decodeURIComponent(id) } : { name: "providers" }
   }
@@ -27,6 +38,12 @@ export function routeHref(route: AppRoute): string {
   switch (route.name) {
     case "overview":
       return "#/"
+    case "packages":
+      return "#/packages"
+    case "instances":
+      return "#/instances"
+    case "instance":
+      return `#/instances/${encodeURIComponent(route.instance)}`
     case "providers":
       return "#/providers"
     case "provider":
