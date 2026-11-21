@@ -235,6 +235,7 @@ impl WorkerSettings {
         config.max_active = self.file.max_active.max(1);
         config.max_queue = self.file.max_queue;
         config.per_principal = self.file.per_principal.max(1);
+        config.max_subagents = self.file.max_subagents.max(1);
         config.event_retention = self.file.event_retention.max(1);
         config.drain_timeout_ms = self.file.drain_timeout_ms.max(1);
         config.max_streams = self.file.max_streams.max(1);
@@ -317,6 +318,12 @@ pub struct FileConfig {
     /// Per-principal admitted work ceiling.
     #[serde(default = "default_per_principal")]
     pub per_principal: usize,
+    /// Reserved admission capacity for runtime-local subagent tasks.
+    ///
+    /// A parent that already owns its full per-principal quota can still admit
+    /// a child; the reserve bounds how much such child work exists at once.
+    #[serde(default = "default_max_subagents")]
+    pub max_subagents: usize,
     /// Durable event retention per stream.
     #[serde(default = "default_event_retention")]
     pub event_retention: usize,
@@ -780,6 +787,10 @@ fn default_max_queue() -> usize {
 }
 
 fn default_per_principal() -> usize {
+    8
+}
+
+fn default_max_subagents() -> usize {
     8
 }
 

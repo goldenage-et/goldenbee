@@ -454,6 +454,20 @@ impl Runtime {
             None
         };
         let terminal_seq = self.next_seq(task_id).await;
+        // Reserve the parent notification sequence before the commit so the
+        // child's terminal projection and the parent's `subagent.terminal`
+        // event land in the same metadata transaction. Notification therefore
+        // happens exactly once per terminal transition.
+        let parent_terminal = match snapshot
+            .as_ref()
+            .and_then(|task| task.parent_task_id.clone())
+        {
+            Some(parent) => {
+                let seq = self.next_seq(&parent).await;
+                Some((parent, seq))
+            }
+            None => None,
+        };
         let updated = self
             .store()
             .write(|state_map| {
@@ -471,7 +485,7 @@ impl Runtime {
                     if forced_pending
                         && matches!(task.state, TaskState::Accepted | TaskState::Queued)
                     {
-                        return Ok((task.clone(), None, false));
+                        return Ok((task.clone(), Vec::new(), false));
                     }
                     if forced_pending
                         && matches!(
@@ -509,7 +523,7 @@ impl Runtime {
                     (task.clone(), true)
                 };
                 if !changed {
-                    return Ok((updated_task, None, false));
+                    return Ok((updated_task, Vec::new(), false));
                 }
                 if let Some((kind, payload)) = policy.clone() {
                     crate::tasks::events::push_event(
@@ -542,7 +556,7 @@ impl Runtime {
                     TaskState::Failed => "task.failed",
                     _ => "task.updated",
                 };
-                let event = crate::tasks::events::push_event(
+                let mut events = vec![crate::tasks::events::push_event(
                     state_map,
                     &source,
                     &incarnation,
@@ -552,17 +566,39 @@ impl Runtime {
                     kind,
                     payload,
                     true,
-                )?;
-                Ok((updated_task, Some(event), true))
+                )?];
+                if let Some((parent_id, seq)) = &parent_terminal {
+                    if updated_task.parent_task_id.as_deref() == Some(parent_id.as_str())
+                        && state_map.tasks.contains_key(parent_id)
+                    {
+                        let payload = Self::subagent_terminal_payload(&updated_task);
+                        // A parent stream conflict must never turn the child's
+                        // committed terminal projection into a failed write.
+                        if let Ok(event) = crate::tasks::events::push_event(
+                            state_map,
+                            &source,
+                            &incarnation,
+                            retention,
+                            parent_id,
+                            *seq,
+                            "subagent.terminal",
+                            payload,
+                            true,
+                        ) {
+                            events.push(event);
+                        }
+                    }
+                }
+                Ok((updated_task, events, true))
             })
             .await;
-        let Ok((task, event, changed)) = updated else {
+        let Ok((task, events, changed)) = updated else {
             return;
         };
         if !changed {
             return;
         }
-        if let Some(event) = event {
+        for event in events {
             let _ = self.live_sender().send(event);
         }
         if task.state == TaskState::Recovering {
@@ -593,6 +629,12 @@ impl Runtime {
                     .unwrap_or(""),
             )
             .await;
+        // A lineage that did not succeed must not leave owned work running.
+        // A successful parent may leave background children running; their
+        // completion still reports through the same durable notification.
+        if task.state != TaskState::Succeeded {
+            self.cancel_owned_subagents(&task.id).await;
+        }
     }
 
     async fn release(

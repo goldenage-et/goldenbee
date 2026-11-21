@@ -30,6 +30,7 @@ pub mod redaction;
 pub mod session;
 pub mod socket;
 pub mod stream;
+pub mod subagent;
 pub mod task;
 pub mod team;
 pub mod telemetry;
@@ -112,6 +113,7 @@ pub use socket::{
 pub use stream::{
     parse_cursor, parse_limit, StreamEvent, StreamPage, EVENT_SCHEMA_VERSION, MAX_EVENT_PAGE,
 };
+pub use subagent::{SubagentPolicy, SubagentResult, SubagentSummary};
 pub use task::{
     PlanItem, ResolvedModel, SubmitTaskRequest, SubmitTaskResponse, Task, TaskPlan, TaskState,
 };

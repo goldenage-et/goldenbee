@@ -784,6 +784,20 @@ impl crate::Executor for NativeExecutor {
                                 base_agent
                             }
                             Some(revision) => {
+                                // A runtime-local child executes the parent's
+                                // pinned revision narrowed by its frozen
+                                // policy. The derivation is deterministic, so
+                                // admission and re-execution agree.
+                                let revision = match task.subagent.as_ref() {
+                                    Some(policy) => {
+                                        match crate::subagents::narrowed_revision(&revision, policy)
+                                        {
+                                            Ok(narrowed) => narrowed,
+                                            Err(error) => return ExecutionOutcome::failure(error),
+                                        }
+                                    }
+                                    None => revision,
+                                };
                                 let slot = fallback_slot.clone();
                                 let reporter: crate::execution::providers::FallbackReporter =
                                     Arc::new(move |record| {

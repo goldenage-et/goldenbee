@@ -7,13 +7,23 @@ use crate::hooks::{audit_plugin, PackageHooks};
 use crate::sandbox::{default_sandbox_workspace, sandbox_tool};
 use adk_rust::Tool;
 use runtime::native::PackageManifest;
+use runtime::policy::PermissionMode;
+use runtime::subagents::{SubagentConfig, SubagentDefinition};
 use runtime::worker::Worker;
 use std::sync::Arc;
 
 /// The package's single Worker definition.
 pub fn worker() -> Result<Worker, String> {
+    worker_with_subagents(default_subagents())
+}
+
+/// The package definition with an explicit runtime-local subagent policy.
+///
+/// The operator-facing binary uses [`worker`]; tests and other packages use
+/// this constructor to select their own definitions and ceilings.
+pub fn worker_with_subagents(subagents: SubagentConfig) -> Result<Worker, String> {
     Ok(Worker::new("general", env!("CARGO_PKG_VERSION"))
-        .required_permissions(["task:submit", "session:write"])
+        .required_permissions(["task:submit", "session:write", "subagent:manage"])
         .model_agent_with_settings(
             "manual",
             "Manual native ADK diagnostic agent",
@@ -30,8 +40,33 @@ pub fn worker() -> Result<Worker, String> {
         .callbacks(native_callbacks)
         .knowledge_tools()
         .progressive_skills()
+        .subagents(subagents)
         .adk_plugin(audit_plugin())
         .hooks(Arc::new(PackageHooks)))
+}
+
+/// Conservative default subagent policy for the General Worker.
+///
+/// One level of delegation, at most four live children per parent, and no
+/// model or permission widening beyond the parent task.
+pub fn default_subagents() -> SubagentConfig {
+    SubagentConfig::new()
+        .max_depth(1)
+        .max_fanout(4)
+        .max_tasks(8)
+        .permission_mode(PermissionMode::Default)
+        .definition(
+            "helper",
+            SubagentDefinition::new("echo")
+                .description("Short deterministic helper that repeats its input.")
+                .inherit_tools(),
+        )
+        .definition(
+            "researcher",
+            SubagentDefinition::new("general")
+                .description("General specialist that can itself delegate one level.")
+                .inherit_tools(),
+        )
 }
 
 /// Installed capability inventory derived from the one Worker definition.

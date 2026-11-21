@@ -82,6 +82,10 @@ async fn make_task(
         usage: Usage::default(),
         created_at: common::now_ms(),
         updated_at,
+        parent_task_id: None,
+        root_task_id: None,
+        subagent: None,
+        closed_at: None,
     };
     rt.store()
         .write(|store| {

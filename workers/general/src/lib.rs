@@ -16,5 +16,5 @@ mod sandbox;
 pub use artifact::ArtifactTool;
 pub use callbacks::native_callbacks;
 pub use hooks::{audit_plugin, PackageHooks};
-pub use package::{manifest, worker};
+pub use package::{default_subagents, manifest, worker, worker_with_subagents};
 pub use sandbox::{default_sandbox_workspace, sandbox_policy, sandbox_tool};

@@ -22,18 +22,41 @@ impl Runtime {
     /// never precede "startup hook failed".
     pub async fn recover_plan(&self) -> Result<Recovery> {
         let at = now();
-        let (resumable, uncertain) = self
+        let (resumable, uncertain, cancelled) = self
             .store()
             .write(|state| {
+                // A lineage owner that ended without success must not leave
+                // owned work resumable after a restart. Cancellation is durable;
+                // recovery obeys it instead of resurrecting the child.
+                let stopped: std::collections::BTreeSet<String> = state
+                    .tasks
+                    .values()
+                    .filter(|task| task.state.is_terminal() && task.state != TaskState::Succeeded)
+                    .map(|task| task.id.clone())
+                    .collect();
                 let mut resumable = Vec::new();
                 let mut uncertain = Vec::new();
+                let mut cancelled = Vec::new();
                 for task in state.tasks.values_mut() {
                     if task.state.is_terminal() {
                         continue;
                     }
+                    let lineage_stopped = task
+                        .parent_task_id
+                        .as_ref()
+                        .is_some_and(|parent| stopped.contains(parent))
+                        || task
+                            .root_task_id
+                            .as_ref()
+                            .is_some_and(|root| stopped.contains(root));
                     match task.state {
                         // Admission and queue position are process-local; no
                         // native execution was requested for these identities.
+                        TaskState::Accepted | TaskState::Queued if lineage_stopped => {
+                            task.state = TaskState::Cancelled;
+                            task.updated_at = at;
+                            cancelled.push(task.id.clone());
+                        }
                         TaskState::Accepted | TaskState::Queued => {
                             task.state = TaskState::Accepted;
                             task.updated_at = at;
@@ -58,9 +81,20 @@ impl Runtime {
                         _ => {}
                     }
                 }
-                Ok((resumable, uncertain))
+                Ok((resumable, uncertain, cancelled))
             })
             .await?;
+
+        for id in &cancelled {
+            let _ = self
+                .append_event(
+                    id,
+                    "task.cancelled",
+                    serde_json::json!({"reason": "parent_terminal"}),
+                    true,
+                )
+                .await;
+        }
 
         for id in &uncertain {
             let _ = self

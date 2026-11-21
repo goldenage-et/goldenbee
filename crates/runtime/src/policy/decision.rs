@@ -114,6 +114,42 @@ impl PermissionMode {
         }
     }
 
+    /// Parse the stable wire spelling, including documented aliases.
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "default" => Some(Self::Default),
+            "accept-edits" | "accept_edits" | "acceptEdits" => Some(Self::AcceptEdits),
+            "plan" => Some(Self::Plan),
+            "full-auto" | "full_auto" | "fullauto" | "yolo" => Some(Self::FullAuto),
+            _ => None,
+        }
+    }
+
+    /// Most restrictive of two modes.
+    ///
+    /// A parent or a Worker-declared ceiling may only narrow the effective
+    /// mode. This ordering is the single place that decision lives.
+    pub fn stricter(self, other: Self) -> Self {
+        fn rank(mode: PermissionMode) -> u8 {
+            match mode {
+                PermissionMode::Plan => 0,
+                PermissionMode::Default => 1,
+                PermissionMode::AcceptEdits => 2,
+                PermissionMode::FullAuto => 3,
+            }
+        }
+        if rank(self) <= rank(other) {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// Whether this mode grants more autonomy than `other`.
+    pub fn is_wider_than(self, other: Self) -> bool {
+        self != other && self.stricter(other) == other
+    }
+
     fn base(self, request: &PermissionRequest) -> (Decision, &'static str) {
         let risky =
             request.effect.is_mutation() || request.high_risk || request.command_or_network();
