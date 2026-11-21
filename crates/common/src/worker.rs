@@ -342,3 +342,82 @@ pub struct CapabilityDescriptor {
     #[serde(default)]
     pub permissions: Vec<String>,
 }
+
+/// Package-declared browser capability projected by `/v1/capabilities`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserCapabilityInventory {
+    /// Toolset identity the package registered.
+    pub toolset: String,
+    /// Whether the operator enabled the capability.
+    pub enabled: bool,
+    /// Readiness name.
+    pub ready: String,
+    /// Sandbox profile name.
+    pub profile: String,
+    /// Configured session ceiling.
+    pub max_sessions: usize,
+    /// Current active sessions.
+    pub active_sessions: usize,
+    /// Whether JavaScript evaluation is exposed.
+    pub evaluate_js: bool,
+    /// Whether streaming is exposed.
+    pub streaming: bool,
+    /// Whether takeover control is exposed.
+    pub takeover: bool,
+    /// Control protocol name.
+    pub control_protocol: String,
+    /// Supported control commands.
+    pub control_commands: Vec<String>,
+    /// Whether terminal control is exposed.
+    pub terminal_control: bool,
+}
+
+/// Shared capability inventory returned by a Worker management surface.
+///
+/// The Worker, Gateway, SDK, and CLI use this one shape so a capability is not
+/// renamed or dropped between hops.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityInventory {
+    /// Installed package name.
+    pub package: String,
+    /// Installed package version.
+    pub version: String,
+    /// Supported management protocol.
+    pub protocol: String,
+    /// Shared runtime version.
+    #[serde(default)]
+    pub runtime: String,
+    /// Pinned ADK version.
+    #[serde(default)]
+    pub adk: String,
+    /// Worker Instance identity.
+    pub instance: String,
+    /// Whether tasks have durable admission and projection.
+    #[serde(default)]
+    pub durable_tasks: bool,
+    /// A2A task storage identity.
+    #[serde(default)]
+    pub a2a_task_storage: String,
+    /// Whether A2A task storage is durable.
+    #[serde(default)]
+    pub a2a_durable: bool,
+    /// Artifact storage identity.
+    #[serde(default)]
+    pub artifact_storage: String,
+    /// Artifact transfer mechanism.
+    #[serde(default)]
+    pub artifact_transfer: String,
+    /// Published artifact byte ceiling.
+    #[serde(default)]
+    pub artifact_max_bytes: usize,
+    /// Configured agent ids this instance can route.
+    pub capabilities: Vec<CapabilityDescriptor>,
+    /// Installed executable functionality declared by the package manifest.
+    pub installed_capabilities: Vec<CapabilityDescriptor>,
+    /// Discoverable runtime and Worker-defined commands.
+    #[serde(default)]
+    pub commands: Vec<crate::command::CommandDescriptor>,
+    /// Package-declared browser capability, when installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserCapabilityInventory>,
+}

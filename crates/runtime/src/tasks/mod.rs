@@ -24,7 +24,8 @@ impl Runtime {
         principal: &Principal,
         request: SubmitTaskRequest,
     ) -> Result<SubmitTaskResponse> {
-        self.submit_task_with_claims(principal, request, None).await
+        self.submit_task_traced(principal, request, None, None, Vec::new())
+            .await
     }
 
     /// Submit a task, honoring a Gateway delegation roster when present.
@@ -34,7 +35,7 @@ impl Runtime {
         request: SubmitTaskRequest,
         claims: Option<&DelegationClaims>,
     ) -> Result<SubmitTaskResponse> {
-        self.submit_task_traced(principal, request, claims, None)
+        self.submit_task_traced(principal, request, claims, None, Vec::new())
             .await
     }
 
@@ -46,7 +47,23 @@ impl Runtime {
         claims: Option<&DelegationClaims>,
         trace: Option<&str>,
     ) -> Result<SubmitTaskResponse> {
-        self.submit_task_traced(principal, request, claims, trace)
+        self.submit_task_traced(principal, request, claims, trace, Vec::new())
+            .await
+    }
+
+    /// Submit a task with bounded inline images.
+    ///
+    /// This is the headless admission path. Text stays in the canonical
+    /// `SubmitTaskRequest`; images are validated and bounded before the same
+    /// durable acceptance write. There is no second executor or store.
+    pub async fn submit_task_with_images(
+        &self,
+        principal: &Principal,
+        request: SubmitTaskRequest,
+        claims: Option<&DelegationClaims>,
+        images: &[common::RunImage],
+    ) -> Result<SubmitTaskResponse> {
+        self.submit_task_traced(principal, request, claims, None, images.to_vec())
             .await
     }
 
@@ -56,6 +73,7 @@ impl Runtime {
         request: SubmitTaskRequest,
         claims: Option<&DelegationClaims>,
         trace: Option<&str>,
+        input_images: Vec<common::RunImage>,
     ) -> Result<SubmitTaskResponse> {
         principal.require(scopes::TASK_SUBMIT)?;
         let namespace = request
@@ -90,6 +108,27 @@ impl Runtime {
                 "validation.input_too_large",
                 "input exceeds the 1 MB management limit",
             ));
+        }
+        // Inline images are bounded before any durable write. A malformed image
+        // fails here, so no task is admitted and no execution begins.
+        if input_images.len() > common::MAX_RUN_IMAGES {
+            return Err(ApiError::new(
+                "validation.input_too_large",
+                "input has more images than the published limit",
+            )
+            .with("limit", common::MAX_RUN_IMAGES.to_string()));
+        }
+        let mut input_bytes = request.input.len();
+        for image in &input_images {
+            image.validate()?;
+            input_bytes = input_bytes.saturating_add(image.decoded_len());
+        }
+        if input_bytes > common::MAX_RUN_TEXT_BYTES {
+            return Err(ApiError::new(
+                "validation.input_too_large",
+                "combined text and image input exceeds the published limit",
+            )
+            .with("limit_bytes", common::MAX_RUN_TEXT_BYTES.to_string()));
         }
 
         let claimed_team: Option<TeamRoster> = match claims {
@@ -135,6 +174,18 @@ impl Runtime {
             "agent": request.agent,
             "session_id": request.session_id,
             "input": request.input,
+            "input_images": input_images
+                .iter()
+                .map(|image| {
+                    serde_json::json!({
+                        "media_type": image.media_type,
+                        "name": image.name,
+                        "digest": common::bytes_digest(
+                            &image.decode().unwrap_or_default()
+                        ),
+                    })
+                })
+                .collect::<Vec<_>>(),
             "profile": profile_name,
             "team": request.team,
             "team_version": claimed_team.as_ref().map(|roster| roster.version),
@@ -311,6 +362,7 @@ impl Runtime {
                     agent: agent.clone(),
                     session_id: request.session_id.clone(),
                     input: request.input.clone(),
+                    input_images: input_images.clone(),
                     idempotency_key: request.idempotency_key.clone(),
                     request_digest: digest.clone(),
                     profile: profile_name.clone(),

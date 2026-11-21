@@ -205,6 +205,7 @@ fn task_projection(state: TaskState) -> GatewayTask {
             agent: "general".into(),
             session_id: "s".into(),
             input: "input".into(),
+            input_images: Vec::new(),
             idempotency_key: "key".into(),
             request_digest: "digest".into(),
             profile: "default".into(),
