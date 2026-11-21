@@ -159,7 +159,7 @@ pub struct DiagnosticBundle {
     pub correlation: DiagnosticCorrelation,
     /// Redacted audit tail.
     #[serde(default)]
-    pub audit: Vec<serde_json::Value>,
+    pub audit: Vec<crate::evidence::AuditEntry>,
     /// Redacted trace samples.
     #[serde(default)]
     pub traces: Vec<crate::health::TraceSample>,

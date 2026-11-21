@@ -123,11 +123,11 @@ async fn diagnostics_expose_blocked_approval_without_prompt_or_secret_export() {
         .any(|finding| finding.kind == "blocked_approval"));
     assert_eq!(bundle.task.as_ref().unwrap().approvals.len(), 1);
     assert!(bundle.audit.iter().any(|record| {
-        record["action"] == "task.submit"
-            && record["resource"] == response.task_id
-            && record["outcome"] == "accepted"
-            && record["policy_revision"] == 1
-            && record["correlation"] == trace
+        record.action == "task.submit"
+            && record.resource == response.task_id
+            && record.decision == "accepted"
+            && record.policy_revision == 1
+            && record.trace_id.as_deref() == Some(trace)
     }));
 
     // Metrics use the bounded vocabulary only.

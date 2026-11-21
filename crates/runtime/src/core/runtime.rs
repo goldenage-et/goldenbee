@@ -319,6 +319,11 @@ impl Runtime {
         &self.inner.config
     }
 
+    /// Deterministic evidence redactor for this configuration revision.
+    pub(crate) fn redactor(&self) -> crate::core::redaction::Redactor {
+        crate::core::redaction::Redactor::new(&self.inner.config.redaction_roots)
+    }
+
     /// Shared provider registry used by admission and construction.
     pub fn providers(&self) -> Arc<ProviderRegistry> {
         self.inner.providers.clone()

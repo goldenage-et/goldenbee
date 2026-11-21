@@ -25,6 +25,8 @@ impl Runtime {
         };
         let namespace = principal.namespace.clone();
         let selected_task = task.clone();
+        let redactor = self.redactor();
+        let redact = |text: &str| redactor.text(text);
         let (approvals, delegations, hook_failures, audit, traces) = self
             .store()
             .read(|state| {
@@ -43,7 +45,7 @@ impl Runtime {
                         operation: approval.operation.clone(),
                         digest: approval.digest.clone(),
                         status: approval.status.clone(),
-                        risk: common::redact(&approval.risk),
+                        risk: redact(&approval.risk),
                         expires_at: approval.expires_at,
                         created_at: approval.created_at,
                     })
@@ -67,7 +69,7 @@ impl Runtime {
                         error_message: binding
                             .last_error
                             .as_ref()
-                            .map(|error| common::redact(&error.message)),
+                            .map(|error| redact(&error.message)),
                     })
                     .collect::<Vec<_>>();
                 // A failed child may be recorded on the Master plan before a
@@ -93,7 +95,7 @@ impl Runtime {
                                 trace_id: Some(task.trace_id.clone())
                                     .filter(|trace| !trace.is_empty()),
                                 error_code: Some(error.code.clone()),
-                                error_message: Some(common::redact(&error.message)),
+                                error_message: Some(redact(&error.message)),
                             });
                         }
                     }
@@ -117,7 +119,7 @@ impl Runtime {
                                             .payload
                                             .get("message")
                                             .and_then(|message| message.as_str())
-                                            .map(common::redact)
+                                            .map(redact)
                                             .unwrap_or_default(),
                                         action:
                                             "inspect the hook configuration and task error; the native outcome was committed before this observation"
@@ -140,19 +142,18 @@ impl Runtime {
                             .is_none_or(|task| record.target == task.id)
                     })
                     .take(50)
-                    .map(|record| {
-                        serde_json::json!({
-                            "seq": record.seq,
-                            "at": record.at,
-                            "principal": record.principal,
-                            "action": record.action,
-                            "resource": record.target,
-                            "outcome": record.outcome,
-                            "detail": common::redact(&record.detail),
-                            "source": record.source,
-                            "policy_revision": record.policy_revision,
-                            "correlation": record.correlation,
-                        })
+                    .map(|record| common::AuditEntry {
+                        seq: record.seq,
+                        at: record.at,
+                        principal: redact(&record.principal),
+                        action: record.action.clone(),
+                        decision: record.outcome.clone(),
+                        reason: redact(&record.detail),
+                        resource: redact(&record.target),
+                        source: record.source.clone(),
+                        policy_revision: record.policy_revision,
+                        trace_id: Some(record.correlation.clone())
+                            .filter(|trace| !trace.is_empty()),
                     })
                     .collect::<Vec<_>>();
                 let traces = state
@@ -194,7 +195,7 @@ impl Runtime {
                 kind: "degraded_storage".into(),
                 source: "runtime".into(),
                 code: "storage.degraded".into(),
-                message: common::redact(&health.degraded.join(", ")),
+                message: redact(&health.degraded.join(", ")),
                 action: "inspect storage pressure and the reported degradation before accepting more work"
                     .into(),
                 trace_id: None,

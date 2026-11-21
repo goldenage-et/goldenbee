@@ -16,6 +16,7 @@ pub mod delegation;
 pub mod diagnostics;
 pub mod digest;
 pub mod error;
+pub mod evidence;
 pub mod gateway;
 pub mod health;
 pub mod host;
@@ -65,6 +66,7 @@ pub use diagnostics::{
 };
 pub use digest::{bytes_digest, canonical_digest};
 pub use error::{ApiError, ContractResult};
+pub use evidence::{AuditEntry, EffectEvidence, OperationView};
 pub use gateway::{
     GatewayApproval, GatewayConnectivity, GatewayHealth, GatewaySubmitRequest,
     GatewaySubmitResponse, GatewayTask,
