@@ -275,6 +275,10 @@ pub struct ToolKernelConfig {
     /// Initial permission policy. Runtime updates replace its contents through
     /// [`ToolKernel::permission_handle`].
     pub permissions: crate::policy::PermissionPolicy,
+    /// Runtime-owned sandbox policy: profile, network, paths, command
+    /// ceiling, proxy, and process limits. Only the operator configuration
+    /// sets it; `narrow_sandbox` is the only way to change it afterwards.
+    pub sandbox: crate::sandbox::SandboxRules,
 }
 
 struct KernelState {
@@ -348,6 +352,9 @@ impl ToolKernel {
             .permissions
             .validate()
             .map_err(adk_rust::AdkError::config)?;
+        config.sandbox.validate().map_err(|message| {
+            adk_rust::AdkError::config(format!("sandbox policy is invalid: {message}"))
+        })?;
         *self
             .inner
             .permissions
@@ -414,6 +421,39 @@ impl ToolKernel {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .snapshot()
+    }
+
+    /// Effective sandbox rules for this process, when configured.
+    pub fn sandbox_rules(&self) -> Option<crate::sandbox::SandboxRules> {
+        self.state()
+            .and_then(|state| state.as_ref().map(|state| state.config.sandbox.clone()))
+    }
+
+    /// Apply a narrower sandbox overlay.
+    ///
+    /// A Runtime Profile, plugin, command, or subagent uses this to restrict
+    /// work further. The result is the intersection with the operator policy,
+    /// so this API cannot widen a profile, re-enable network, add a protected
+    /// grant, add a writable root, or add a command prefix.
+    pub fn narrow_sandbox(
+        &self,
+        overlay: &crate::sandbox::SandboxRules,
+    ) -> std::result::Result<crate::sandbox::SandboxRules, adk_rust::AdkError> {
+        overlay.validate().map_err(|message| {
+            adk_rust::AdkError::config(format!("sandbox overlay is invalid: {message}"))
+        })?;
+        let mut state = self
+            .inner
+            .state
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(state) = state.as_mut() else {
+            return Err(adk_rust::AdkError::config(
+                "the Worker tool kernel has not been configured",
+            ));
+        };
+        state.config.sandbox = state.config.sandbox.narrowed_by(overlay);
+        Ok(state.config.sandbox.clone())
     }
 
     /// The configured workspace root, when startup resolved one.
@@ -571,12 +611,8 @@ impl KernelTool {
         })
     }
 
-    fn sandbox_profile(&self) -> &'static str {
-        if self.descriptor.effect.is_mutation() || self.descriptor.writes {
-            "workspace-write"
-        } else {
-            "workspace-read"
-        }
+    fn sandbox_profile(&self, effective: &EffectiveConfig) -> &'static str {
+        effective.config.sandbox.profile.as_str()
     }
 
     fn action_effect(&self) -> crate::policy::ActionEffect {
@@ -589,6 +625,7 @@ impl KernelTool {
 
     fn policy_request(
         &self,
+        effective: &EffectiveConfig,
         args: &Value,
         relative: &[String],
         task: Option<&common::Task>,
@@ -612,12 +649,13 @@ impl KernelTool {
                 .map(|task| task.caller.clone())
                 .unwrap_or_else(|| "local".into()),
             profile_revision: task.map(|task| task.profile_revision).unwrap_or(0),
-            sandbox_profile: self.sandbox_profile().to_string(),
+            sandbox_profile: self.sandbox_profile(effective).to_string(),
         }
     }
 
     fn hook_context(
         &self,
+        effective: &EffectiveConfig,
         ctx: &dyn ToolContext,
         task: Option<&common::Task>,
         request: &crate::policy::PermissionRequest,
@@ -648,7 +686,7 @@ impl KernelTool {
             paths: relative.to_vec(),
             command: request.command.clone(),
             domain: request.domain.clone(),
-            sandbox: self.sandbox_profile().to_string(),
+            sandbox: self.sandbox_profile(effective).to_string(),
             permission: decision.to_string(),
             profile: task.map(|task| task.profile.clone()).unwrap_or_default(),
             profile_revision: task.map(|task| task.profile_revision).unwrap_or(0),
@@ -679,8 +717,9 @@ impl KernelTool {
     }
 
     fn sandbox(&self, effective: &EffectiveConfig) -> Value {
+        let rules = &effective.config.sandbox;
         json!({
-            "profile": self.sandbox_profile(),
+            "profile": rules.profile.as_str(),
             "workspace": effective
                 .config
                 .workspace
@@ -688,7 +727,11 @@ impl KernelTool {
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
                 .unwrap_or("workspace"),
-            "network": self.descriptor.network,
+            "network": {
+                "enabled": rules.network.enabled,
+                "tool": self.descriptor.network,
+            },
+            "policy": rules.summary(),
         })
     }
 
@@ -715,6 +758,136 @@ impl KernelTool {
                     .unwrap_or(path)
             })
             .collect()
+    }
+
+    fn sandbox_paths(
+        &self,
+        effective: &EffectiveConfig,
+        args: &Value,
+    ) -> std::result::Result<Vec<String>, crate::sandbox::SandboxViolation> {
+        let declared = self
+            .descriptor
+            .paths
+            .map(|paths| paths(args))
+            .unwrap_or_default();
+        if declared.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(workspace) = effective.config.workspace.as_deref() else {
+            // A package tool may own its own workspace (for example a
+            // provisioned git worktree). Its descriptor still supplies
+            // workspace-relative paths, so apply the lexical policy and let
+            // the tool's own containment resolve the root.
+            return declared
+                .iter()
+                .map(|path| {
+                    normalize_relative(path).ok_or_else(|| {
+                        crate::sandbox::SandboxViolation::new(
+                            "sandbox.path_denied",
+                            "the path escapes the tool workspace root",
+                        )
+                    })
+                })
+                .collect();
+        };
+        declared
+            .iter()
+            .map(|path| {
+                resolve_tool_path(workspace, path).ok_or_else(|| {
+                    crate::sandbox::SandboxViolation::new(
+                        "sandbox.path_denied",
+                        "the path escapes the workspace root or a symlink",
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record_sandbox(
+        &self,
+        effective: &EffectiveConfig,
+        ctx: &dyn ToolContext,
+        task: Option<&common::Task>,
+        relative: &[String],
+        command: Option<&str>,
+        domain: Option<&str>,
+        decision: &crate::sandbox::SandboxDecision,
+    ) {
+        let (Some(task), Some(runtime)) = (task, self.kernel.inner.runtime.get()) else {
+            return;
+        };
+        let rules = &effective.config.sandbox;
+        let (outcome, code, message) = match decision {
+            crate::sandbox::SandboxDecision::Allow { .. } => ("allow", None, None),
+            crate::sandbox::SandboxDecision::Deny(violation) => (
+                "deny",
+                Some(violation.code.clone()),
+                Some(violation.message.clone()),
+            ),
+        };
+        let command_digest = command
+            .map(|command| common::canonical_digest(&command))
+            .unwrap_or_default();
+        let payload = json!({
+            "tool": self.inner.name(),
+            "call_id": ctx.function_call_id(),
+            "invocation": ctx.invocation_id(),
+            "agent": ctx.agent_name(),
+            "decision": outcome,
+            "code": code,
+            "message": message.as_deref().map(common::redact),
+            "profile": rules.profile.as_str(),
+            "network": {
+                "enabled": rules.network.enabled,
+                "allowed": domain.map(|host| rules.network.allows_host(host)),
+            },
+            "paths": relative,
+            "command_digest": command_digest,
+            "domain": domain,
+            "exceptions": decision.exceptions(),
+            "policy": rules.summary(),
+            "redaction": {
+                "command": "digest",
+                "paths": "workspace-relative",
+            },
+        });
+        let _ = runtime
+            .append_event(&task.id, "sandbox.decision", payload, true)
+            .await;
+        let exceptions = decision.exceptions();
+        if outcome == "deny" || !exceptions.is_empty() {
+            let detail = format!(
+                "profile={} decision={} code={} reason={} paths={} command_digest={} domain={} exceptions={}",
+                rules.profile.as_str(),
+                outcome,
+                code.as_deref().unwrap_or(""),
+                message.as_deref().unwrap_or(""),
+                relative.join(","),
+                command_digest,
+                domain.unwrap_or(""),
+                exceptions
+                    .iter()
+                    .map(|exception| exception.kind.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            let audit_outcome = if outcome == "deny" {
+                "deny"
+            } else {
+                "exception"
+            };
+            let _ = runtime
+                .audit_with_trace(
+                    &task.caller,
+                    "sandbox.decision",
+                    &task.id,
+                    audit_outcome,
+                    &detail,
+                    &task.trace_id,
+                )
+                .await;
+        }
     }
 
     async fn authorize(
@@ -1069,8 +1242,83 @@ impl Tool for KernelTool {
         // One snapshot per call: a mode or rule change applies only to later
         // calls and both the decision and the recorded evidence use this view.
         let snapshot = self.kernel.permission_snapshot();
-        let relative = self.relative_paths(&effective, &args);
-        let request = self.policy_request(&args, &relative, task.as_ref());
+        let command = self.descriptor.command.and_then(|extract| extract(&args));
+        let domain = self.descriptor.domain.and_then(|extract| extract(&args));
+        // The sandbox boundary runs before authorization: a profile that
+        // cannot execute an action must not open an approval or reach a Worker
+        // hook that could claim it was allowed.
+        let (relative, sandbox_decision) = match self.sandbox_paths(&effective, &args) {
+            Ok(relative) => {
+                let request = crate::sandbox::SandboxRequest {
+                    action: if self.descriptor.effect.is_mutation() || self.descriptor.writes {
+                        crate::sandbox::SandboxAction::Write
+                    } else {
+                        crate::sandbox::SandboxAction::Read
+                    },
+                    paths: &relative,
+                    command: command.as_deref(),
+                    domain: domain.as_deref(),
+                    network_tool: self.descriptor.network,
+                };
+                let decision = effective.config.sandbox.evaluate(&request);
+                (relative, decision)
+            }
+            Err(violation) => (Vec::new(), crate::sandbox::SandboxDecision::Deny(violation)),
+        };
+        self.record_sandbox(
+            &effective,
+            ctx.as_ref(),
+            task.as_ref(),
+            &relative,
+            command.as_deref(),
+            domain.as_deref(),
+            &sandbox_decision,
+        )
+        .await;
+        if let crate::sandbox::SandboxDecision::Deny(violation) = &sandbox_decision {
+            let observation = ToolObservation {
+                ok: false,
+                error_code: Some(violation.code.clone()),
+                duration: Duration::ZERO,
+                queue_wait: Duration::ZERO,
+                truncated: false,
+                output_bytes: 0,
+                result_digest: String::new(),
+                post_digest: String::new(),
+                diff: Value::Null,
+                effect: self.descriptor.effect.is_mutation().then(|| {
+                    json!({
+                        "kind": self.descriptor.effect.as_str(),
+                        "paths": relative,
+                    })
+                }),
+                permission: json!({
+                    "decision": "deny",
+                    "mode": "sandbox",
+                    "sandbox": effective.config.sandbox.summary(),
+                }),
+            };
+            self.observe(
+                &effective,
+                ctx.as_ref(),
+                &args,
+                task.as_ref(),
+                observation.clone(),
+            )
+            .await;
+            // A denied mutation is evidence of a failed effect, never a
+            // committed one.
+            self.effect_evidence(
+                &effective,
+                ctx.as_ref(),
+                task.as_ref(),
+                &relative,
+                &observation,
+            )
+            .await;
+            return Ok(error_value(&violation.code, &violation.message));
+        }
+        let request = self.policy_request(&effective, &args, &relative, task.as_ref());
         let evaluated = snapshot.evaluate(&request);
         let authorization = self
             .authorize(&evaluated, &snapshot, &request, task.as_ref())
@@ -1143,6 +1391,7 @@ impl Tool for KernelTool {
         // Hooks run after authorization and sandbox decisions. A hook may only
         // deny further; a failure or timeout never grants the call.
         let hook_ctx = self.hook_context(
+            &effective,
             ctx.as_ref(),
             task.as_ref(),
             &request,
@@ -1826,6 +2075,72 @@ fn typed_error(error: &adk_rust::AdkError) -> Value {
     error_value(code, message)
 }
 
+/// Resolve one tool-declared path to a workspace-relative path, rejecting
+/// lexical escape and symlinks that leave the workspace.
+fn resolve_tool_path(workspace: &Path, raw: &str) -> Option<String> {
+    let path = Path::new(raw);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    };
+    let normalized = normalize_lexical(&joined)?;
+    let relative = normalized.strip_prefix(workspace).ok()?;
+    // Canonicalize the nearest existing ancestor. A new file or directory
+    // inherits the containment of its parent, and a symlinked prefix that
+    // leaves the workspace is rejected.
+    let mut ancestor = normalized.as_path();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(canonical) => {
+                if !canonical.starts_with(workspace) {
+                    return None;
+                }
+                break;
+            }
+            Err(_) => ancestor = ancestor.parent()?,
+        }
+    }
+    Some(relative.to_string_lossy().into_owned())
+}
+
+/// Normalize a workspace-relative path without a known root, rejecting an
+/// absolute path or a `..` that escapes the relative root.
+fn normalize_relative(raw: &str) -> Option<String> {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::CurDir => {}
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(parts.join("/"))
+}
+
+fn normalize_lexical(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    Some(out)
+}
+
 fn display_path(workspace: &Path, raw: &str) -> String {
     let path = Path::new(raw);
     let joined = if path.is_absolute() {
@@ -2133,6 +2448,26 @@ mod tests {
                 max_parallel,
                 enabled,
                 permissions,
+                sandbox: crate::sandbox::SandboxRules::default(),
+            })
+            .expect("kernel configures");
+        kernel
+    }
+
+    fn configured_sandbox(workspace: &Path, sandbox: crate::sandbox::SandboxRules) -> ToolKernel {
+        let kernel = ToolKernel::new();
+        kernel
+            .configure(ToolKernelConfig {
+                workspace: Some(workspace.to_path_buf()),
+                timeout: Duration::from_secs(5),
+                max_output_bytes: 1024,
+                max_parallel: 2,
+                enabled: BTreeSet::new(),
+                permissions: crate::policy::PermissionPolicy {
+                    mode: crate::policy::PermissionMode::FullAuto,
+                    ..crate::policy::PermissionPolicy::default()
+                },
+                sandbox,
             })
             .expect("kernel configures");
         kernel
@@ -2277,12 +2612,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut allow = permission_rule("allow-api", crate::policy::RuleDecision::Allow);
         allow.domains = vec!["api.example.com".into()];
-        let kernel = configured_with(
-            BTreeSet::new(),
-            2,
-            dir.path(),
-            permission_policy(vec![allow]),
-        );
+        let kernel = ToolKernel::new();
+        kernel
+            .configure(ToolKernelConfig {
+                workspace: Some(dir.path().to_path_buf()),
+                timeout: Duration::from_secs(5),
+                max_output_bytes: 1024,
+                max_parallel: 2,
+                enabled: BTreeSet::new(),
+                permissions: permission_policy(vec![allow]),
+                // Permission rules are the subject of this test, so the
+                // sandbox must permit the network destination first.
+                sandbox: crate::sandbox::SandboxRules {
+                    network: crate::sandbox::NetworkRules {
+                        enabled: true,
+                        ..crate::sandbox::NetworkRules::default()
+                    },
+                    ..crate::sandbox::SandboxRules::default()
+                },
+            })
+            .expect("kernel configures");
         let (tool, _, _, calls) = probe("web_fetch");
         let wrapped = kernel.wrap(
             tool,
@@ -2307,6 +2656,80 @@ mod tests {
             .expect("typed denial");
         assert_eq!(result["error"], "permission.denied");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn sandbox_denial_precedes_dispatch_and_permission_evaluation() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = crate::sandbox::SandboxRules {
+            profile: crate::sandbox::SandboxProfile::ReadOnly,
+            ..crate::sandbox::SandboxRules::default()
+        };
+        let kernel = configured_sandbox(dir.path(), sandbox);
+        let (tool, _, _, calls) = probe("writer");
+        let wrapped = kernel.wrap(
+            tool,
+            ToolDescriptor::new("workspace:write")
+                .risk(ToolRisk::Medium)
+                .effect(ToolEffect::FileWrite)
+                .paths(path_of),
+        );
+        let ctx = Arc::new(adk_tool::SimpleToolContext::new("test")) as Arc<dyn ToolContext>;
+        // The mode is full-auto, so only the sandbox profile can deny this.
+        let result = wrapped
+            .execute(ctx, json!({"path": "notes/a.txt"}))
+            .await
+            .expect("typed denial");
+        assert_eq!(result["error"], "sandbox.read_only");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn sandbox_denial_covers_path_escape_before_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = configured_sandbox(dir.path(), crate::sandbox::SandboxRules::default());
+        let (tool, _, _, calls) = probe("writer");
+        let wrapped = kernel.wrap(tool, ToolDescriptor::new("workspace:write").paths(path_of));
+        let ctx = Arc::new(adk_tool::SimpleToolContext::new("test")) as Arc<dyn ToolContext>;
+        let result = wrapped
+            .execute(ctx, json!({"path": "../host-secret"}))
+            .await
+            .expect("typed denial");
+        assert_eq!(result["error"], "sandbox.path_denied");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn narrowing_the_sandbox_can_never_widen_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = configured_sandbox(
+            dir.path(),
+            crate::sandbox::SandboxRules {
+                profile: crate::sandbox::SandboxProfile::ReadOnly,
+                ..crate::sandbox::SandboxRules::default()
+            },
+        );
+        let widened = kernel
+            .narrow_sandbox(&crate::sandbox::SandboxRules {
+                profile: crate::sandbox::SandboxProfile::FullAccess,
+                network: crate::sandbox::NetworkRules {
+                    enabled: true,
+                    allow_hosts: None,
+                    proxy: None,
+                    proxy_bypass: Vec::new(),
+                },
+                protected_paths: Vec::new(),
+                protected_grants: vec![".git".into()],
+                writable_roots: None,
+                command_allow: None,
+                command_max_bytes: 4096,
+                limits: crate::sandbox::SandboxLimits::default(),
+            })
+            .expect("overlay accepted");
+        assert_eq!(widened.profile, crate::sandbox::SandboxProfile::ReadOnly);
+        assert!(!widened.network.enabled);
+        assert!(widened.protected_grants.is_empty());
+        assert_eq!(widened.command_max_bytes, 4096);
     }
 
     #[tokio::test]

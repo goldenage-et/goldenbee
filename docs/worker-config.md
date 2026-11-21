@@ -399,6 +399,48 @@ digest, not copied into events. Each mutating call also writes a redacted
 outcome is committed. A tool deadline returns `tool.timeout`; cancellation
 returns `tool.cancelled`; neither is reported as success.
 
+## Configured memory files
+
+`[context]` assembles operator-selected memory files into the instruction of
+every loaded agent and profile composition. The runtime hardcodes no vendor
+filename; the operator names the files, globs, and precedence.
+
+```toml
+[context]
+max_memory_bytes = 262144        # per-file ceiling
+max_context_bytes = 1048576      # assembled ceiling
+max_memory_files = 128
+max_import_depth = 8
+
+[[context.memory]]
+id = "project"
+paths = ["AGENTS.md", "docs/conventions.md"]
+globs = ["notes/*.md"]
+precedence = 100                 # higher is assembled first
+imports = true                   # follow `@path` lines
+optional = false                 # a missing file fails startup
+```
+
+- Sources are ordered by precedence descending, then by id. Declared `paths`
+  keep their order and glob matches are sorted, so the same configuration
+  produces the same context across restarts and profile revisions.
+- `@relative/path` lines import another file relative to the importing file.
+  Cycles, excessive depth, duplicate files, and the configured file/byte
+  ceilings are reported with `context.memory_*` errors or diagnostics.
+- A required source fails startup. An `optional = true` source records a typed
+  diagnostic in the task `context.manifest` event instead of being silently
+  omitted.
+- Every admitted task appends a durable `context.manifest` event containing the
+  ordered source identities, content digests, memory configuration digest,
+  selected skills/tools, profile and asset revisions, and the effective
+  instruction digest. Prompt and memory text are not copied into the event.
+- Memory files are context input, not native long-term memory. The native
+  `NativeMemory` service and `remember_memory` tool remain separate.
+- A manual `session compact` or `POST /v1/sessions/{id}/compact` schedules the
+  native compaction path for the next model turn. The pinned ADK Runner exposes
+  no public immediate-compaction method, so the response reports
+  `applies_on = "next_model_turn"`; canonical session events are retained.
+
 ## Permission modes and rules
 
 The operator selects one mode and may add ordered rules. The policy is data in
@@ -504,6 +546,64 @@ decision without argument or command plaintext. An operator policy change
 advances the policy revision and records a `permission.policy` audit entry.
 Each tool call snapshots the policy when it starts, so a change applies only to
 later calls and earlier evidence keeps the revision that actually decided it.
+
+## Sandbox profiles and network policy
+
+The runtime owns the sandbox policy. The operator selects one profile and may
+add network, path, command, proxy, and process ceilings. The policy is evaluated
+before authorization and dispatch in the same kernel, so a profile, plugin,
+command, subagent, or model request can only narrow it. The package-declared OS
+boundary adopts the same rules through `SandboxPolicy::with_rules(...)`.
+
+```toml
+[sandbox]
+profile = "workspace-write"       # read-only | workspace-write | full-access
+writable_roots = ["src", "tests"] # workspace-write only; omitted means all
+protected_paths = [".git", ".agents", ".codex", ".aws"]
+protected_grants = []             # explicit metadata grants
+command_allow = ["git status", "cargo "]  # omitted means every command
+command_max_bytes = 16384
+
+[sandbox.network]
+enabled = false                   # default: no network
+allow_hosts = ["api.example.com"] # omitted means every host while enabled
+proxy = "http://127.0.0.1:3128"   # exported as HTTP(S)_PROXY when enabled
+proxy_bypass = ["localhost"]
+
+[sandbox.limits]
+timeout = 10000                   # milliseconds
+max_processes = 4096              # RLIMIT_NPROC and prlimit --nproc
+max_open_files = 256
+memory_bytes = 536870912
+cpu_seconds = 5
+max_file_bytes = 16777216
+max_output_bytes = 1048576
+```
+
+| Profile | Workspace reads | Workspace writes | Protected metadata |
+| --- | --- | --- | --- |
+| `read-only` | allow | deny (`sandbox.read_only`) | deny |
+| `workspace-write` | allow | only authorized roots | explicit grant required |
+| `full-access` | allow | allow | allowed and recorded as an exception |
+
+`workspace-write` with `writable_roots` omitted authorizes the whole workspace.
+A path outside the workspace, a `..` escape, or a symlink that resolves outside
+is denied with `sandbox.path_denied`. `read-only` mounts the workspace
+read-only inside bubblewrap; `workspace-write` mounts only the authorized roots
+writable and overlays protected paths read-only; `full-access` mounts the
+workspace writable. Network is a separate axis: when disabled, the kernel
+denies every declared network tool with `sandbox.network_disabled` and bubblewrap
+does not share the host network namespace. When enabled, `allow_hosts` limits
+declared destinations (`sandbox.network_denied`), and the proxy environment is
+exported to contained processes.
+
+Every call appends a durable `sandbox.decision` event with the profile, decision,
+stable code, workspace-relative paths, command digest, domain, policy snapshot,
+and any protected-path exceptions. A denial also writes a redacted
+`sandbox.decision` audit entry with outcome `deny`; `full-access` writes an
+`exception` entry for every protected path it allows. A denied call never
+executes; a denied mutation produces only a failed `tool.effect` record, never a
+committed one.
 
 ## Agent definitions
 
@@ -852,6 +952,10 @@ general --config worker.toml profile create long-chat \
   references.
 - Absent a compaction setting, revisions keep the pinned Runner default and no
   compaction occurs.
+- A configured cost budget requires operator-declared input and candidate
+  pricing on the selected provider and every declared fallback. Without that
+  basis the profile or task is rejected with `budget.cost_unverifiable` before
+  admission instead of reporting invented usage.
 
 ## Lifecycle and native hooks
 

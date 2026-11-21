@@ -10,9 +10,10 @@
 //! path as a file-defined agent.
 
 use crate::callbacks::native_callbacks;
-use crate::sandbox::{default_sandbox_workspace, sandbox_tool};
+use crate::sandbox::{default_sandbox_workspace, sandbox_policy};
 use adk_rust::prelude::LlmAgentBuilder;
 use adk_rust::{Agent, Llm, Tool};
+use runtime::native::SandboxCommandTool;
 use runtime::worker::{ToolDescriptor, ToolEffect, ToolRisk, WorkerSettings};
 use std::sync::Arc;
 
@@ -27,7 +28,9 @@ pub(crate) fn manual_agent(
     model: Arc<dyn Llm>,
     settings: &WorkerSettings,
 ) -> Result<Arc<dyn Agent>, String> {
-    let sandbox: Arc<dyn Tool> = Arc::new(sandbox_tool(default_sandbox_workspace()));
+    let policy =
+        sandbox_policy(default_sandbox_workspace()).with_rules(settings.sandbox_rules().clone());
+    let sandbox: Arc<dyn Tool> = Arc::new(SandboxCommandTool::new(policy));
     let sandbox = match settings.tool_kernel() {
         Some(kernel) => kernel.wrap(
             sandbox,

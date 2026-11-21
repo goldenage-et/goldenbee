@@ -1,5 +1,6 @@
 //! Operator TOML configuration and resolved Worker settings.
 
+use crate::context::ContextConfig;
 use crate::mcp::{McpConfig, McpServerConfig};
 use crate::worker::assets::Assets;
 use crate::worker::WorkerResult;
@@ -89,12 +90,19 @@ impl WorkerSettings {
             }
         }
         validate_models(&file)?;
+        file.context.validate()?;
         validate_mcp(&file.mcp)?;
         file.mcp.validate()?;
         file.permissions.validate().map_err(|message| {
             ApiError::new(
                 "config.permissions",
                 format!("permission policy is invalid: {message}"),
+            )
+        })?;
+        file.sandbox.validate().map_err(|message| {
+            ApiError::new(
+                "config.sandbox",
+                format!("sandbox policy is invalid: {message}"),
             )
         })?;
         validate_peers(&file.peers, file.allow_remote)?;
@@ -133,6 +141,11 @@ impl WorkerSettings {
     /// Process-wide tool pipeline, when startup configured it.
     pub fn tool_kernel(&self) -> Option<crate::tools::ToolKernel> {
         self.kernel.clone()
+    }
+
+    /// Effective runtime-owned sandbox policy for this instance.
+    pub fn sandbox_rules(&self) -> &crate::sandbox::SandboxRules {
+        &self.file.sandbox
     }
 
     /// Resolved skill disclosure behavior for this revision.
@@ -364,6 +377,10 @@ pub struct FileConfig {
     /// Permission mode, ordered rules, and approval bounds.
     #[serde(default)]
     pub permissions: crate::policy::PermissionPolicy,
+    /// Sandbox profile, network, paths, command ceiling, proxy, and process
+    /// limits. Runtime-owned; a package or profile can only narrow it.
+    #[serde(default)]
+    pub sandbox: crate::sandbox::SandboxRules,
     /// Maximum time admitted work may finish after admission closes. The
     /// remaining work is left recoverable, not marked failed or succeeded.
     #[serde(default = "default_drain_timeout")]
@@ -396,6 +413,9 @@ pub struct FileConfig {
     /// Generic file/search tool workspace and runtime limits.
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// Configured memory-file assembly. The runtime hardcodes no filename.
+    #[serde(default)]
+    pub context: ContextConfig,
     /// Skill disclosure and bounded skill output.
     #[serde(default)]
     pub skills: SkillsConfig,

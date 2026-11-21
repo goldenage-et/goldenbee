@@ -30,6 +30,12 @@ pub const SESSION_STORE_FILE: &str = "native-sessions.json";
 /// Directory below the session store that holds durable transcript exports.
 pub const SESSION_EXPORT_DIR: &str = "session-exports";
 
+/// Session-state key used to schedule a manual compaction on the next model
+/// turn. The pinned ADK Runner exposes no public "compact now" method, so the
+/// request is consumed by the proactive native compaction path instead of
+/// rewriting canonical history here.
+pub const COMPACTION_REQUEST_KEY: &str = "compaction_requested";
+
 /// Persisted native session schema. Older schemas are read as-is; a newer one
 /// is refused rather than silently rewritten.
 ///
@@ -350,6 +356,71 @@ impl FileSessionService {
                 })
         })
         .await
+    }
+
+    /// Schedule a manual compaction for the next model turn.
+    ///
+    /// This records intent in the canonical session's state. It does not
+    /// rewrite events: the pinned Runner applies native truncation before the
+    /// next request when the session exceeds the scheduled budget.
+    pub async fn request_compaction(
+        &self,
+        app_name: &str,
+        user_id: &str,
+        session_id: &str,
+    ) -> crate::Result<()> {
+        validate_identity(app_name, user_id, session_id).map_err(adk_error)?;
+        let key = session_key(app_name, user_id, session_id);
+        self.update(move |state| {
+            let stored = state
+                .sessions
+                .get_mut(&key)
+                .ok_or_else(|| not_found(app_name, user_id, session_id))?;
+            stored
+                .state
+                .insert(COMPACTION_REQUEST_KEY.into(), Value::Bool(true));
+            stored.updated_at = Utc::now();
+            Ok(())
+        })
+        .await
+        .map_err(adk_error)
+    }
+
+    /// Consume a scheduled manual compaction for one session.
+    pub async fn take_compaction_request(
+        &self,
+        app_name: &str,
+        user_id: &str,
+        session_id: &str,
+    ) -> crate::Result<bool> {
+        validate_identity(app_name, user_id, session_id).map_err(adk_error)?;
+        let key = session_key(app_name, user_id, session_id);
+        let scheduled = self
+            .read(|state| {
+                state
+                    .sessions
+                    .get(&key)
+                    .and_then(|stored| stored.state.get(COMPACTION_REQUEST_KEY))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .await;
+        if !scheduled {
+            return Ok(false);
+        }
+        self.update(move |state| {
+            let stored = state
+                .sessions
+                .get_mut(&key)
+                .ok_or_else(|| not_found(app_name, user_id, session_id))?;
+            Ok(stored
+                .state
+                .remove(COMPACTION_REQUEST_KEY)
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false))
+        })
+        .await
+        .map_err(adk_error)
     }
 
     /// Create an independent branch from a frozen prefix of `source`.

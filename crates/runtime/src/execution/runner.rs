@@ -4,8 +4,10 @@
 //! [`Executor`](crate::Executor) boundary. It does not replace the Runner,
 //! agent loop, session service, or streaming model interface.
 
+use crate::agents::definition::AgentSpec;
 use crate::agents::graph::{GraphRuntime, INTERRUPT_METADATA_KEY};
 use crate::agents::CapabilityRegistry;
+use crate::context::{ContextBundle, ManifestInput};
 use crate::data::artifacts::NativeArtifactStore;
 use crate::data::memory::NativeMemory;
 use crate::execution::profile::ProfileAgentBuilder;
@@ -15,14 +17,16 @@ use crate::sessions::{FileSessionService, SESSION_STORE_FILE};
 use crate::{ExecutionOutcome, Result, Runtime};
 use adk_rust::plugin::PluginManager;
 use adk_rust::prelude::*;
-use adk_rust::runner::compaction::{CompactionConfig, CompactionStrategy, TruncationCompaction};
+use adk_rust::runner::compaction::{
+    estimate_event_tokens, CompactionConfig, CompactionStrategy, TruncationCompaction,
+};
 use adk_rust::runner::Runner;
 use adk_rust::session::{CreateRequest, GetRequest, SessionService};
 use adk_rust::{
     Agent, RuntimeToolset, SessionId, ToolConfirmationDecision, ToolConfirmationHandler,
     ToolConfirmationRequest, UserId,
 };
-use common::{ApiError, ProfileRevision, Task, TaskState, Usage};
+use common::{ApiError, ContextCompaction, ProfileRevision, Task, TaskState, Usage};
 use futures::future::BoxFuture;
 use futures::StreamExt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +47,7 @@ struct CompactionObservation {
     attempt: usize,
     events_before: usize,
     events_after: usize,
+    forced: bool,
 }
 
 type CompactionReporter =
@@ -59,6 +64,7 @@ struct ObservedTruncation {
     strategy: String,
     context_budget: u64,
     max_retries: usize,
+    forced: bool,
     attempts: AtomicUsize,
     reporter: CompactionReporter,
 }
@@ -74,6 +80,7 @@ impl CompactionStrategy for ObservedTruncation {
             context_budget: self.context_budget,
             preserve_recent: self.preserve_recent,
             max_retries: self.max_retries,
+            forced: self.forced,
             attempt,
             events_before: before,
             events_after: before,
@@ -93,6 +100,7 @@ impl CompactionStrategy for ObservedTruncation {
             attempt,
             events_before: before,
             events_after: compacted.len(),
+            forced: self.forced,
         })
         .await;
         Ok(compacted)
@@ -228,6 +236,14 @@ pub struct NativeExecutor {
     remote_mcp: Option<Arc<RemoteMcpRegistry>>,
     effect_approvals: BTreeMap<String, crate::EffectApprovalPolicy>,
     max_tool_concurrency: Option<usize>,
+    /// Configured memory files for this asset revision.
+    context: ContextBundle,
+    /// Loaded agent prompt text keyed by agent id.
+    agent_prompts: BTreeMap<String, String>,
+    /// Loaded agent tool and skill bindings keyed by agent id.
+    agent_specs: BTreeMap<String, AgentSpec>,
+    /// Canonical session store, when one exposes manual-compaction scheduling.
+    file_sessions: Option<Arc<FileSessionService>>,
     tool_kernel: crate::tools::ToolKernel,
 }
 
@@ -283,6 +299,10 @@ impl NativeExecutor {
             remote_mcp: None,
             effect_approvals: BTreeMap::new(),
             max_tool_concurrency: None,
+            context: ContextBundle::default(),
+            agent_prompts: BTreeMap::new(),
+            agent_specs: BTreeMap::new(),
+            file_sessions: None,
             tool_kernel: crate::tools::ToolKernel::new(),
         })
     }
@@ -359,6 +379,27 @@ impl NativeExecutor {
         self
     }
 
+    /// Attach the resolved memory bundle and file-agent bindings used to build
+    /// the per-task context manifest.
+    pub(crate) fn with_context(
+        mut self,
+        context: ContextBundle,
+        prompts: BTreeMap<String, String>,
+        specs: BTreeMap<String, AgentSpec>,
+    ) -> Self {
+        self.context = context;
+        self.agent_prompts = prompts;
+        self.agent_specs = specs;
+        self
+    }
+
+    /// Attach the canonical file session store so a scheduled manual
+    /// compaction can be consumed on the next model turn.
+    pub fn with_file_sessions(mut self, sessions: Arc<FileSessionService>) -> Self {
+        self.file_sessions = Some(sessions);
+        self
+    }
+
     /// Attach the process-wide tool kernel so skill toolsets share the same
     /// bounded execution pipeline.
     pub fn with_tool_kernel(mut self, kernel: crate::tools::ToolKernel) -> Self {
@@ -383,9 +424,11 @@ impl NativeExecutor {
         data_dir: impl AsRef<Path>,
     ) -> Result<Self> {
         let data_dir = data_dir.as_ref();
-        let sessions = FileSessionService::open(data_dir.join(SESSION_STORE_FILE))?;
+        let sessions = Arc::new(FileSessionService::open(data_dir.join(SESSION_STORE_FILE))?);
         let artifacts = NativeArtifactStore::open(data_dir)?;
-        Ok(Self::new(app_name, agents, Arc::new(sessions))?.with_artifacts(Arc::new(artifacts)))
+        Ok(Self::new(app_name, agents, sessions.clone())?
+            .with_file_sessions(sessions)
+            .with_artifacts(Arc::new(artifacts)))
     }
 
     /// Build an executor whose canonical history and long-term memory are the
@@ -454,6 +497,116 @@ impl NativeExecutor {
         if let Some(plugins) = &self.plugins {
             plugins.close().await;
         }
+    }
+
+    /// Build the native compaction override that applies a requested manual
+    /// compaction on the next model turn.
+    ///
+    /// The pinned ADK Runner has no public "compact now" method. It applies
+    /// `CompactionStrategy::compact` proactively when the next request exceeds
+    /// the configured budget. This chooses the smallest achievable budget for
+    /// the current session so the native proactive path compacts exactly once
+    /// and retains canonical session events in the store.
+    async fn forced_compaction_spec(
+        &self,
+        user: &str,
+        session: &str,
+        configured: Option<&ContextCompaction>,
+    ) -> Option<ContextCompaction> {
+        let session = self
+            .sessions
+            .get(GetRequest {
+                app_name: self.app_name.clone(),
+                user_id: user.to_string(),
+                session_id: session.to_string(),
+                num_recent_events: None,
+                after: None,
+            })
+            .await
+            .ok()?;
+        let events = session.events().all();
+        let preserve = configured
+            .map(|spec| spec.preserve_recent)
+            .unwrap_or(8)
+            .max(1);
+        if events.len() <= preserve.saturating_add(1) {
+            return None;
+        }
+        let compacted = TruncationCompaction {
+            preserve_recent: preserve,
+        }
+        .compact(events.clone(), 0)
+        .await
+        .ok()?;
+        let budget = estimate_event_tokens(&compacted).max(1) as u64;
+        if budget >= estimate_event_tokens(&events) as u64 {
+            return None;
+        }
+        Some(ContextCompaction {
+            strategy: "truncation".into(),
+            context_budget: budget,
+            preserve_recent: preserve,
+            max_retries: 1,
+        })
+    }
+
+    /// Project the assembled context for one invocation. Digests and source
+    /// identities are durable evidence; prompt and memory text are not.
+    fn context_manifest(
+        &self,
+        task: &Task,
+        revision: Option<&ProfileRevision>,
+        compaction: Option<&ContextCompaction>,
+        forced_compaction: bool,
+    ) -> serde_json::Value {
+        let base = revision
+            .map(|revision| revision.instruction.clone())
+            .or_else(|| self.agent_prompts.get(&task.agent).cloned())
+            .unwrap_or_default();
+        let effective = self.context.apply_to_instruction(&base);
+        let (skills, tools) = if let Some(revision) = revision {
+            let skills = if revision.skills.is_empty() {
+                revision
+                    .members
+                    .iter()
+                    .filter_map(|member| self.agent_specs.get(member))
+                    .flat_map(|spec| spec.skills.iter().cloned())
+                    .collect()
+            } else {
+                revision.skills.clone()
+            };
+            let tools = revision
+                .members
+                .iter()
+                .filter_map(|member| self.agent_specs.get(member))
+                .flat_map(|spec| spec.tools.iter().map(|tool| tool.name().to_string()))
+                .collect();
+            (skills, tools)
+        } else if let Some(spec) = self.agent_specs.get(&task.agent) {
+            (
+                spec.skills.clone(),
+                spec.tools
+                    .iter()
+                    .map(|tool| tool.name().to_string())
+                    .collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        crate::context::manifest(ManifestInput {
+            bundle: &self.context,
+            agent: &task.agent,
+            profile_revision: task.profile_revision,
+            asset_revision: task.asset_revision,
+            attempt: task.attempt,
+            prompt_digest: common::canonical_digest(&base),
+            instruction_digest: common::canonical_digest(&effective),
+            skills,
+            tools,
+            limits: &task.limits,
+            compaction,
+            forced_compaction,
+        })
     }
 
     async fn ensure_session(&self, user: &str, session: &str) -> adk_rust::Result<()> {
@@ -713,6 +866,29 @@ impl crate::Executor for NativeExecutor {
                 format!("native session could not be opened: {error}"),
             ));
         }
+        let mut forced_compaction = false;
+        if let Some(file_sessions) = &self.file_sessions {
+            match file_sessions
+                .take_compaction_request(&self.app_name, &user, &task.session_id)
+                .await
+            {
+                Ok(true) => forced_compaction = true,
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = runtime
+                        .append_event(
+                            &task.id,
+                            "context.compaction_request_failed",
+                            serde_json::json!({
+                                "code": error.code,
+                                "message": common::redact(&error.message),
+                            }),
+                            true,
+                        )
+                        .await;
+                }
+            }
+        }
         let memory_service = self.memory.as_ref().map(|memory| {
             Arc::new(adk_memory::MemoryServiceAdapter::new(
                 memory.clone(),
@@ -720,10 +896,28 @@ impl crate::Executor for NativeExecutor {
                 user.clone(),
             )) as Arc<dyn adk_rust::Memory>
         });
-        let compaction = admitted_revision
+        let configured_compaction = admitted_revision
             .as_ref()
             .or(profile_revision.as_ref())
             .and_then(|revision| revision.compaction.clone());
+        let mut compaction = configured_compaction.clone();
+        if forced_compaction {
+            compaction = self
+                .forced_compaction_spec(&user, &task.session_id, configured_compaction.as_ref())
+                .await;
+            // A session with no compactable history cannot apply a manual
+            // request. The manifest records the truthful outcome.
+            forced_compaction = compaction.is_some();
+        }
+        let manifest = self.context_manifest(
+            &task,
+            admitted_revision.as_ref().or(profile_revision.as_ref()),
+            compaction.as_ref(),
+            forced_compaction,
+        );
+        let _ = runtime
+            .append_event(&task.id, "context.manifest", manifest, true)
+            .await;
         let mut builder = Runner::builder()
             .app_name(self.app_name.clone())
             .agent(agent)
@@ -817,6 +1011,7 @@ impl crate::Executor for NativeExecutor {
                         ("profile_revision".into(), reporter_revision.to_string()),
                         ("provider".into(), provider.clone()),
                         ("adapter".into(), adapter.clone()),
+                        ("forced".into(), observation.forced.to_string()),
                     ]);
                     let _ = runtime
                         .trace(
@@ -843,6 +1038,8 @@ impl crate::Executor for NativeExecutor {
                                 "provider": provider,
                                 "adapter": adapter,
                                 "session_id": session_id,
+                                "forced": observation.forced,
+                                "manual_compaction": observation.forced,
                             }),
                             true,
                         )
@@ -855,6 +1052,7 @@ impl crate::Executor for NativeExecutor {
                     strategy: spec.strategy.clone(),
                     context_budget: spec.context_budget,
                     max_retries: spec.max_retries,
+                    forced: forced_compaction,
                     attempts: AtomicUsize::new(0),
                     reporter,
                 }),

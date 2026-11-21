@@ -20,6 +20,7 @@ mod models;
 mod profiles;
 
 pub use crate::agents::{AgentDefinition, AgentDescriptor, AgentOrigin, SkillAsset};
+pub use crate::context::{ContextConfig, MemorySource};
 pub use crate::execution::plugins::AgentCallbacks;
 pub use crate::process::ProcessPolicy;
 pub use crate::tools::{
@@ -75,6 +76,14 @@ use tokio_util::sync::CancellationToken;
 pub type WorkerResult<T> = std::result::Result<T, ApiError>;
 
 type AgentFactoryFn = Arc<dyn Fn(&WorkerSettings) -> WorkerResult<Arc<dyn Agent>> + Send + Sync>;
+type SettingsToolFn = Arc<dyn Fn(&WorkerSettings) -> Arc<dyn Tool> + Send + Sync>;
+
+/// A compiled tool rebuilt from resolved instance settings at startup.
+struct SettingsTool {
+    id: String,
+    descriptor: ToolDescriptor,
+    build: SettingsToolFn,
+}
 
 /// A package-owned agent constructed from the resolved instance configuration.
 ///
@@ -147,6 +156,10 @@ pub struct Worker {
     pub(crate) toolsets: BTreeMap<String, Arc<dyn Toolset>>,
     /// One process-wide pipeline applied to every tool source.
     pub(crate) kernel: ToolKernel,
+    /// Tools whose instance policy is only known after configuration loads.
+    /// Their static registration keeps the capability inventory truthful; the
+    /// resolved tool replaces it before assets bind.
+    settings_tools: Vec<SettingsTool>,
     /// Package-declared generic file/search capabilities.
     builtin_tools: BTreeSet<BuiltinTool>,
     /// Package-declared destination policy for the web tools.
@@ -192,6 +205,7 @@ impl Worker {
             tool_permissions: BTreeMap::new(),
             toolsets: BTreeMap::new(),
             kernel,
+            settings_tools: Vec::new(),
             builtin_tools: BTreeSet::new(),
             web_policy: None,
             process_policy: None,
@@ -557,6 +571,34 @@ impl Worker {
         self.kernel.clone()
     }
 
+    /// Rebuild one registered tool from resolved instance settings at startup.
+    ///
+    /// The package still registers the static tool first, so `manifest()` and
+    /// `capabilities` remain truthful before a configuration exists. At startup
+    /// the factory receives the loaded [`WorkerSettings`] and replaces that
+    /// registration; the descriptor keeps the kernel evidence accurate.
+    ///
+    /// The General package uses this for its contained command tool so the
+    /// operator's `[sandbox]` profile, network, command ceiling, proxy, and
+    /// process limits reach the OS boundary. Configuration can only narrow the
+    /// compiled package policy.
+    pub fn tool_with_settings<F>(
+        mut self,
+        id: impl Into<String>,
+        descriptor: ToolDescriptor,
+        factory: F,
+    ) -> Self
+    where
+        F: Fn(&WorkerSettings) -> Arc<dyn Tool> + Send + Sync + 'static,
+    {
+        self.settings_tools.push(SettingsTool {
+            id: id.into(),
+            descriptor,
+            build: Arc::new(factory),
+        });
+        self
+    }
+
     pub(crate) fn insert_registered(
         mut self,
         id: String,
@@ -776,6 +818,7 @@ impl Worker {
                     .map(|tool| tool.id().to_string())
                     .collect(),
                 permissions: settings.file.permissions.clone(),
+                sandbox: settings.file.sandbox.clone(),
             })
             .map_err(|error| {
                 ApiError::new(
@@ -786,6 +829,20 @@ impl Worker {
                     ),
                 )
             })?;
+        for entry in std::mem::take(&mut self.settings_tools) {
+            if !self.tools.contains_key(&entry.id) {
+                return Err(ApiError::new(
+                    "asset.tool_unresolved",
+                    format!(
+                        "settings-resolved tool '{}' has no static registration",
+                        entry.id
+                    ),
+                ));
+            }
+            let tool = (entry.build)(&settings);
+            let wrapped = self.kernel.wrap(tool, entry.descriptor);
+            self.tools.insert(entry.id, wrapped);
+        }
         if !self.builtin_tools.is_empty() {
             for (id, tool, permissions) in crate::tools::builtin::tools(&self.kernel) {
                 self = self.insert_registered(id, tool, permissions);
@@ -1091,6 +1148,7 @@ impl Worker {
             &graphs,
             ExecutorServices {
                 sessions: sessions.clone(),
+                file_sessions: sessions.clone(),
                 plugins: plugins.clone(),
                 callbacks: self.callbacks.clone(),
                 artifacts: runtime.artifact_store(),
@@ -1125,7 +1183,8 @@ impl Worker {
                 settings: RwLock::new(settings),
                 assets: RwLock::new(Arc::new(assets)),
                 runtime,
-                sessions,
+                sessions: sessions.clone(),
+                file_sessions: sessions,
                 executor: RwLock::new(executor.clone()),
                 graph: graph.clone(),
                 manifest,
@@ -1200,6 +1259,7 @@ impl Worker {
 
 struct ExecutorServices {
     sessions: Arc<dyn SessionService>,
+    file_sessions: Arc<FileSessionService>,
     plugins: Option<Arc<PluginManager>>,
     callbacks: Option<Arc<dyn Fn() -> AgentCallbacks + Send + Sync>>,
     artifacts: Arc<crate::data::artifacts::NativeArtifactStore>,
@@ -1221,6 +1281,7 @@ fn build_executor(
 ) -> WorkerResult<NativeExecutor> {
     let ExecutorServices {
         sessions,
+        file_sessions,
         plugins,
         callbacks,
         artifacts,
@@ -1255,6 +1316,7 @@ fn build_executor(
     let skill_disclosure = assets.skill_disclosure.clone();
     let profile_memory = memory.clone();
     let profile_mcp = mcp.clone();
+    let profile_context = assets.context.clone();
     let effect_tools: BTreeSet<String> = effect_approvals.keys().cloned().collect();
     let profile_effect_tools = effect_tools.clone();
     let profile_kernel = kernel.clone();
@@ -1269,6 +1331,7 @@ fn build_executor(
                 &profile_effect_tools,
                 callbacks.as_deref(),
                 profile_memory.as_ref(),
+                &profile_context,
                 &providers,
                 reporter,
                 Some(&profile_mcp),
@@ -1283,6 +1346,12 @@ fn build_executor(
         .with_remote_mcp(remote_mcp)
         .with_effect_approvals(effect_approvals)
         .with_tool_concurrency(max_parallel)
+        .with_context(
+            assets.context.clone(),
+            assets.prompts.clone(),
+            assets.specs.clone(),
+        )
+        .with_file_sessions(file_sessions)
         .with_tool_kernel(kernel);
     if let Some(memory) = memory {
         executor = executor.with_memory(memory);
