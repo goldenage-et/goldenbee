@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { cn } from "cn"
 
 import { navigate, type AppRoute } from "@/app/router"
 import { StatusDot } from "@/components/shell/status-dot"
@@ -24,7 +25,10 @@ import { Button } from "@/components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { useViewportBelow } from "@/components/shell/use-viewport"
 import { ChatView } from "@/features/chat/chat-view"
+import { createChatInspectionStore } from "@/features/chat/chat-inspection-store"
 import type { ChatHistoryStore } from "@/features/chat/local-chat-history"
+import { SessionInspector } from "@/features/inspector/session-inspector"
+import { useGatewayClient } from "@/features/connection/use-gateway-client"
 import {
   useConnection,
   type ConnectionStore,
@@ -36,6 +40,9 @@ import {
 import type { GatewayProfilesStore } from "@/features/workspace/gateway-profiles"
 import type { WorkspaceController } from "@/features/workspace/use-workspace-controller"
 import type { SessionGroup } from "@/features/workspace/workspace-store"
+
+const panelLimitNotice =
+  "Four panels are already visible. Solo or background a session before splitting."
 
 export interface CommandCenterShellProps {
   store: ConnectionStore
@@ -68,7 +75,21 @@ export function CommandCenterShell({
     (state) => state.setDefaultGatewayProfile,
     settings,
   )
+  const inspectorDefault = useClientSettings(
+    (state) => state.inspectorDefault,
+    settings,
+  )
+  const setInspectorDefault = useClientSettings(
+    (state) => state.setInspectorDefault,
+    settings,
+  )
+  const singleColumn = useViewportBelow(1100)
   const narrow = useViewportBelow(780)
+  const gatewayClient = useGatewayClient(store)
+  const [inspections] = useState(createChatInspectionStore)
+  const [inspectorOpen, setInspectorOpen] = useState(
+    () => inspectorDefault === "open",
+  )
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsState, setSettingsState] = useState<{
@@ -78,6 +99,58 @@ export function CommandCenterShell({
   const [groupDialog, setGroupDialog] = useState<GroupDialogState | null>(null)
   const [closing, setClosing] = useState<SessionGroup | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const previousInspectorDefault = useRef(inspectorDefault)
+
+  useEffect(() => {
+    // The inspector becomes an on-demand overlay below the narrow breakpoint.
+    if (narrow) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setInspectorOpen(false)
+    }
+  }, [narrow])
+
+  useEffect(() => {
+    if (previousInspectorDefault.current === inspectorDefault) {
+      return
+    }
+    previousInspectorDefault.current = inspectorDefault
+    if (!narrow) {
+      // The Client settings dialog is the other owner of this preference.
+      // oxlint-disable-next-line react/set-state-in-effect
+      setInspectorOpen(inspectorDefault === "open")
+    }
+  }, [inspectorDefault, narrow])
+
+  const toggleInspector = useCallback(
+    (open?: boolean) => {
+      setInspectorOpen((current) => {
+        const next = open ?? !current
+        setInspectorDefault(next ? "open" : "closed")
+        return next
+      })
+    },
+    [setInspectorDefault],
+  )
+
+  const splitPanel = useCallback(() => {
+    if (!controller.split()) {
+      setNotice(panelLimitNotice)
+    }
+  }, [controller])
+
+  const soloPanel = useCallback(
+    (chatId: string) => {
+      if (!controller.solo(chatId)) {
+        return
+      }
+      setInspectorOpen(true)
+      setInspectorDefault("open")
+      setNotice(
+        "Other panels moved to background. Their Gateway tasks continue; nothing was cancelled.",
+      )
+    },
+    [controller, setInspectorDefault],
+  )
 
   useEffect(() => {
     // The drawer is a temporary navigation surface; any route change closes it.
@@ -103,21 +176,27 @@ export function CommandCenterShell({
         setPaletteOpen(false)
         return
       }
+      if (event.key === "Escape" && narrow && inspectorOpen) {
+        setInspectorOpen(false)
+        return
+      }
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault()
-        controller.newSession()
+        splitPanel()
       }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => {
       window.removeEventListener("keydown", onKeyDown)
     }
-  }, [controller, paletteOpen])
+  }, [controller, inspectorOpen, narrow, paletteOpen, splitPanel])
 
   const backgroundSet = useMemo(
     () => new Set(controller.backgroundChatIds),
     [controller.backgroundChatIds],
   )
+  const visibleChatIds = controller.visibleChatIds
+  const stackedPanels = singleColumn || visibleChatIds.length === 1
 
   const paletteActions = useMemo(() => {
     const actions: PaletteAction[] = [
@@ -126,7 +205,21 @@ export function CommandCenterShell({
         label: "New session",
         group: "Actions",
         hint: "Ctrl+Enter",
-        run: () => controller.newSession(),
+        run: () => splitPanel(),
+      },
+      {
+        id: "split-session",
+        label: "Split focused session",
+        group: "Actions",
+        run: () => splitPanel(),
+      },
+      {
+        id: "open-inspector",
+        label: inspectorOpen
+          ? "Close focused-session inspector"
+          : "Open focused-session inspector",
+        group: "Actions",
+        run: () => toggleInspector(),
       },
       {
         id: "new-group",
@@ -159,6 +252,12 @@ export function CommandCenterShell({
       })
     }
     if (controller.activeChatId) {
+      actions.push({
+        id: "solo-session",
+        label: `Solo focused session: ${controller.activeChatTitle ?? "Local chat"}`,
+        group: "Actions",
+        run: () => soloPanel(controller.activeChatId!),
+      })
       actions.push({
         id: "background-session",
         label: "Background current session",
@@ -205,7 +304,9 @@ export function CommandCenterShell({
         hint: background ? "Background" : undefined,
         run: () => {
           if (background) {
-            controller.restoreChat(chatId)
+            if (!controller.restoreChat(chatId)) {
+              setNotice(panelLimitNotice)
+            }
           } else {
             controller.selectChat(chatId)
           }
@@ -254,7 +355,11 @@ export function CommandCenterShell({
   }, [
     backgroundSet,
     controller,
+    inspectorOpen,
     openSettings,
+    soloPanel,
+    splitPanel,
+    toggleInspector,
   ])
 
   function addProfile(url: string): void {
@@ -355,7 +460,9 @@ export function CommandCenterShell({
         onRemoveProfile={(id) => profiles.getState().removeProfile(id)}
         onUseProfile={useProfile}
         onRestoreChat={(chatId) => {
-          controller.restoreChat(chatId)
+          if (!controller.restoreChat(chatId)) {
+            setNotice(panelLimitNotice)
+          }
           setDrawerOpen(false)
         }}
       />
@@ -387,8 +494,11 @@ export function CommandCenterShell({
               groups={controller.groups}
               activeGroupId={controller.activeGroupId}
               backgroundChatIds={controller.backgroundChatIds}
+              inspectorOpen={inspectorOpen}
               onSelectGroup={controller.selectGroup}
-              onNewSession={() => controller.newSession()}
+              onNewSession={splitPanel}
+              onSplit={splitPanel}
+              onToggleInspector={() => toggleInspector()}
               onRequestNewGroup={() =>
                 setGroupDialog({
                   mode: "create",
@@ -407,29 +517,67 @@ export function CommandCenterShell({
 
             <main
               aria-label="Session workspace"
-              className="flex min-h-0 flex-1 flex-col overflow-hidden p-2.5"
+              className="flex min-h-0 flex-1 overflow-hidden p-2.5"
             >
               <div
                 id="session-workspace"
                 role="tabpanel"
                 aria-label={`Session group ${controller.activeGroup?.name ?? "Sessions"}`}
-                className="flex min-h-0 flex-1 flex-col"
+                className="flex min-h-0 flex-1 gap-2.5"
               >
-                {controller.activeChatId ? (
-                  <ChatView
-                    key={controller.activeChatId}
-                    store={store}
-                    history={history}
-                    chatId={controller.activeChatId}
-                    title={controller.activeChatTitle}
-                    onNewChat={() => controller.newSession()}
-                    onBackground={() => {
-                      controller.backgroundActive()
-                      setNotice(
-                        "Session moved to background. Its Gateway task continues; nothing was cancelled.",
-                      )
-                    }}
-                  />
+                {visibleChatIds.length > 0 ? (
+                  <div
+                    role="list"
+                    aria-label="Session panels"
+                    data-panel-count={visibleChatIds.length}
+                    data-layout={
+                      visibleChatIds.length === 1
+                        ? "single"
+                        : visibleChatIds.length === 3
+                          ? "triple"
+                          : visibleChatIds.length === 4
+                            ? "quad"
+                            : "double"
+                    }
+                    className={cn(
+                      "grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] gap-2.5",
+                      stackedPanels ? "grid-cols-1" : "grid-cols-2",
+                    )}
+                  >
+                    {visibleChatIds.map((chatId, index) => (
+                      <div
+                        key={chatId}
+                        role="listitem"
+                        data-panel-id={chatId}
+                        className={cn(
+                          "flex min-h-0 min-w-0",
+                          visibleChatIds.length === 3 &&
+                            index === 0 &&
+                            !stackedPanels &&
+                            "col-span-2",
+                        )}
+                      >
+                        <ChatView
+                          store={store}
+                          history={history}
+                          chatId={chatId}
+                          title={controller.titleFor(chatId)}
+                          focused={chatId === controller.activeChatId}
+                          panelLabel={`Session ${controller.titleFor(chatId)}`}
+                          inspectionStore={inspections}
+                          onFocus={() => controller.focusChat(chatId)}
+                          onSolo={() => soloPanel(chatId)}
+                          onNewChat={splitPanel}
+                          onBackground={() => {
+                            controller.backgroundChat(chatId)
+                            setNotice(
+                              "Session moved to background. Its Gateway task continues; nothing was cancelled.",
+                            )
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
                 ) : (
                   <div className="flex flex-1 items-center justify-center">
                     <Empty className="max-w-md border border-dashed border-line bg-surface/40">
@@ -443,14 +591,48 @@ export function CommandCenterShell({
                       <Button
                         type="button"
                         size="sm"
-                        onClick={() => controller.newSession()}
+                        onClick={splitPanel}
                       >
                         New session
                       </Button>
                     </Empty>
                   </div>
                 )}
+
+                {!narrow && inspectorOpen ? (
+                  <SessionInspector
+                    history={history}
+                    inspections={inspections}
+                    artifactsClient={gatewayClient}
+                    chatId={controller.activeChatId}
+                    title={controller.activeChatTitle}
+                    open={inspectorOpen}
+                    onClose={() => toggleInspector(false)}
+                  />
+                ) : null}
               </div>
+
+              {narrow && inspectorOpen ? (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Close inspector overlay"
+                    onClick={() => toggleInspector(false)}
+                    className="fixed inset-0 z-30 bg-black/55"
+                  />
+                  <div className="fixed inset-y-0 right-0 z-40 flex shadow-2xl">
+                    <SessionInspector
+                      history={history}
+                      inspections={inspections}
+                      artifactsClient={gatewayClient}
+                      chatId={controller.activeChatId}
+                      title={controller.activeChatTitle}
+                      open={inspectorOpen}
+                      onClose={() => toggleInspector(false)}
+                    />
+                  </div>
+                </>
+              ) : null}
             </main>
           </>
         ) : (

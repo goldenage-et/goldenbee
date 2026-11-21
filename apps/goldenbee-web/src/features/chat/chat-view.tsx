@@ -1,5 +1,12 @@
-import { ArrowDownToLineIcon, MessageSquareIcon, PlusIcon } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import {
+  ArrowDownToLineIcon,
+  FocusIcon,
+  MessageSquareIcon,
+  PlusIcon,
+  ScanIcon,
+} from "lucide-react"
+import { useEffect, useLayoutEffect, useMemo, useState } from "react"
+import { cn } from "cn"
 
 import {
   MessageScroller,
@@ -30,13 +37,14 @@ import {
   type SelectionGateway,
 } from "@/features/chat/chat-profiles"
 import type { ChatSelection } from "@/features/chat/chat-types"
-import type { ChatHistoryStore } from "@/features/chat/local-chat-history"
+import type { ChatInspectionStore } from "@/features/chat/chat-inspection-store"
 import { useChat } from "@/features/chat/use-chat"
+import type { ChatHistoryStore } from "@/features/chat/local-chat-history"
 import {
   useConnection,
   type ConnectionStore,
 } from "@/features/connection/connection-store"
-import { createGatewayClient, type GatewayClient } from "@goldenbee/sdk"
+import { useGatewayClient } from "@/features/connection/use-gateway-client"
 import type { ChatGateway } from "@/features/chat/chat-runner"
 
 const busyStatuses = new Set([
@@ -47,23 +55,6 @@ const busyStatuses = new Set([
 ])
 
 const emptySelection: ChatSelection = { worker: "", agent: "", profile: "" }
-
-function useGatewayChatClient(store: ConnectionStore): GatewayClient | null {
-  const connected = useConnection((state) => state.status === "connected", store)
-  const gatewayUrl = useConnection((state) => state.gatewayUrl, store)
-  const token = useConnection((state) => state.token, store)
-
-  return useMemo(() => {
-    if (!connected) {
-      return null
-    }
-    return createGatewayClient({
-      baseUrl: gatewayUrl,
-      token,
-      fetch: (input, init) => fetch(input, init),
-    })
-  }, [connected, gatewayUrl, token])
-}
 
 export interface ChatViewProps {
   store: ConnectionStore
@@ -83,6 +74,16 @@ export interface ChatViewProps {
   onNewChat?: () => void
   /** Workspace action: hide this chat without cancelling its Gateway task. */
   onBackground?: () => void
+  /** Workspace action: make this panel the inspector focus. */
+  onFocus?: () => void
+  /** Workspace action: hide the other visible panels in this group. */
+  onSolo?: () => void
+  /** True when this panel drives the inspector. */
+  focused?: boolean
+  /** Accessible panel label, e.g. `Session Alpha task`. */
+  panelLabel?: string
+  /** Publishes durable session facts for the focused-session inspector. */
+  inspectionStore?: ChatInspectionStore
 }
 
 export function ChatView({
@@ -95,8 +96,13 @@ export function ChatView({
   selectionStore,
   onNewChat,
   onBackground,
+  onFocus,
+  onSolo,
+  focused = false,
+  panelLabel,
+  inspectionStore,
 }: ChatViewProps) {
-  const gatewayClient = useGatewayChatClient(store)
+  const gatewayClient = useGatewayClient(store)
   const workers = useConnection((state) => state.workers, store)
   const preferences = selectionStore ?? chatSelectionStore
   const [selection, setSelection] = useState<ChatSelection>(
@@ -160,6 +166,69 @@ export function ChatView({
       }),
     [workers, selection, profiles, profilesError],
   )
+
+  const effectiveSelection =
+    resolved.worker !== null ? resolved.selection : selection
+  const liveChatId = chatId ?? chat.getChatId()
+  const {
+    sessionId: liveSessionId,
+    status: liveStatus,
+    activeTaskId: liveTaskId,
+    activeAssistantId: liveAssistantId,
+    lastDurableSeq: liveDurableSeq,
+    gap: liveGap,
+    recovery: liveRecovery,
+  } = chat.state
+
+  // Publish in a layout effect so the inspector's first passive read already
+  // sees the live status instead of reading the same chat twice.
+  useLayoutEffect(() => {
+    if (!inspectionStore) {
+      return
+    }
+    inspectionStore.getState().publish({
+      chatId: liveChatId,
+      sessionId: liveSessionId,
+      title,
+      status: liveStatus,
+      taskId: liveTaskId,
+      activeAssistantId: liveAssistantId,
+      lastDurableSeq: liveDurableSeq,
+      selection:
+        effectiveSelection.worker || effectiveSelection.agent
+          ? {
+              worker: effectiveSelection.worker,
+              agent: effectiveSelection.agent,
+              profile: effectiveSelection.profile ?? "",
+            }
+          : null,
+      gap: liveGap,
+      recovery: liveRecovery,
+    })
+  }, [
+    effectiveSelection.agent,
+    effectiveSelection.profile,
+    effectiveSelection.worker,
+    inspectionStore,
+    liveAssistantId,
+    liveChatId,
+    liveDurableSeq,
+    liveGap,
+    liveRecovery,
+    liveSessionId,
+    liveStatus,
+    liveTaskId,
+    title,
+  ])
+
+  useEffect(() => {
+    if (!inspectionStore) {
+      return
+    }
+    return () => {
+      inspectionStore.getState().remove(liveChatId)
+    }
+  }, [inspectionStore, liveChatId])
 
   const activation = useActivateProfile(profilesClient)
   const activationMatches =
@@ -226,7 +295,29 @@ export function ChatView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
+    <section
+      data-focused={focused ? "true" : undefined}
+      aria-label={
+        panelLabel ? `${panelLabel}${focused ? ", focused" : ""}` : undefined
+      }
+      onClick={(event) => {
+        // Selecting a panel changes inspector focus only. Controls inside the
+        // panel own their click and must not re-focus or restore the chat.
+        const target = event.target
+        if (
+          onFocus &&
+          target instanceof Element &&
+          target.closest("button, a, input, textarea, select")
+        ) {
+          return
+        }
+        onFocus?.()
+      }}
+      className={cn(
+        "flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-[10px] border bg-surface/60 p-3",
+        focused ? "border-gold/70 ring-1 ring-gold/25" : "border-line",
+      )}
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -242,6 +333,11 @@ export function ChatView({
             >
               {chat.state.status}
             </Badge>
+            {focused ? (
+              <span className="text-micro font-semibold tracking-wide text-gold uppercase">
+                Focused
+              </span>
+            ) : null}
           </div>
           <p className="mt-1 max-w-2xl text-meta text-muted-foreground">
             One Gateway task per local chat. Selection changes apply to the next
@@ -249,6 +345,30 @@ export function ChatView({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          {onFocus && !focused ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              aria-label="Focus panel"
+              onClick={onFocus}
+            >
+              <FocusIcon data-icon="inline-start" aria-hidden="true" />
+              Focus
+            </Button>
+          ) : null}
+          {onSolo ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              aria-label="Solo panel"
+              onClick={onSolo}
+            >
+              <ScanIcon data-icon="inline-start" aria-hidden="true" />
+              Solo
+            </Button>
+          ) : null}
           {onBackground ? (
             <Button
               type="button"
@@ -417,6 +537,6 @@ export function ChatView({
         }}
         onStop={() => chat.stop()}
       />
-    </div>
+    </section>
   )
 }

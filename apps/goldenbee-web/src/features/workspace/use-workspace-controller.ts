@@ -3,8 +3,10 @@ import { useCallback, useEffect, useState } from "react"
 import type { AppRoute } from "@/app/router"
 import { navigate } from "@/app/router"
 import {
+  MAX_VISIBLE_CHATS,
   createChatId,
   useWorkspace,
+  visibleChats,
   type SessionGroup,
   type WorkspaceStore,
 } from "@/features/workspace/workspace-store"
@@ -27,11 +29,21 @@ export interface WorkspaceController {
   activeChatTitle: string | undefined
   backgroundSessions: BackgroundSession[]
   chats: StoredChat[]
-  newSession(): void
-  backgroundActive(): void
-  restoreChat(chatId: string): void
+  /** Visible panels in the active group, in display order. */
+  visibleChatIds: string[]
+  /** Maximum number of visible panels the workspace renders. */
+  maxVisibleChats: number
+  /** True when a split/new session would exceed the visible panel limit. */
+  atPanelLimit: boolean
+  newSession(): boolean
+  split(): boolean
+  solo(chatId: string): boolean
+  backgroundChat(chatId: string): boolean
+  backgroundActive(): boolean
+  restoreChat(chatId: string): boolean
   selectGroup(groupId: string): void
-  selectChat(chatId: string): void
+  selectChat(chatId: string): boolean
+  focusChat(chatId: string): boolean
   createGroup(name?: string): void
   renameGroup(groupId: string, name: string): void
   closeGroup(groupId: string): void
@@ -55,10 +67,10 @@ function visibleChat(group: SessionGroup | undefined, background: string[]): str
 /**
  * Bind the local session layout to the active route and chat history.
  *
- * The workspace has one visible local chat. Entering the chat route with an
- * empty group creates a new local chat for that group; an explicitly
- * backgrounded chat is never silently recreated, so the workspace can show its
- * honest empty state.
+ * The active group can show up to {@link MAX_VISIBLE_CHATS} local chats at once.
+ * Entering the chat route with an empty group creates a new local chat for that
+ * group; an explicitly backgrounded chat is never silently recreated, so the
+ * workspace can show its honest empty state.
  */
 export function useWorkspaceController({
   workspace,
@@ -170,6 +182,14 @@ export function useWorkspaceController({
     id,
     title: titleFor(id),
   }))
+  const visibleChatIds = visibleChats(activeGroup, backgroundChatIds)
+  const atPanelLimit = visibleChatIds.length >= MAX_VISIBLE_CHATS
+
+  function ensureChatRoute(): void {
+    if (route.name !== "chat") {
+      navigate({ name: "chat" })
+    }
+  }
 
   return {
     groups,
@@ -181,34 +201,76 @@ export function useWorkspaceController({
       activeChatId === null ? undefined : titleFor(activeChatId),
     backgroundSessions,
     chats,
+    visibleChatIds,
+    maxVisibleChats: MAX_VISIBLE_CHATS,
+    atPanelLimit,
     newSession() {
-      workspace.getState().addChat(createChatId())
-      void refreshChats()
-      if (route.name !== "chat") {
-        navigate({ name: "chat" })
+      const chatId = workspace.getState().split()
+      if (!chatId) {
+        return false
       }
+      void refreshChats()
+      ensureChatRoute()
+      return true
     },
-    backgroundActive() {
-      if (activeChatId) {
-        workspace.getState().backgroundChat(activeChatId)
+    split() {
+      const chatId = workspace.getState().split()
+      if (!chatId) {
+        return false
+      }
+      void refreshChats()
+      ensureChatRoute()
+      return true
+    },
+    solo(chatId) {
+      const changed = workspace.getState().solo(chatId)
+      if (changed) {
         void refreshChats()
       }
+      return changed
+    },
+    backgroundChat(chatId) {
+      const changed = workspace.getState().backgroundChat(chatId)
+      if (changed) {
+        void refreshChats()
+      }
+      return changed
+    },
+    backgroundActive() {
+      if (!activeChatId) {
+        return false
+      }
+      const changed = workspace.getState().backgroundChat(activeChatId)
+      if (changed) {
+        void refreshChats()
+      }
+      return changed
     },
     restoreChat(chatId) {
-      workspace.getState().restoreChat(chatId)
-      void refreshChats()
-      if (route.name !== "chat") {
-        navigate({ name: "chat" })
+      const restored = workspace.getState().restoreChat(chatId)
+      if (!restored) {
+        return false
       }
+      void refreshChats()
+      ensureChatRoute()
+      return true
     },
     selectGroup(groupId) {
       workspace.getState().selectGroup(groupId)
     },
     selectChat(chatId) {
-      workspace.getState().selectChat(chatId)
-      if (route.name !== "chat") {
-        navigate({ name: "chat" })
+      const selected = workspace.getState().selectChat(chatId)
+      if (selected) {
+        ensureChatRoute()
       }
+      return selected
+    },
+    focusChat(chatId) {
+      const focused = workspace.getState().focusChat(chatId)
+      if (focused) {
+        ensureChatRoute()
+      }
+      return focused
     },
     createGroup(name) {
       const id = workspace.getState().createGroup(name)
