@@ -269,7 +269,32 @@ export function createChatSession(options: ChatSessionOptions): ChatSession {
     }
     const taskId = state.activeTaskId
     const assistantMessageId = state.activeAssistantId
-    if (!taskId || !assistantMessageId || terminalStatuses.has(state.status)) {
+    if (!taskId) {
+      if (assistantMessageId && busyStatuses.has(state.status)) {
+        dispatch({
+          type: "submit-uncertain",
+          assistantMessageId,
+          error: {
+            code: "task.reload_interrupted",
+            message:
+              "The browser reloaded before a task identity was saved, so the Gateway outcome is unknown.",
+            recovery:
+              "Inspect the Worker or task evidence on the Gateway before sending the prompt again.",
+            retryable: false,
+          },
+        })
+      } else if (!assistantMessageId && busyStatuses.has(state.status)) {
+        dispatch({
+          type: "task-detached",
+          assistantMessageId: null,
+          taskId: "unknown",
+          detail:
+            "The saved chat was interrupted without a task identity. Local history is kept, but the task cannot be resumed.",
+        })
+      }
+      return
+    }
+    if (!assistantMessageId || terminalStatuses.has(state.status)) {
       return
     }
 

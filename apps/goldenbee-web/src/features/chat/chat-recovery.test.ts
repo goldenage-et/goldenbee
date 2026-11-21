@@ -306,6 +306,46 @@ describe("chat restore and reconciliation", () => {
     expect(gateway.watchCalls).toEqual([])
     session.dispose()
   })
+
+  it("fails closed on an interrupted submission that has no task identity", async () => {
+    const gateway = new RecoveryGateway()
+    const state: ChatState = {
+      ...createInitialChatState("chat-test"),
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          createdAt: 1,
+          parts: [{ type: "text", text: "uncertain", streaming: false }],
+          selection,
+        },
+        {
+          id: "assistant-1",
+          role: "assistant",
+          createdAt: 2,
+          replyTo: "user-1",
+          parts: [],
+        },
+      ],
+      status: "submitting",
+      activeAssistantId: "assistant-1",
+    }
+    const session = createSession(gateway, state)
+
+    await session.recover()
+
+    const recovered = session.getState()
+    expect(recovered.status).toBe("uncertain")
+    expect(gateway.taskCalls).toEqual([])
+    expect(gateway.watchCalls).toEqual([])
+    expect(recovered.messages[1]?.parts).toContainEqual(
+      expect.objectContaining({
+        type: "uncertainty",
+        code: "task.reload_interrupted",
+      }),
+    )
+    session.dispose()
+  })
 })
 
 describe("cursor expiry recovery", () => {

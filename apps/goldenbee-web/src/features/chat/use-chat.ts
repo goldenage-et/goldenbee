@@ -18,14 +18,6 @@ export type ChatSessionView = ChatSession & {
   resetLocalHistory(): Promise<void>
 }
 
-const terminalStatuses = new Set<ChatState["status"]>([
-  "succeeded",
-  "failed",
-  "cancelled",
-  "unknown",
-  "uncertain",
-])
-
 /**
  * Bind one browser-local chat session to React.
  *
@@ -97,14 +89,7 @@ export function useChat(options: ChatSessionOptions): ChatSessionView {
         setRestoredSelection(restored.selection)
         setSession(restoredSession)
         setPhase("ready")
-        if (
-          restored.activeTask &&
-          !restored.activeTask.terminal &&
-          restored.state.activeTaskId &&
-          !terminalStatuses.has(restored.state.status)
-        ) {
-          void restoredSession.recover()
-        }
+        void restoredSession.recover()
       })
       .catch((cause: unknown) => {
         if (cancelled || generation.current !== attempt) {
