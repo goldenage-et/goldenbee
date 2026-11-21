@@ -17,6 +17,8 @@ describe("app hash routes", () => {
     })
     expect(parseRoute("#/chat")).toEqual({ name: "chat" })
     expect(routeHref({ name: "chat" })).toBe("#/chat")
+    expect(parseRoute("#/attention")).toEqual({ name: "attention" })
+    expect(routeHref({ name: "attention" })).toBe("#/attention")
     expect(parseRoute(routeHref({ name: "provider", id: "team alpha" }))).toEqual({
       name: "provider",
       id: "team alpha",

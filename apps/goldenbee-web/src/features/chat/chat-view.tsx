@@ -1,4 +1,4 @@
-import { MessageSquareIcon, PlusIcon } from "lucide-react"
+import { ArrowDownToLineIcon, MessageSquareIcon, PlusIcon } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import {
@@ -69,20 +69,32 @@ export interface ChatViewProps {
   store: ConnectionStore
   /** Browser-local history; omitted in tests that exercise transport only. */
   history?: ChatHistoryStore | null
+  /** Controlled local chat id; the workspace shell sets it per tab. */
+  chatId?: string
+  /** Human-readable local chat title, when the catalog has one. */
+  title?: string
   /** Test seam; production builds the client from the connection store. */
   client?: ChatGateway | null
   /** Test seam for the Worker-owned Runtime Profile catalog. */
   profileClient?: SelectionGateway | null
   /** Test seam for the non-secret local selection preference. */
   selectionStore?: ChatSelectionStore
+  /** Workspace action: create a new local chat in the active group. */
+  onNewChat?: () => void
+  /** Workspace action: hide this chat without cancelling its Gateway task. */
+  onBackground?: () => void
 }
 
 export function ChatView({
   store,
   history,
+  chatId,
+  title,
   client,
   profileClient,
   selectionStore,
+  onNewChat,
+  onBackground,
 }: ChatViewProps) {
   const gatewayClient = useGatewayChatClient(store)
   const workers = useConnection((state) => state.workers, store)
@@ -94,6 +106,7 @@ export function ChatView({
   const chat = useChat({
     client: client ?? gatewayClient,
     history: history ?? undefined,
+    chatId,
   })
   const updateSelection = chat.updateSelection
 
@@ -213,26 +226,55 @@ export function ChatView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="font-heading text-2xl font-semibold tracking-tight sm:text-3xl">
+            <h1 className="truncate text-panel font-semibold tracking-tight">
               Chat
             </h1>
-            <Badge variant="outline">{chat.state.status}</Badge>
+            {title ? (
+              <span className="truncate text-meta text-dim">· {title}</span>
+            ) : null}
+            <Badge
+              variant="outline"
+              className="h-5 rounded-md px-1.5 text-micro tracking-wide"
+            >
+              {chat.state.status}
+            </Badge>
           </div>
-          <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            Submit a task to the selected Worker and stream its events.
-            Reasoning, tools, plans, usage, and task evidence appear in the
-            trace; approvals arrive in a later screen. Selection changes apply
-            to the next task, never to one already running.
+          <p className="mt-1 max-w-2xl text-meta text-muted-foreground">
+            One Gateway task per local chat. Selection changes apply to the next
+            task, never to one already running.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="outline" onClick={() => chat.newChat()}>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {onBackground ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              aria-label="Background session"
+              onClick={onBackground}
+            >
+              <ArrowDownToLineIcon data-icon="inline-start" aria-hidden="true" />
+              Background
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              if (onNewChat) {
+                onNewChat()
+                return
+              }
+              chat.newChat()
+            }}
+          >
             <PlusIcon data-icon="inline-start" aria-hidden="true" />
-            New chat
+            {onNewChat ? "New session" : "New chat"}
           </Button>
         </div>
       </div>
@@ -317,7 +359,7 @@ export function ChatView({
       ) : null}
 
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
-        <MessageScroller className="h-[clamp(18rem,50vh,34rem)] rounded-2xl border bg-card">
+        <MessageScroller className="min-h-[20rem] flex-1 rounded-[10px] border bg-card">
           <MessageScrollerViewport role="log" aria-label="Chat messages">
             <MessageScrollerContent className="gap-6 p-4">
               {chat.state.messages.length === 0 ? (
