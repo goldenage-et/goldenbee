@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { navigate, type AppRoute } from "@/app/router"
+import { routeHref, navigateTo, type AppRoute } from "@/app/router"
 import { StatusDot } from "@/components/shell/status-dot"
 import { StatusBadge } from "@/components/shell/status-badge"
 import { IconRail } from "@/components/shell/icon-rail"
@@ -365,7 +365,7 @@ export function CommandCenterShell({
         id: `nav-${id}`,
         label,
         group: "Navigation",
-        run: () => navigate(target),
+        run: () => navigateTo(routeHref(target)),
       })
     }
 
@@ -519,18 +519,6 @@ export function CommandCenterShell({
   }
 
   function renderWorkspace() {
-    if (previewPath) {
-      return (
-        <WorkspaceFilePreview
-          client={gatewayClient}
-          worker={activeWorker}
-          path={previewPath}
-          liveVersion={workspaceLive.version}
-          liveStatus={workspaceLive.status}
-          onClose={() => setPreviewPath(null)}
-        />
-      )
-    }
     const ids = visibleChatIds
 
     if (ids.length === 0) {
@@ -714,42 +702,44 @@ export function CommandCenterShell({
         onOpenSettings={() => openSettings("client")}
       />
 
-      <ContextSidebar
-        store={store}
-        profiles={profiles}
-        defaultProfileId={defaultProfileId}
-        chats={controller.chats}
-        groups={controller.groups}
-        activeChatId={controller.activeChatId}
-        backgroundChatIds={controller.backgroundChatIds}
-        backgroundSessions={controller.backgroundSessions}
-        inspections={inspections}
-        drawerOpen={drawerOpen}
-        sidebarOpen={sidebarOpen}
-        narrow={narrow}
-        onCloseDrawer={() => setDrawerOpen(false)}
-        onAddProfile={addProfile}
-        onRemoveProfile={(id) => profiles.getState().removeProfile(id)}
-        onUseProfile={useProfile}
-        onSelectChat={(chatId) => {
-          if (!controller.selectChat(chatId)) {
-            setNotice(panelLimitNotice)
-          }
-          setDrawerOpen(false)
-        }}
-        onRestoreChat={(chatId) => {
-          if (!controller.restoreChat(chatId)) {
-            setNotice(panelLimitNotice)
-          }
-          setDrawerOpen(false)
-        }}
-        onNewSession={() => {
-          splitPanel()
-          setDrawerOpen(false)
-        }}
-      />
+      {route.name === "chat" ? (
+        <ContextSidebar
+          store={store}
+          profiles={profiles}
+          defaultProfileId={defaultProfileId}
+          chats={controller.chats}
+          groups={controller.groups}
+          activeChatId={controller.activeChatId}
+          backgroundChatIds={controller.backgroundChatIds}
+          backgroundSessions={controller.backgroundSessions}
+          inspections={inspections}
+          drawerOpen={drawerOpen}
+          sidebarOpen={sidebarOpen}
+          narrow={narrow}
+          onCloseDrawer={() => setDrawerOpen(false)}
+          onAddProfile={addProfile}
+          onRemoveProfile={(id) => profiles.getState().removeProfile(id)}
+          onUseProfile={useProfile}
+          onSelectChat={(chatId) => {
+            if (!controller.selectChat(chatId)) {
+              setNotice(panelLimitNotice)
+            }
+            setDrawerOpen(false)
+          }}
+          onRestoreChat={(chatId) => {
+            if (!controller.restoreChat(chatId)) {
+              setNotice(panelLimitNotice)
+            }
+            setDrawerOpen(false)
+          }}
+          onNewSession={() => {
+            splitPanel()
+            setDrawerOpen(false)
+          }}
+        />
+      ) : null}
 
-      {narrow && drawerOpen ? (
+      {route.name === "chat" && narrow && drawerOpen ? (
         <button
           type="button"
           aria-label="Close navigation overlay"
@@ -813,7 +803,21 @@ export function CommandCenterShell({
                 aria-label={`Session group ${controller.activeGroup?.name ?? "Sessions"}`}
                 className="flex min-h-0 flex-1 gap-2"
               >
-                {renderWorkspace()}
+                {/* Keep chat panels mounted while previewing a file so the
+                    focused session's Worker/selection state survives. */}
+                <div className={previewPath ? "hidden" : "contents"}>
+                  {renderWorkspace()}
+                </div>
+                {previewPath ? (
+                  <WorkspaceFilePreview
+                    client={gatewayClient}
+                    worker={activeWorker}
+                    path={previewPath}
+                    liveVersion={workspaceLive.version}
+                    liveStatus={workspaceLive.status}
+                    onClose={() => setPreviewPath(null)}
+                  />
+                ) : null}
 
                 {!narrow && inspectorOpen ? (
                   <SessionInspector
