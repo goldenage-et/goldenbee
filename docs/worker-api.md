@@ -435,6 +435,26 @@ worker = worker.effect_tool(id, tool, reconciler, policy);
 - Waiting releases the execution slot; only the per-session writing order is
   retained.
 
+### Permission approvals
+
+Permission rules reuse the same durable approval record and routes. An `ask`
+rule or mode decision creates a request whose action binds the tool, canonical
+argument digest, resolved workspace paths, command, network domain, sandbox
+profile, requesting principal, and pinned profile revision. The digest of that
+action is the approval digest, so a changed retry creates a new request.
+
+- The `approval.requested` event and the approval record carry the exact
+  `action`, the permission `mode`, and the matching `rule`.
+- The tool call waits up to `permissions.approval_wait_ms`. The task is
+  `waiting_approval` during the wait and the execution slot is released.
+- If no decision arrives, the call returns a typed `approval.pending` result and
+  appends `approval.pending`. The native turn continues; the runtime does not
+  claim that this authorizes the action and does not claim non-graph resume.
+- A later decision is durable and may authorize an identical retry. A rejected,
+  revoked, or expired approval returns `permission.denied`.
+- Every decision emits `permission.decision` and writes a redacted
+  `permission.decision` audit record naming the rule, mode, and outcome.
+
 ## Task event streams
 
 `GET /v1/tasks/{id}/events/stream?after=<seq>` replays retained events and then

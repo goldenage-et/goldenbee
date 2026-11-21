@@ -36,7 +36,7 @@ fn fixture(data: &Path, tools: &[&str], tools_config: &str) -> PathBuf {
     std::fs::write(
         &config,
         format!(
-            "instance = \"parity-{}\"\nnamespace = \"local\"\ndefault_agent = \"tools\"\ntoken = \"dev-token\"\ntoken_scopes = [\"*\"]\n\n[paths]\nagents = \"assets/agents\"\nprompts = \"assets/prompts\"\n\n[storage]\ndirectory = \"{}\"\n\n[tools]\n{}",
+            "instance = \"parity-{}\"\nnamespace = \"local\"\ndefault_agent = \"tools\"\ntoken = \"dev-token\"\ntoken_scopes = [\"*\"]\n\n[paths]\nagents = \"assets/agents\"\nprompts = \"assets/prompts\"\n\n[storage]\ndirectory = \"{}\"\n\n[tools]\n{}\n\n[permissions]\nmode = \"full-auto\"\n",
             data.file_name().unwrap().to_string_lossy(),
             data.display(),
             tools_config

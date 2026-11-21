@@ -828,6 +828,62 @@ impl Runtime {
         self.inner.config_revision.load(Ordering::SeqCst)
     }
 
+    /// Immutable snapshot of the effective permission policy.
+    pub fn permission_snapshot(&self) -> crate::policy::PolicySnapshot {
+        self.inner
+            .config
+            .permissions
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot()
+    }
+
+    /// Shared permission policy handle.
+    pub fn permission_handle(&self) -> crate::policy::PolicyHandle {
+        self.inner.config.permissions.clone()
+    }
+
+    /// Replace the permission policy for subsequent tool calls.
+    ///
+    /// The change is an operator action. It never rewrites decisions already
+    /// recorded for earlier calls, and it does not retroactively authorize an
+    /// action whose approval was denied. Each later call records the new policy
+    /// revision and digest in its permission evidence.
+    pub async fn set_permission_policy(
+        &self,
+        principal: &Principal,
+        policy: crate::policy::PermissionPolicy,
+    ) -> Result<crate::policy::PolicySnapshot> {
+        principal.require(common::scopes::INSTANCE_ADMIN)?;
+        policy
+            .validate()
+            .map_err(|message| Error::new("validation.permissions", message))?;
+        let previous = self.permission_snapshot();
+        let snapshot = self
+            .inner
+            .config
+            .permissions
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(policy);
+        self.audit(
+            &principal.id,
+            "permission.policy",
+            &format!("policy-{}", snapshot.revision),
+            "applied",
+            &format!(
+                "previous_revision={} revision={} digest={} mode={} rule_count={}",
+                previous.revision,
+                snapshot.revision,
+                snapshot.digest,
+                snapshot.mode().as_str(),
+                snapshot.summary()["rule_count"],
+            ),
+        )
+        .await?;
+        Ok(snapshot)
+    }
+
     /// Set the current resolved configuration/asset revision.
     pub async fn set_config_revision(&self, revision: u64) {
         self.inner

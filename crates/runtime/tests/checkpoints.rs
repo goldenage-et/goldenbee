@@ -82,7 +82,7 @@ fn fixture(data: &Path, retention: &str) -> PathBuf {
     std::fs::write(
         &config,
         format!(
-            "instance = \"checkpoints-{}\"\nnamespace = \"local\"\ndefault_agent = \"patcher\"\ntoken = \"dev-token\"\ntoken_scopes = [\"*\"]\n\n[paths]\nagents = \"assets/agents\"\nprompts = \"assets/prompts\"\n\n[storage]\ndirectory = \"{}\"\n\n[tools]\nworkspace = \"workspace\"\ntimeout_ms = 120000\nmax_output_bytes = 1048576\nmax_parallel = 2\n\n[retention]\n{retention}",
+            "instance = \"checkpoints-{}\"\nnamespace = \"local\"\ndefault_agent = \"patcher\"\ntoken = \"dev-token\"\ntoken_scopes = [\"*\"]\n\n[paths]\nagents = \"assets/agents\"\nprompts = \"assets/prompts\"\n\n[storage]\ndirectory = \"{}\"\n\n[tools]\nworkspace = \"workspace\"\ntimeout_ms = 120000\nmax_output_bytes = 1048576\nmax_parallel = 2\n\n[permissions]\nmode = \"full-auto\"\n\n[retention]\n{retention}",
             data.file_name().unwrap().to_string_lossy(),
             data.display(),
         ),

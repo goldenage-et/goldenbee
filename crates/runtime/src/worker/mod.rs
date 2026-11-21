@@ -667,6 +667,7 @@ impl Worker {
                     .iter()
                     .map(|tool| tool.id().to_string())
                     .collect(),
+                permissions: settings.file.permissions.clone(),
             })
             .map_err(|error| {
                 ApiError::new(

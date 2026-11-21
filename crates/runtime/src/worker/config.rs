@@ -83,6 +83,12 @@ impl WorkerSettings {
         validate_models(&file)?;
         validate_mcp(&file.mcp)?;
         file.mcp.validate()?;
+        file.permissions.validate().map_err(|message| {
+            ApiError::new(
+                "config.permissions",
+                format!("permission policy is invalid: {message}"),
+            )
+        })?;
         validate_peers(&file.peers, file.allow_remote)?;
         Ok(Self {
             config_path: path.to_path_buf(),
@@ -192,6 +198,10 @@ impl WorkerSettings {
         config.instance_grants =
             std::sync::Arc::new(std::sync::RwLock::new(self.file.grants.clone()));
         config.mcp_policies = std::sync::Arc::new(std::sync::RwLock::new(self.mcp_policies()));
+        config.permissions = match &self.kernel {
+            Some(kernel) => kernel.permission_handle(),
+            None => crate::policy::default_handle(),
+        };
         config.mcp = self.file.mcp.clone();
         config.peers = self.file.peers.clone();
         for (id, server) in &self.file.mcp.servers {
@@ -296,6 +306,9 @@ pub struct FileConfig {
     /// Per-owner retention policy. Missing values use conservative defaults.
     #[serde(default)]
     pub retention: RetentionConfig,
+    /// Permission mode, ordered rules, and approval bounds.
+    #[serde(default)]
+    pub permissions: crate::policy::PermissionPolicy,
     /// Maximum time admitted work may finish after admission closes. The
     /// remaining work is left recoverable, not marked failed or succeeded.
     #[serde(default = "default_drain_timeout")]

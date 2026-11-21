@@ -49,13 +49,15 @@ impl Worker {
         )) as Arc<dyn Tool>;
         let id = id.into();
         worker.effect_reconcilers.insert(native_name, reconciler);
-        let wrapped = worker.kernel.wrap(
-            wrapper,
-            ToolDescriptor::new("effect:call")
-                .risk(ToolRisk::High)
-                .effect(ToolEffect::None)
-                .no_timeout(),
-        );
+        // The Worker's effect policy owns approval for this tool. The kernel
+        // still enforces deny rules and explicit ask rules; a mode ask is
+        // delegated so the effect policy remains authoritative.
+        let descriptor = ToolDescriptor::new("effect:call")
+            .risk(ToolRisk::High)
+            .effect(ToolEffect::None)
+            .tool_owned_approval()
+            .no_timeout();
+        let wrapped = worker.kernel.wrap(wrapper, descriptor);
         worker.insert_registered(id, wrapped, Vec::new())
     }
 
@@ -87,7 +89,8 @@ impl Worker {
     ///
     /// Packages use this when the kernel must know the tool's effect kind and
     /// the workspace paths it touches: a declared file mutation is checkpointed
-    /// at the turn boundary and produces effect evidence.
+    /// at the turn boundary and produces effect evidence. The descriptor also
+    /// exposes the observed command and network host to permission rules.
     pub fn tool_with_descriptor<I, S>(
         mut self,
         id: impl Into<String>,
