@@ -250,7 +250,7 @@ fn distributed_execution_is_correlated_and_diagnostics_drill_unavailable_child()
     assert!(bundle
         .audit
         .iter()
-        .any(|record| record["action"] == "task.submit" && record["correlation"] == TRACE));
+        .any(|record| record.action == "task.submit" && record.trace_id.as_deref() == Some(TRACE)));
     // Provider-confirmed counts stay separate from locally estimated and
     // explicitly unknown values; none is serialized as zero.
     assert!(bundle.metrics.iter().any(|metric| {

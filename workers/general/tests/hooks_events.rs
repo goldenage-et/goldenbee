@@ -978,6 +978,7 @@ fn compact_revision() -> common::ProfileRevision {
         revision: 0,
         instruction: "Answer from the conversation history.".into(),
         model: "fixture".into(),
+        reasoning: None,
         capabilities: vec!["general".into()],
         grants: vec!["task:submit".into()],
         restrictions: Vec::new(),

@@ -140,6 +140,8 @@ pub(crate) struct LoadedCommands {
     pub mcp: BTreeMap<String, Vec<String>>,
     /// Command routes whose model reference resolves through a provider profile.
     pub providers: BTreeMap<String, String>,
+    /// Reasoning level selected by a command route's target agent.
+    pub reasoning: BTreeMap<String, common::ReasoningLevel>,
     /// Provider preflight requirements for command routes.
     pub requirements: BTreeMap<String, crate::AgentRequirement>,
 }
@@ -157,6 +159,7 @@ pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
     let mut agents = BTreeMap::new();
     let mut mcp = BTreeMap::new();
     let mut providers = BTreeMap::new();
+    let mut reasoning = BTreeMap::new();
     let mut requirements = BTreeMap::new();
     let mut descriptors: Vec<CommandDescriptor> = neutral::NEUTRAL
         .iter()
@@ -225,6 +228,9 @@ pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
         if input.providers.profiles().contains_key(model_reference) {
             providers.insert(route.clone(), model_reference.to_string());
         }
+        if let Some(level) = spec.reasoning {
+            reasoning.insert(route.clone(), level);
+        }
         requirements.insert(
             route.clone(),
             crate::AgentRequirement {
@@ -270,6 +276,7 @@ pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
         agents,
         mcp,
         providers,
+        reasoning,
         requirements,
     })
 }

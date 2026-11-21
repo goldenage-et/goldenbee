@@ -1,4 +1,4 @@
-//! Precise task cancellation.
+//! Precise task cancellation, including the owned-subagent cascade.
 
 use crate::core::ids::now;
 use crate::{ApiError, Result, Runtime};
@@ -6,6 +6,9 @@ use common::{scopes, Principal, Task, TaskState};
 
 impl Runtime {
     /// Cancel a precise task and recover resource permits when confirmed.
+    ///
+    /// Cancelling a parent also cancels every non-terminal subagent it owns,
+    /// recursively, within the same bounded drain boundary as the parent.
     pub async fn cancel_task(&self, principal: &Principal, task_id: &str) -> Result<Task> {
         principal.require(scopes::TASK_CANCEL)?;
         let task = self
@@ -20,6 +23,37 @@ impl Runtime {
                 "only the owner may cancel this task",
             ));
         }
+        self.cancel_claimed(task_id, &principal.id, true).await
+    }
+
+    /// Cancel one task on behalf of an already-authorized caller.
+    ///
+    /// Runtime-local subagent operations use this path after proving the child
+    /// belongs to the calling task. `cascade` cancels owned descendants.
+    pub(crate) async fn cancel_claimed(
+        &self,
+        task_id: &str,
+        caller: &str,
+        cascade: bool,
+    ) -> Result<Task> {
+        let task = self.cancel_one(task_id, caller).await?;
+        if cascade {
+            self.cancel_owned_subagents(task_id).await;
+        }
+        Ok(task)
+    }
+
+    /// Cancel exactly one task without reaching its descendants.
+    ///
+    /// Kept separate from [`cancel_claimed`](Self::cancel_claimed) so the
+    /// cascade has a non-recursive leaf and cannot build an unbounded future
+    /// type.
+    pub(crate) async fn cancel_one(&self, task_id: &str, caller: &str) -> Result<Task> {
+        let task = self
+            .store()
+            .read(|state| state.tasks.get(task_id).cloned())
+            .await
+            .ok_or_else(|| ApiError::new("task.not_found", "task is not visible"))?;
         if task.state.is_terminal() {
             return Ok(task);
         }
@@ -74,9 +108,10 @@ impl Runtime {
                 true,
             )
             .await?;
+            self.notify_parent_terminal(&updated).await;
         }
         self.audit(
-            &principal.id,
+            caller,
             "task.cancel",
             task_id,
             if updated.state == TaskState::Cancelled {

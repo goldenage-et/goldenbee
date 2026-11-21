@@ -231,6 +231,7 @@ fn revision() -> ProfileRevision {
         revision: 0,
         instruction: "Use the configured legacy SSE MCP capability.".into(),
         model: "deterministic".into(),
+        reasoning: None,
         capabilities: vec!["general".into()],
         grants: vec!["task:submit".into(), "mcp:remote:sse".into()],
         restrictions: Vec::new(),

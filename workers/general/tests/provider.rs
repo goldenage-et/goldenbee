@@ -111,13 +111,35 @@ fn with_remote_provider(config: &Path, provider: &str, endpoint: &str, credentia
     std::fs::write(config, text).expect("provider config");
 }
 
+fn with_reasoning_provider(
+    config: &Path,
+    provider: &str,
+    endpoint: &str,
+    credential: &str,
+    level: &str,
+) {
+    let text = std::fs::read_to_string(config).expect("worker config");
+    let mut text = text.replacen("\n[paths]", "\nallow_remote = true\n\n[paths]", 1);
+    text.push_str(&format!(
+        "\n[providers.{provider}]\nadapter = \"openai-compatible\"\nmodel = \"fixture-model\"\nendpoint = \"{endpoint}\"\nmodalities = [\"text\"]\ntool_calling = true\nlocal = false\nresidency = \"remote\"\ncontext_window = 8192\nmax_output_tokens = 128\nreasoning_levels = [\"{level}\"]\ncredential = \"{credential}\"\ncost_rank = 5\ndata_class = \"shared\"\n"
+    ));
+    std::fs::write(config, text).expect("provider config");
+}
+
 /// OpenAI-protocol streaming fixture. The native Runner requests a stream, so
 /// the fixture answers with the provider's SSE chat-completion shape.
 fn chat_stub() -> (String, Arc<AtomicUsize>) {
+    let (endpoint, count, _) = chat_stub_recorded();
+    (endpoint, count)
+}
+
+fn chat_stub_recorded() -> (String, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
     let address = listener.local_addr().expect("fixture address");
     let count = Arc::new(AtomicUsize::new(0));
     let requests = count.clone();
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = bodies.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut socket) = stream else { continue };
@@ -146,6 +168,13 @@ fn chat_stub() -> (String, Arc<AtomicUsize>) {
                     }
                 }
             }
+            if let Some(header_end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                let body = String::from_utf8_lossy(&buffer[header_end + 4..]).into_owned();
+                recorded
+                    .lock()
+                    .expect("request recorder is not poisoned")
+                    .push(body);
+            }
             let chunk = serde_json::json!({
                 "id": "chatcmpl-fixture",
                 "object": "chat.completion.chunk",
@@ -171,7 +200,7 @@ fn chat_stub() -> (String, Arc<AtomicUsize>) {
             let _ = socket.flush();
         }
     });
-    (format!("http://{address}/v1"), count)
+    (format!("http://{address}/v1"), count, bodies)
 }
 
 #[test]
@@ -323,6 +352,103 @@ fn local_and_remote_endpoint_configurations_run_the_same_task_contract() {
     assert_eq!(remote["resolved_model"]["local"], false);
     assert_eq!(remote["resolved_model"]["residency"], "remote");
     assert_eq!(remote_requests.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn agent_reasoning_level_is_applied_through_the_declared_provider() {
+    let (endpoint, requests, bodies) = chat_stub_recorded();
+    let data = tempfile::tempdir().expect("fixture directory");
+    let fixture = fixture::write(data.path(), Default::default());
+    with_reasoning_provider(
+        &fixture.config,
+        "deterministic",
+        &endpoint,
+        "env:GOLDENBEE_TEST_REASONING_KEY",
+        "high",
+    );
+    let agent = fixture.agents.join("general.toml");
+    let definition = std::fs::read_to_string(&agent).expect("agent definition");
+    std::fs::write(
+        &agent,
+        definition.replace(
+            "model = \"deterministic\"",
+            "model = \"deterministic\"\nreasoning = \"high\"",
+        ),
+    )
+    .expect("agent reasoning");
+
+    let result = cli_json_env(
+        &fixture.config,
+        &[
+            "run",
+            "--agent",
+            "general",
+            "--input",
+            "reason carefully",
+            "--session",
+            "reasoning-session",
+            "--json",
+        ],
+        &[("GOLDENBEE_TEST_REASONING_KEY", "fixture-key")],
+    );
+    assert_eq!(result["output"], "remote: configured provider", "{result}");
+    assert_eq!(result["resolved_model"]["reasoning"], "high", "{result}");
+    assert_eq!(
+        result["resolved_model"]["max_output_tokens"], 128,
+        "{result}"
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    let body = bodies
+        .lock()
+        .expect("request recorder is not poisoned")
+        .first()
+        .cloned()
+        .expect("the native adapter sent a request");
+    assert!(body.contains("\"reasoning_effort\":\"high\""), "{body}");
+    assert!(
+        body.contains("\"max_completion_tokens\":128"),
+        "the catalog output ceiling must reach the native request: {body}"
+    );
+}
+
+#[test]
+fn reasoning_on_a_provider_without_a_pinned_field_fails_before_serving() {
+    let (endpoint, _requests) = stub();
+    let data = tempfile::tempdir().expect("fixture directory");
+    let fixture = fixture::write(data.path(), Default::default());
+    with_http_provider(&fixture.config, "deterministic", &endpoint);
+    let agent = fixture.agents.join("general.toml");
+    let definition = std::fs::read_to_string(&agent).expect("agent definition");
+    std::fs::write(
+        &agent,
+        definition.replace(
+            "model = \"deterministic\"",
+            "model = \"deterministic\"\nreasoning = \"high\"",
+        ),
+    )
+    .expect("agent reasoning");
+
+    let output = cli(
+        &fixture.config,
+        &[
+            "run",
+            "--agent",
+            "general",
+            "--input",
+            "hello",
+            "--session",
+            "reasoning-gap",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "unsupported reasoning must fail before execution"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("reasoning"),
+        "the typed gap must name reasoning: {stderr}"
+    );
 }
 
 #[test]

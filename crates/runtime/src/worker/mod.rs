@@ -120,6 +120,8 @@ pub struct ManualAgentDefinition {
     pub description: String,
     /// Logical provider reference resolved at startup and reload.
     pub model: String,
+    /// Reasoning effort applied through the selected provider adapter.
+    pub reasoning: Option<common::ReasoningLevel>,
     /// Number of tools the factory binds, used for provider preflight.
     pub tools: usize,
     /// Native agent factory.
@@ -183,6 +185,9 @@ pub struct Worker {
     features: BTreeSet<String>,
     /// Package declares support for operator-selected progressive disclosure.
     progressive_skills: bool,
+    /// Runtime-local subagent policy. Absent means the package does not expose
+    /// subagent operations at all.
+    subagents: Option<crate::subagents::SubagentConfig>,
     browser: Option<String>,
     pub(crate) duplicate_ids: BTreeSet<String>,
 }
@@ -223,6 +228,7 @@ impl Worker {
                 .map(String::from)
                 .collect(),
             progressive_skills: false,
+            subagents: None,
             browser: None,
             duplicate_ids: BTreeSet::new(),
         }
@@ -300,6 +306,45 @@ impl Worker {
                 ManualAgent::Defined(ManualAgentDefinition {
                     description: description.into(),
                     model: model.into(),
+                    reasoning: None,
+                    tools,
+                    build: ManualAgentBuild::Model(Arc::new(factory)),
+                }),
+            )
+            .is_some();
+        if duplicate_graph || duplicate_agent {
+            self.duplicate_ids.insert(id);
+        }
+        self
+    }
+
+    /// Register a model-resolved agent with an explicit reasoning level.
+    ///
+    /// The level is validated against the selected provider's declared
+    /// `reasoning_levels` during startup. An unsupported level fails before the
+    /// Worker serves.
+    pub fn model_agent_with_reasoning(
+        mut self,
+        id: impl Into<String>,
+        description: impl Into<String>,
+        model: impl Into<String>,
+        reasoning: common::ReasoningLevel,
+        tools: usize,
+        factory: impl Fn(Arc<dyn Llm>) -> std::result::Result<Arc<dyn Agent>, String>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        let id = id.into();
+        let duplicate_graph = self.graphs.contains_key(&id);
+        let duplicate_agent = self
+            .manual_agents
+            .insert(
+                id.clone(),
+                ManualAgent::Defined(ManualAgentDefinition {
+                    description: description.into(),
+                    model: model.into(),
+                    reasoning: Some(reasoning),
                     tools,
                     build: ManualAgentBuild::Model(Arc::new(factory)),
                 }),
@@ -336,6 +381,7 @@ impl Worker {
                 ManualAgent::Defined(ManualAgentDefinition {
                     description: description.into(),
                     model: model.into(),
+                    reasoning: None,
                     tools,
                     build: ManualAgentBuild::WithSettings(Arc::new(factory)),
                 }),
@@ -563,6 +609,23 @@ impl Worker {
     /// Declare the sandbox and process policy used by enabled process tools.
     pub fn process_policy(mut self, policy: crate::ProcessPolicy) -> Self {
         self.process_policy = Some(policy);
+        self
+    }
+
+    /// Enable runtime-local subagents with an explicit Worker policy.
+    ///
+    /// The policy validation runs at startup so a package that declares an
+    /// unusable definition fails before it admits work.
+    pub(crate) fn with_subagent_config(mut self, config: crate::subagents::SubagentConfig) -> Self {
+        // Register the lifecycle tools at definition time so the capability
+        // inventory and the bound tools agree before startup. Validation still
+        // runs at startup, where a configuration error can be reported.
+        for (id, tool, permissions) in
+            crate::subagents::registrations(&self.kernel, self.effect_runtime.clone(), &config)
+        {
+            self = self.insert_registered(id, tool, permissions);
+        }
+        self.subagents = Some(config);
         self
     }
 
@@ -965,6 +1028,11 @@ impl Worker {
                 );
             }
         }
+        if let Some(config) = self.subagents.clone() {
+            config
+                .validate()
+                .map_err(|message| ApiError::new("config.subagents", common::redact(&message)))?;
+        }
         if let Some(id) = self.duplicate_ids.iter().next() {
             return Err(ApiError::new(
                 "asset.duplicate_id",
@@ -1094,6 +1162,9 @@ impl Worker {
             .set_lifecycle_owners(std::mem::take(&mut self.lifecycle))
             .await;
         runtime.set_settings(settings.file.settings.clone()).await;
+        runtime
+            .set_subagent_config(self.subagents.take().map(Arc::new))
+            .await;
         // Bind the already-composed protected tools to the durable runtime,
         // then register their Worker-owned status interfaces for recovery.
         let _ = self.effect_runtime.set(runtime.clone());

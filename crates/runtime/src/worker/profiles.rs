@@ -343,6 +343,7 @@ impl Runtime {
                 modalities: vec!["text".into()],
                 tools: 0,
                 max_tokens: revision.limits.max_tokens,
+                reasoning: revision.reasoning,
             },
         )?;
         let provider = self
@@ -641,6 +642,7 @@ impl Runtime {
                     modalities: vec!["text".into()],
                     tools: requirement.tools + requirement.toolsets,
                     max_tokens,
+                    reasoning: self.config().agent_reasoning.get(agent).copied(),
                 },
             )
         } else {
@@ -670,6 +672,7 @@ impl Runtime {
                     modalities: vec!["text".into()],
                     tools,
                     max_tokens,
+                    reasoning: revision.reasoning,
                 },
             )
         };

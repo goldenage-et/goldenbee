@@ -39,6 +39,7 @@ fn revision_with_model(
         limits,
         compaction: None,
         secret_refs: Vec::new(),
+        reasoning: None,
         created_at: 0,
     }
 }
@@ -956,13 +957,69 @@ async fn provider_fallback_consumes_the_same_task_budget_and_is_reported_once() 
     );
     assert_eq!(primary_requests.load(Ordering::SeqCst), 1);
     assert_eq!(backup_requests.load(Ordering::SeqCst), 1);
-    let events = events(&runtime, &task.id).await;
+    let observed_events = events(&runtime, &task.id).await;
     assert_eq!(
-        event_kinds(&events, "model.fallback"),
+        event_kinds(&observed_events, "model.fallback"),
         1,
-        "fallback must be observable once: {events:?}"
+        "fallback must be observable once: {observed_events:?}"
     );
+    let fallback = observed_events
+        .iter()
+        .find(|event| event.kind == "model.fallback")
+        .expect("fallback event");
+    assert_eq!(
+        fallback.payload["attempt"].as_u64(),
+        Some(u64::from(task.attempt)),
+        "the fallback decision belongs to the attempt that made it: {fallback:?}"
+    );
+    assert_eq!(
+        fallback.payload["from"]["provider"], "primary",
+        "the failing primary must be named: {fallback:?}"
+    );
+    assert_eq!(
+        fallback.payload["to"]["provider"], "backup",
+        "the provider that actually ran must be named: {fallback:?}"
+    );
+    assert_eq!(
+        fallback.payload["reason"], "rate_limited",
+        "the fallback decision must disclose the primary failure: {fallback:?}"
+    );
+
+    // Restart: the attempt-scoped decision and the truthful projection survive.
     instance.shutdown().await;
+    drop(instance);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let reopened = start(&fixture.config).await;
+    let runtime = reopened.runtime();
+    let restored = runtime
+        .task_unscoped(&task.id)
+        .await
+        .expect("task survives restart");
+    assert_eq!(restored.attempt, task.attempt, "{restored:?}");
+    assert_eq!(
+        restored
+            .resolved_model
+            .as_ref()
+            .map(|model| model.provider.as_str()),
+        Some("backup"),
+        "the fallback provider survives restart: {restored:?}"
+    );
+    let replayed = events(&runtime, &task.id).await;
+    assert_eq!(
+        event_kinds(&replayed, "model.fallback"),
+        1,
+        "the attempt-scoped fallback event survives restart: {replayed:?}"
+    );
+    assert_eq!(
+        replayed
+            .iter()
+            .find(|event| event.kind == "model.fallback")
+            .expect("replayed fallback event")
+            .payload["attempt"]
+            .as_u64(),
+        Some(u64::from(task.attempt))
+    );
+    reopened.shutdown().await;
 }
 
 async fn budget_payloads(runtime: &runtime::Runtime, task_id: &str) -> Vec<serde_json::Value> {

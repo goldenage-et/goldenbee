@@ -112,11 +112,16 @@ or drop a policy setting.
   Worker starts with no accepted bearer token; management and invocation routes
   return `401`.
 - Capacity fields `max_active`, `max_queue`, `per_principal`, and
-- Capacity fields `max_active`, `max_queue`, `per_principal`, and
   `event_retention` are optional and default to the runtime limits. Event
   streams add optional `max_streams` (default 64), `stream_buffer` (default
   512), and `stream_keepalive_ms` (default 15000). They bound viewers only;
   execution admission is unchanged.
+- `max_subagents` (default 8) is reserved admission capacity for runtime-local
+  subagent tasks. A child is exempt from its parent's `per_principal` quota but
+  bounded by this reserve, so a parent that waits on a child cannot exhaust its
+  own quota. A waiting parent releases its execution permit; `max_active` is
+  never widened. Subagent definitions and their depth, fanout, model, tool, and
+  permission ceilings belong to the Worker Package, not this file.
 - `drain_timeout_ms` bounds how long admitted work may finish after admission
   closes. The default is 10000 ms. At expiry remaining execution is cancelled
   and unfinished attempts are left recoverable rather than marked failed or
@@ -686,6 +691,7 @@ native `LlmAgent`:
 name = "general"
 description = "General purpose native ADK agent"
 model = "deterministic"
+reasoning = "high"
 prompt = "general"
 skills = ["tone"]
 tools = ["exec_command"]
@@ -700,6 +706,11 @@ toolsets = []
   `http+URL` diagnostic reference remains available and reads no environment.
   Provider endpoints and credentials are never read from package code or from
   ad-hoc environment variables.
+- `reasoning` optionally selects a reasoning effort such as `low`, `medium`, or
+  `high`. The selected provider must declare the level in `reasoning_levels` and
+  use an adapter with a pinned reasoning request field. Otherwise startup fails
+  with a typed `provider.reasoning_unsupported` gap instead of silently ignoring
+  the request. The applied level is recorded in the task's `resolved_model`.
 - `prompt` resolves to `<prompts>/<id>.md`.
 - `skills` resolve to `<skills>/<name>/SKILL.md` catalog entries.
 - `tools` and `toolsets` resolve only to capabilities registered by compiled
@@ -731,9 +742,13 @@ tool_calling = true
 local = true
 residency = "local"
 context_window = 32768
+max_output_tokens = 4096
+reasoning_levels = ["low", "medium", "high"]
 cost_rank = 0
 input_cost_micros_per_million = 0      # optional estimate basis
 candidate_cost_micros_per_million = 0
+cache_read_cost_micros_per_million = 0
+cache_write_cost_micros_per_million = 0
 data_class = "local"
 fallbacks = ["deterministic"]
 
@@ -761,9 +776,21 @@ data_class = "shared"
   installed. `gateway:<id>` is produced only by Gateway-managed model loading.
 - `input_cost_micros_per_million` and `candidate_cost_micros_per_million`
   optionally declare an operator price in millionths of a currency unit per
-  million tokens. They only produce a labelled cost estimate; they are never
-  reported as provider billing. Without them, monetary cost remains
-  unavailable rather than zero.
+  million tokens. `cache_read_cost_micros_per_million` and
+  `cache_write_cost_micros_per_million` price provider-reported cache tokens;
+  when unset, the input price applies. Cost is computed only from
+  provider-reported prompt, candidate, and cache counts over these prices.
+  A call whose provider reported no usage gains no cost, and a labelled cost
+  estimate is never reported as provider billing.
+- `context_window` is the declared model window. `max_output_tokens` is the
+  per-call output ceiling; the runtime applies it to the native request and
+  rejects a catalog where it exceeds the declared window.
+- `reasoning_levels` lists the efforts this model supports. Only
+  `openai-compatible` and `openrouter` adapters expose a pinned reasoning field
+  in ADK 2.3.0; declaring levels on any other adapter fails startup with
+  `provider.reasoning_unsupported`. A profile or agent request outside the
+  declared list is rejected at admission, and a fallback that cannot apply the
+  same level is rejected before work starts.
 - `allow_remote = true` is required before a non-local provider is admitted.
   A provider declared `local = true` must have a loopback endpoint.
 - Preflight rejects a missing text modality, bound tools when `tool_calling` is
@@ -771,13 +798,15 @@ data_class = "shared"
   when a budget is set), a missing or revoked credential, and an unapproved
   remote deployment.
 - `fallbacks` is an explicit allowlist. A candidate must preserve locality,
-  residency, credential authority, cost rank, and data-handling class; chains
-  and self-fallback are rejected. Only rate-limit, timeout, or unavailable
-  primary errors may fall back, and fallback happens only before any output.
-  Fallback applies to a profile composition, where the selected provider is
-  reported back and replaces the task's recorded provider. An agent-level
-  reference resolves the primary only, so its recorded provider is always the
-  one that actually ran.
+  residency, credential authority, cost rank, data-handling class, and declared
+  reasoning support; chains and self-fallback are rejected. Only rate-limit,
+  timeout, or unavailable primary errors may fall back, and fallback happens
+  only before any output. Fallback applies to a profile composition, where the
+  selected provider is reported back and replaces the task's recorded provider.
+  An agent-level reference resolves the primary only, so its recorded provider
+  is always the one that actually ran. A durable `model.fallback` event records
+  the task attempt, the failing primary, the provider that actually ran, and the
+  primary failure reason.
 - Revoking a credential blocks new provider calls through already-built models.
   No package rebuild or restart is required.
 
@@ -972,8 +1001,10 @@ general --config worker.toml profile export research
   `SubmitTaskRequest`.
 - A profile revision with `members` rebuilds the selected file-defined native
   agents with that revision's instruction, model, tools, toolsets, and skills.
-  Skills are bound through the native selection index, so only the matching
-  skill is injected into a turn.
+  An optional `reasoning` level is validated against the selected provider
+  catalog and applied to every member the revision rebuilds. Skills are bound
+  through the native selection index, so only the matching skill is injected
+  into a turn.
 - `--workflow` binds members and limits to a registered native template:
   `single`, `sequential`, `parallel`, `loop`, `team`, `fan-out-fan-in`, or
   `review-loop`. Templates lower through pinned `adk-agent`

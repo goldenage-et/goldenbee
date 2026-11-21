@@ -1,5 +1,6 @@
 //! Durable task admission, execution coordination, and cancellation.
 
+pub(crate) mod admission;
 mod approvals;
 mod cancel;
 pub(crate) mod events;
@@ -11,10 +12,10 @@ mod run;
 pub use recover::Recovery;
 
 use crate::core::crypto::DelegationClaims;
-use crate::core::ids::{new_id, now, task_key};
-use crate::{ApiError, ExecutionOutcome, Result, Runtime};
+use crate::core::ids::now;
+use crate::{ApiError, Result, Runtime};
 use common::{
-    scopes, Principal, SubmitTaskRequest, SubmitTaskResponse, Task, TaskState, TeamRoster, Usage,
+    scopes, Principal, SubmitTaskRequest, SubmitTaskResponse, Task, TaskState, TeamRoster,
 };
 
 impl Runtime {
@@ -75,61 +76,11 @@ impl Runtime {
         trace: Option<&str>,
         input_images: Vec<common::RunImage>,
     ) -> Result<SubmitTaskResponse> {
-        principal.require(scopes::TASK_SUBMIT)?;
         let namespace = request
             .namespace
             .clone()
             .unwrap_or_else(|| principal.namespace.clone());
         principal.require_namespace(&namespace)?;
-        // Hold the admission read gate across the durable acceptance write.
-        // Drain takes the write side, so once it returns no later task can be
-        // accepted even when this request passed earlier validation.
-        let admission = self.admission_guard().await;
-        if !*admission {
-            let mut error = ApiError::retryable(
-                "lifecycle.draining",
-                "the Worker is draining and no longer admits new tasks",
-            );
-            error.retryable = true;
-            error.details.insert("retry_after_ms".into(), "1000".into());
-            return Err(error);
-        }
-
-        validate_identifier("agent", &request.agent)?;
-        validate_identifier("session_id", &request.session_id)?;
-        if request.idempotency_key.trim().is_empty() || request.idempotency_key.len() > 200 {
-            return Err(ApiError::new(
-                "validation.idempotency_key",
-                "idempotency_key must be 1-200 characters",
-            ));
-        }
-        if request.input.len() > 1_000_000 {
-            return Err(ApiError::new(
-                "validation.input_too_large",
-                "input exceeds the 1 MB management limit",
-            ));
-        }
-        // Inline images are bounded before any durable write. A malformed image
-        // fails here, so no task is admitted and no execution begins.
-        if input_images.len() > common::MAX_RUN_IMAGES {
-            return Err(ApiError::new(
-                "validation.input_too_large",
-                "input has more images than the published limit",
-            )
-            .with("limit", common::MAX_RUN_IMAGES.to_string()));
-        }
-        let mut input_bytes = request.input.len();
-        for image in &input_images {
-            image.validate()?;
-            input_bytes = input_bytes.saturating_add(image.decoded_len());
-        }
-        if input_bytes > common::MAX_RUN_TEXT_BYTES {
-            return Err(ApiError::new(
-                "validation.input_too_large",
-                "combined text and image input exceeds the published limit",
-            )
-            .with("limit_bytes", common::MAX_RUN_TEXT_BYTES.to_string()));
-        }
 
         let claimed_team: Option<TeamRoster> = match claims {
             Some(claims) => match &claims.team {
@@ -208,245 +159,34 @@ impl Runtime {
                 None,
             ),
         };
-        let key = task_key(&namespace, &principal.id, &request.idempotency_key);
-        let source = self.config().instance_id.clone();
-        let incarnation = self.incarnation().to_string();
-        let retention = self.config().event_retention.max(1);
-        let asset_revision = self.config_revision();
-        let trace_id = common::trace_id(trace);
-        let traffic = if claims.is_some() { "product" } else { "local" };
-        let id = new_id("task");
-        let accepted_seq = self.next_seq(&id).await;
-
-        let written = self
-            .store()
-            .write(|state| {
-                if let Some(existing_id) = state.task_index.get(&key) {
-                    let existing = state.tasks.get(existing_id).ok_or_else(|| {
-                        ApiError::new("task.index_corrupt", "idempotency index points nowhere")
-                    })?;
-                    if existing.request_digest != digest {
-                        return Err(ApiError::new(
-                            "task.idempotency_conflict",
-                            "this idempotency key was used with a different payload",
-                        )
-                        .with("task_id", existing.id.clone()));
-                    }
-                    return Ok((existing.clone(), true));
-                }
-                let non_terminal = state
-                    .tasks
-                    .values()
-                    .filter(|task| !task.state.is_terminal())
-                    .count();
-                let admission_limit = self
-                    .config()
-                    .max_queue
-                    .saturating_add(self.config().max_active);
-                if non_terminal >= admission_limit {
-                    return Err(ApiError::retryable(
-                        "capacity.queue_full",
-                        "the finite admission queue is full",
-                    )
-                    .with("active_limit", self.config().max_active.to_string())
-                    .with("queue_limit", self.config().max_queue.to_string())
-                    .with("retry_after_ms", "250"));
-                }
-                let principal_work = state
-                    .tasks
-                    .values()
-                    .filter(|task| !task.state.is_terminal() && task.caller == principal.id)
-                    .count();
-                if principal_work >= self.config().per_principal {
-                    return Err(ApiError::retryable(
-                        "capacity.principal_quota",
-                        "the principal already owns the maximum admitted work",
-                    )
-                    .with("quota", self.config().per_principal.to_string())
-                    .with("retry_after_ms", "250"));
-                }
-
-                let local_team = match (&claimed_team, request.team.as_deref()) {
-                    (Some(roster), _) => Some(roster.clone()),
-                    (None, Some(name)) => {
-                        let team = state.teams.get(name).ok_or_else(|| {
-                            ApiError::new("team.not_found", "team is not registered")
-                        })?;
-                        if !team.active {
-                            return Err(ApiError::new("team.inactive", "team is not active"));
-                        }
-                        Some(TeamRoster {
-                            name: team.name.clone(),
-                            version: team.version,
-                            master: team.master.clone(),
-                            members: Vec::new(),
-                            limits: team.limits.clone(),
-                        })
-                    }
-                    (None, None) => None,
-                };
-                let profile = state
-                    .profiles
-                    .get(&crate::profile_key(&namespace, &profile_name))
-                    .ok_or_else(|| {
-                        ApiError::new("profile.not_found", "profile is not registered")
-                    })?;
-                let revision = profile.active().ok_or_else(|| {
-                    ApiError::new("profile.inactive", "profile has no active revision")
-                })?;
-                self.validate_revision(revision, state)?;
-
-                let agent = match &claimed_team {
-                    Some(_) => request.agent.clone(),
-                    None => local_team
-                        .as_ref()
-                        .map(|team| team.master.clone())
-                        .unwrap_or_else(|| request.agent.clone()),
-                };
-                if !self
-                    .config()
-                    .capabilities
-                    .iter()
-                    .any(|capability| capability.id == agent)
-                    && !self.config().routing_agents.contains(&agent)
-                    && local_team.is_none()
-                {
-                    return Err(ApiError::new(
-                        "capability.not_registered",
-                        "agent capability is not registered by this Worker",
-                    ));
-                }
-                if !revision
-                    .grants
-                    .iter()
-                    .any(|grant| grant == "*" || grant == scopes::TASK_SUBMIT)
-                {
-                    return Err(ApiError::new(
-                        "profile.grant_revoked",
-                        "the active profile no longer grants task submission",
-                    ));
-                }
-                for grant in &revision.grants {
-                    if grant != "*" && !principal.has(grant) {
-                        return Err(ApiError::new(
-                            "profile.authority_denied",
-                            format!("principal lacks profile grant '{grant}'"),
-                        ));
-                    }
-                }
-                if !revision.capabilities.is_empty()
-                    && !revision
-                        .capabilities
-                        .iter()
-                        .any(|capability| capability == "*")
-                    && !revision.capabilities.contains(&agent)
-                    && !self.config().routing_agents.contains(&agent)
-                {
-                    return Err(ApiError::new(
-                        "profile.capability_denied",
-                        format!("profile does not include agent capability '{agent}'"),
-                    ));
-                }
-                let limits = request.limits.clone().narrower(&revision.limits);
-                let resolved_model = self.resolve_invocation_model(
-                    revision,
-                    &agent,
-                    &limits,
-                    revision.compaction.as_ref(),
-                )?;
-                let timestamp = now();
-                let task = Task {
-                    id: id.clone(),
-                    namespace: namespace.clone(),
-                    caller: principal.id.clone(),
-                    agent: agent.clone(),
+        let admitted = self
+            .admit_durable(
+                principal,
+                crate::tasks::admission::AdmitRequest {
+                    namespace,
+                    agent: request.agent.clone(),
                     session_id: request.session_id.clone(),
                     input: request.input.clone(),
                     input_images: input_images.clone(),
                     idempotency_key: request.idempotency_key.clone(),
-                    request_digest: digest.clone(),
-                    profile: profile_name.clone(),
-                    profile_revision: revision.revision,
-                    asset_revision,
-                    trace_id: trace_id.clone(),
-                    traffic: traffic.into(),
-                    resolved_model,
-                    team: local_team.as_ref().map(|team| team.name.clone()),
-                    team_version: local_team.as_ref().map(|team| team.version),
-                    team_roster: claimed_team.clone(),
-                    scopes: authority_scopes.clone(),
-                    delegation_path: delegation_path.clone(),
+                    request_digest: digest,
+                    profile: profile_name,
+                    pinned_revision: None,
+                    limits: request.limits.clone(),
+                    requested_team: request.team.clone(),
+                    claimed_team,
+                    authority_scopes,
+                    delegation_path,
                     authority_expires_at,
-                    state: TaskState::Accepted,
-                    attempt: 0,
-                    native_invocation_id: None,
-                    native_thread_id: None,
-                    native_a2a_task_id: None,
-                    output: None,
-                    evidence: None,
-                    error: None,
-                    uncertainty: None,
-                    limits: limits.clone(),
-                    usage: Usage::default(),
-                    created_at: timestamp,
-                    updated_at: timestamp,
-                };
-                state.task_index.insert(key.clone(), id.clone());
-                state.tasks.insert(id.clone(), task.clone());
-                // The task projection, its idempotency binding, the first
-                // durable event, and the audit record commit in one atomic
-                // metadata write. Acceptance is never acknowledged for a
-                // partially recorded task.
-                crate::tasks::events::push_event(
-                    state,
-                    &source,
-                    &incarnation,
-                    retention,
-                    &id,
-                    accepted_seq,
-                    "task.accepted",
-                    serde_json::json!({
-                        "state": "accepted",
-                        "agent": task.agent,
-                        "profile": task.profile,
-                        "profile_revision": task.profile_revision,
-                        "asset_revision": task.asset_revision,
-                        "trace_id": task.trace_id,
-                        "traffic": task.traffic,
-                        "resolved_model": task.resolved_model,
-                        "limits": task.limits,
-                    }),
-                    true,
-                )?;
-                crate::push_audit(
-                    state,
-                    &principal.id,
-                    "task.submit",
-                    &id,
-                    "accepted",
-                    &format!("agent={} profile={}", task.agent, task.profile),
-                    &source,
-                    asset_revision,
-                    &trace_id,
-                );
-                Ok((task, false))
-            })
-            .await;
-        let (task, replayed) = match written {
-            Ok((task, replayed)) => (task, replayed),
-            Err(error) => {
-                self.forget_seq(&id).await;
-                return Err(error);
-            }
-        };
-        if replayed {
-            self.forget_seq(&id).await;
-        }
-        // Acceptance is durable now; a later drain may proceed.
-        drop(admission);
-
-        let mut response_state = task.state;
-        if replayed {
+                    trace_id: common::trace_id(trace),
+                    traffic: if claims.is_some() { "product" } else { "local" }.to_string(),
+                    subagent: None,
+                },
+            )
+            .await?;
+        let task = admitted.task;
+        let replayed = admitted.replayed;
+        let response_state = if replayed {
             // The original acceptance is already durable. A failed replay audit
             // cannot turn that committed acceptance into a rejection.
             let _ = self
@@ -458,61 +198,10 @@ impl Runtime {
                     &format!("agent={} profile={}", task.agent, task.profile),
                 )
                 .await;
+            task.state
         } else {
-            let cancel = tokio_util::sync::CancellationToken::new();
-            self.session_start_hook(&crate::worker::SessionHookContext {
-                task_id: Some(task.id.clone()),
-                namespace: task.namespace.clone(),
-                caller: task.caller.clone(),
-                agent: task.agent.clone(),
-                session_id: task.session_id.clone(),
-                profile: task.profile.clone(),
-                profile_revision: task.profile_revision,
-                asset_revision: task.asset_revision,
-            })
-            .await;
-            let hook_ctx = crate::worker::TaskHookContext {
-                task_id: task.id.clone(),
-                namespace: task.namespace.clone(),
-                caller: task.caller.clone(),
-                agent: task.agent.clone(),
-                session_id: task.session_id.clone(),
-                profile: task.profile.clone(),
-                profile_revision: task.profile_revision,
-                asset_revision: task.asset_revision,
-                input: task.input.clone(),
-                settings: self.settings().await,
-                cancel: cancel.clone(),
-            };
-            if let crate::worker::HookDecision::Deny { reason } =
-                self.prompt_submit_hook(&hook_ctx).await
-            {
-                self.finish_task(
-                    &task.id,
-                    ExecutionOutcome::failure(ApiError::new(
-                        "hook.prompt_blocked",
-                        format!("prompt was blocked by a hook: {}", common::redact(&reason)),
-                    )),
-                )
-                .await;
-                response_state = TaskState::Failed;
-            } else if let Err(error) = self.before_task_hook(&hook_ctx).await {
-                self.finish_task(&task.id, ExecutionOutcome::failure(error))
-                    .await;
-                response_state = TaskState::Failed;
-            } else {
-                // Acceptance metadata is durable at this point. The injected
-                // acknowledgment fault proves a lost response does not duplicate
-                // work, and restart recovery resumes the accepted task.
-                crate::core::fault::exit_if(crate::core::fault::Point::BeforeAcknowledge);
-                self.register_cancel_token(&task.id, cancel).await;
-                let runtime = self.clone();
-                let task_id = task.id.clone();
-                tokio::spawn(async move {
-                    runtime.run_task(task_id).await;
-                });
-            }
-        }
+            self.dispatch_admitted(&task).await
+        };
 
         Ok(SubmitTaskResponse {
             task_id: task.id,
@@ -529,24 +218,46 @@ impl Runtime {
     ///
     /// The task projection is updated only after the fallback provider has
     /// successfully returned a stream, so the recorded provider is truthful.
-    pub async fn record_model_fallback(&self, task_id: &str, model: common::ResolvedModel) {
+    /// The durable event carries the attempt that made the decision and the
+    /// primary provider that failed, so restart recovery can attach the
+    /// decision to the correct attempt.
+    pub async fn record_model_fallback(
+        &self,
+        task_id: &str,
+        decision: crate::execution::providers::FallbackDecision,
+    ) {
+        let mut evidence = None;
         let updated = self
             .store()
             .write(|state| {
                 let task = state.tasks.get_mut(task_id).ok_or_else(|| {
                     ApiError::new("task.not_found", "task disappeared during fallback")
                 })?;
-                task.resolved_model = Some(model.clone());
+                let attempt = task.attempt;
+                let from = task
+                    .resolved_model
+                    .take()
+                    .unwrap_or_else(|| decision.from.clone());
+                task.resolved_model = Some(decision.to.clone());
                 task.updated_at = now();
+                evidence = Some((attempt, from));
                 Ok(())
             })
             .await;
         if updated.is_ok() {
+            let Some((attempt, from)) = evidence else {
+                return;
+            };
             let _ = self
                 .append_event(
                     task_id,
                     "model.fallback",
-                    serde_json::json!({"resolved_model": model}),
+                    serde_json::json!({
+                        "attempt": attempt,
+                        "from": from,
+                        "to": decision.to,
+                        "reason": decision.reason,
+                    }),
                     true,
                 )
                 .await;
@@ -662,19 +373,4 @@ impl Runtime {
             })
             .await
     }
-}
-
-fn validate_identifier(field: &str, value: &str) -> Result<()> {
-    if value.trim().is_empty()
-        || value.len() > 128
-        || value
-            .chars()
-            .any(|c| c.is_control() || c == '/' || c == '\\')
-    {
-        return Err(ApiError::new(
-            "validation.identifier",
-            format!("{field} is not a valid opaque identifier"),
-        ));
-    }
-    Ok(())
 }

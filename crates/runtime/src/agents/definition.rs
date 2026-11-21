@@ -157,6 +157,9 @@ pub struct AgentDefinition {
     pub description: Option<String>,
     /// Runtime model reference.
     pub model: String,
+    /// Reasoning effort applied through the selected provider adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<common::ReasoningLevel>,
     /// Prompt id resolved from the configured prompt directory.
     pub prompt: String,
     /// Skill names resolved from the configured skill catalog.
@@ -178,6 +181,8 @@ pub(crate) struct AgentSpec {
     /// Resolved model reference from the definition. Commands may override it
     /// only with another model the Worker already declares.
     pub(crate) model: String,
+    /// Reasoning effort declared by this agent definition.
+    pub(crate) reasoning: Option<common::ReasoningLevel>,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
     pub(crate) toolsets: Vec<Arc<dyn Toolset>>,
     /// MCP connection ids declared by this agent. They are resolved from the

@@ -45,6 +45,7 @@ revision store and never create a second profile loader or authority.
 | `/v1/tasks/{id}` | New | Durable task projection. |
 | `/v1/tasks/{id}/events` | New | Retained task event page. |
 | `/v1/tasks/{id}/events/stream` | New | Replays retained events, then follows the live broadcast. Uses a bounded cursor contract; model token deltas are non-durable. |
+| `/v1/tasks/{id}/audit` | New | Typed, redacted audit evidence naming principal, action, decision, reason, and resource. Requires `task:read`. |
 | `/v1/tasks/{id}/checkpoints` | New | Turn-boundary file checkpoints for one visible task. Requires `task:read`. |
 | `/v1/checkpoints/{id}` | New | One checkpoint manifest with workspace-relative paths and content digests. Requires `task:read`. |
 | `/v1/checkpoints/{id}/diff` | New | Typed `FileDiff`/hunk preview. Never exposes host paths or blob names. |
@@ -422,8 +423,17 @@ A package registers a side-effecting native tool through
   identity. It is excluded from the digest and always overwrites a model-supplied
   value.
 - `GET /v1/tasks/{id}/operations` returns read-only evidence under the same
-  caller, namespace, and `task:read` scope as the task. It cannot retry or
-  rewrite an operation.
+  caller, namespace, and `task:read` scope as the task. It links each protected
+  operation to the task, attempt, confirmed native invocation, terminal task
+  state, and its own terminal effect status. It cannot retry or rewrite an
+  operation.
+- `GET /v1/tasks/{id}/audit` projects the retained audit tail as typed
+  principal/action/decision/reason/resource entries. Events, audit, traces,
+  effect receipts, and diagnostics pass the same redaction classes: secret
+  values, raw credential material, and absolute host paths outside the
+  configured workspace and data roots. A denied or otherwise unexecuted tool
+  call omits `duration_ms` instead of reporting zero, and usage omits absent
+  provider counts and undeclared cost instead of estimating them as zero.
 - Startup reconciles reserved or unknown operations before readiness. A
   task with an unresolved effect is `unknown`; a known-absent or definite-failed
   effect is never reported as task success.

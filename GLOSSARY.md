@@ -67,3 +67,7 @@ _Avoid_: A different kind of Worker binary.
 
 **Team**:
 A versioned, authorized roster of Worker Instances with a designated Master and bounded delegation rules.
+
+**Subagent**:
+A runtime-local child task spawned by an admitted parent task with a named Worker-declared definition. Its agent, model, tools, permission mode, depth, and fanout are narrowed from the parent and cannot widen. It is not a Worker Instance, a team member, or a second executor.
+_Avoid_: A remote Worker, a team subworker, a nested CLI process.

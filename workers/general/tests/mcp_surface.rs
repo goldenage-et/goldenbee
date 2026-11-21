@@ -148,6 +148,7 @@ fn revision(mcp: &[&str], grants: &[&str]) -> ProfileRevision {
         revision: 0,
         instruction: "Use the configured local MCP capability.".into(),
         model: "deterministic".into(),
+        reasoning: None,
         capabilities: vec!["general".into()],
         grants: grants.iter().map(|grant| (*grant).into()).collect(),
         restrictions: Vec::new(),

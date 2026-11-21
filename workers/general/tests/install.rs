@@ -93,11 +93,17 @@ async fn installs_the_real_general_package_and_validates_launcher_modes() {
         release.registered,
         vec![
             "browser".to_string(),
+            "close_subagent".to_string(),
             "exec_command".to_string(),
+            "interrupt_subagent".to_string(),
+            "list_subagents".to_string(),
             "manual".to_string(),
             "observe_knowledge".to_string(),
             "recall_knowledge".to_string(),
-            "save_artifact".to_string()
+            "save_artifact".to_string(),
+            "send_input".to_string(),
+            "spawn_subagent".to_string(),
+            "wait_subagent".to_string()
         ]
     );
     assert_eq!(

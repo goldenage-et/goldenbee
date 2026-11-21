@@ -131,6 +131,7 @@ fn revision(model: &str, budget: u64) -> ProfileRevision {
         limits: Limits::default(),
         compaction: Some(compaction(budget, 3, 2)),
         secret_refs: Vec::new(),
+        reasoning: None,
         created_at: 0,
     }
 }

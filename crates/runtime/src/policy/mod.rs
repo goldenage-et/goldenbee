@@ -122,6 +122,18 @@ impl PolicySnapshot {
         self.policy.evaluate(request)
     }
 
+    /// Evaluate the snapshot with a narrower mode ceiling.
+    ///
+    /// Rules are unchanged. A ceiling can only deny more than the operator
+    /// mode, never less: an allow rule still cannot widen a denying mode.
+    pub fn evaluate_with_mode(
+        &self,
+        mode: PermissionMode,
+        request: &PermissionRequest,
+    ) -> PolicyDecision {
+        decision::evaluate(mode, &self.policy.rules, request)
+    }
+
     /// Bounded JSON summary recorded in task evidence and audit.
     pub fn summary(&self) -> serde_json::Value {
         serde_json::json!({

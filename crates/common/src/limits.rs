@@ -93,11 +93,27 @@ pub struct Usage {
     /// Locally estimated tokens for calls whose provider counts were absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_tokens: Option<u64>,
+    /// Provider-confirmed input tokens served from a prompt cache, when
+    /// reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// Provider-confirmed input tokens written to a prompt cache, when
+    /// reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// Provider-confirmed thinking tokens, when reported separately.
+    ///
+    /// These are recorded for evidence only. Providers whose candidate count
+    /// already includes thinking tokens are not double priced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_tokens: Option<u64>,
     /// Locally estimated monetary cost in millionths of a currency unit.
     ///
-    /// Derived from operator-declared input and candidate pricing. Absent when
-    /// no pricing was declared, or when neither reported nor estimated token
-    /// counts are available.
+    /// Derived from operator-declared input, candidate, and cache pricing over
+    /// provider-reported token counts. Absent when the provider reported no
+    /// usage, no pricing was declared, or only an unavailable side of the
+    /// prompt/candidate split exists. An estimate is never reported as provider
+    /// billing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost_micros: Option<u64>,
     /// Model calls observed.

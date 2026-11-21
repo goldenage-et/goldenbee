@@ -16,6 +16,7 @@ pub mod delegation;
 pub mod diagnostics;
 pub mod digest;
 pub mod error;
+pub mod evidence;
 pub mod gateway;
 pub mod health;
 pub mod host;
@@ -23,6 +24,7 @@ pub mod identity;
 pub mod limits;
 pub mod mcp;
 pub mod memory;
+pub mod model;
 pub mod package;
 pub mod plan;
 pub mod profile;
@@ -32,6 +34,7 @@ pub mod run;
 pub mod session;
 pub mod socket;
 pub mod stream;
+pub mod subagent;
 pub mod task;
 pub mod team;
 pub mod telemetry;
@@ -64,6 +67,7 @@ pub use diagnostics::{
 };
 pub use digest::{bytes_digest, canonical_digest};
 pub use error::{ApiError, ContractResult};
+pub use evidence::{AuditEntry, EffectEvidence, OperationView};
 pub use gateway::{
     GatewayApproval, GatewayConnectivity, GatewayHealth, GatewaySubmitRequest,
     GatewaySubmitResponse, GatewayTask,
@@ -86,6 +90,7 @@ pub use mcp::{
     McpResourceDescriptor, McpResourceReadRequest, McpServerInventory,
 };
 pub use memory::{KnowledgeFact, MemoryItem};
+pub use model::ReasoningLevel;
 pub use package::{
     protocol_in_range, BuildEvidence, Instance, PackageManifest, Release, ReleaseMetadata,
     SeedAsset, RELEASE_METADATA_SCHEMA,
@@ -124,6 +129,7 @@ pub use socket::{
 pub use stream::{
     parse_cursor, parse_limit, StreamEvent, StreamPage, EVENT_SCHEMA_VERSION, MAX_EVENT_PAGE,
 };
+pub use subagent::{SubagentPolicy, SubagentResult, SubagentSummary};
 pub use task::{
     PlanItem, ResolvedModel, SubmitTaskRequest, SubmitTaskResponse, Task, TaskPlan, TaskState,
 };

@@ -189,6 +189,7 @@ fn revision(mcp: &[&str], grants: &[&str], secrets: &[&str]) -> ProfileRevision 
         limits: Limits::default(),
         compaction: None,
         secret_refs: secrets.iter().map(|secret| (*secret).into()).collect(),
+        reasoning: None,
         created_at: 0,
     }
 }

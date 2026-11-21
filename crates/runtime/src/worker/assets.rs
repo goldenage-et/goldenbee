@@ -30,6 +30,8 @@ pub(super) struct Assets {
     pub(super) skills: Vec<SkillAsset>,
     pub(super) specs: BTreeMap<String, AgentSpec>,
     pub(super) agent_providers: BTreeMap<String, String>,
+    /// Reasoning level selected by each agent that declares one.
+    pub(super) agent_reasoning: BTreeMap<String, common::ReasoningLevel>,
     pub(super) agent_requirements: BTreeMap<String, AgentRequirement>,
     /// Configured memory files for this immutable asset revision.
     pub(super) context: ContextBundle,
@@ -162,6 +164,7 @@ impl Assets {
         let ManualResolution {
             agents: manual_agents,
             providers: mut agent_providers,
+            reasoning: mut agent_reasoning,
             requirements: mut agent_requirements,
         } = resolve_manual_agents(manual_agents, providers, settings)?;
         let mut names: BTreeSet<String> = manual_agents.keys().cloned().collect();
@@ -204,6 +207,9 @@ impl Assets {
             let (agent, spec) = build_loaded_agent(definition, &bindings, providers)?;
             if providers.profiles().contains_key(&definition.model) {
                 agent_providers.insert(definition.name.clone(), definition.model.clone());
+            }
+            if let Some(reasoning) = definition.reasoning {
+                agent_reasoning.insert(definition.name.clone(), reasoning);
             }
             agent_requirements.insert(
                 definition.name.clone(),
@@ -303,6 +309,7 @@ impl Assets {
         })?;
 
         agent_providers.extend(loaded_commands.providers.clone());
+        agent_reasoning.extend(loaded_commands.reasoning.clone());
         agent_requirements.extend(loaded_commands.requirements.clone());
         Ok(Self {
             config: settings.clone(),
@@ -312,6 +319,7 @@ impl Assets {
             skills,
             specs,
             agent_providers,
+            agent_reasoning,
             agent_requirements,
             context,
             commands: loaded_commands.registry,
@@ -325,6 +333,7 @@ impl Assets {
 struct ManualResolution {
     agents: BTreeMap<String, Arc<dyn Agent>>,
     providers: BTreeMap<String, String>,
+    reasoning: BTreeMap<String, common::ReasoningLevel>,
     requirements: BTreeMap<String, AgentRequirement>,
 }
 
@@ -335,6 +344,7 @@ fn resolve_manual_agents(
 ) -> WorkerResult<ManualResolution> {
     let mut agents = BTreeMap::new();
     let mut agent_providers = BTreeMap::new();
+    let mut agent_reasoning = BTreeMap::new();
     let mut agent_requirements = BTreeMap::new();
     for (id, definition) in definitions {
         match definition {
@@ -346,6 +356,7 @@ fn resolve_manual_agents(
                     modalities: vec!["text".into()],
                     tools: definition.tools,
                     max_tokens: 0,
+                    reasoning: definition.reasoning,
                 };
                 let resolved = providers
                     .resolve_primary(&definition.model, 0, &requirements)
@@ -372,6 +383,9 @@ fn resolve_manual_agents(
                     )
                 })?;
                 agent_providers.insert(id.clone(), definition.model.clone());
+                if let Some(reasoning) = definition.reasoning {
+                    agent_reasoning.insert(id.clone(), reasoning);
+                }
                 agent_requirements.insert(
                     id.clone(),
                     AgentRequirement {
@@ -386,6 +400,7 @@ fn resolve_manual_agents(
     Ok(ManualResolution {
         agents,
         providers: agent_providers,
+        reasoning: agent_reasoning,
         requirements: agent_requirements,
     })
 }

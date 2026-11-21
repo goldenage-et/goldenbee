@@ -37,6 +37,16 @@ pub struct ProviderProfile {
     /// Declared context window, in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Declared maximum output tokens for one model call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Declared reasoning levels this model supports.
+    ///
+    /// Only adapters with a native reasoning request field may declare levels.
+    /// A level outside this list is rejected at admission instead of being
+    /// silently ignored.
+    #[serde(default)]
+    pub reasoning_levels: Vec<common::ReasoningLevel>,
     /// Credential reference, never a value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
@@ -51,6 +61,14 @@ pub struct ProviderProfile {
     /// million tokens. Used only for harness-side cost estimates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_cost_micros_per_million: Option<u64>,
+    /// Operator-declared cache-read price in millionths of a currency unit per
+    /// million tokens. Falls back to the input price for estimates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_cost_micros_per_million: Option<u64>,
+    /// Operator-declared cache-write price in millionths of a currency unit per
+    /// million tokens. Falls back to the input price for estimates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_cost_micros_per_million: Option<u64>,
     /// Data-handling class. A fallback may not change it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_class: Option<String>,
@@ -174,8 +192,21 @@ pub struct RuntimeConfig {
     pub max_queue: usize,
     /// Per-principal queued+running ceiling.
     pub per_principal: usize,
+    /// Reserved admission capacity for runtime-local subagent tasks.
+    ///
+    /// Children are exempt from their parent's per-principal quota but bounded
+    /// by this reserved reserve, so a parent that already owns its full quota
+    /// can still admit the child it waits on.
+    pub max_subagents: usize,
     /// Durable event retention per stream.
     pub event_retention: usize,
+    /// Filesystem roots whose absolute paths may appear in evidence.
+    ///
+    /// Any other host path is redacted before an event, audit record, trace,
+    /// effect receipt, or diagnostic is persisted or projected. Packages add
+    /// their operator-selected workspace; the runtime always allows its own
+    /// data directory.
+    pub redaction_roots: Vec<PathBuf>,
     /// Maximum time admitted work may finish after admission closes.
     pub drain_timeout_ms: u64,
     /// Maximum concurrently open event streams in this process.
@@ -196,6 +227,11 @@ pub struct RuntimeConfig {
     pub agent_requirements: BTreeMap<String, AgentRequirement>,
     /// Provider selected by package-registered manual agents.
     pub agent_providers: BTreeMap<String, String>,
+    /// Reasoning level selected by a file-defined or manual agent.
+    ///
+    /// Absent means the agent requests no explicit reasoning. Composition
+    /// profiles use the profile revision's own selection instead.
+    pub agent_reasoning: BTreeMap<String, common::ReasoningLevel>,
     /// Configured local MCP connection policy, including disabled entries.
     /// Interior mutability lets a validated reload disable a connection for
     /// future admissions without rebuilding the process configuration.
@@ -228,6 +264,7 @@ impl RuntimeConfig {
     /// Local development configuration. One admin token is bound to the local
     /// namespace and is intended only for loopback access.
     pub fn local(data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
         let namespace = std::env::var("GOLDENBEE_NAMESPACE").unwrap_or_else(|_| "local".into());
         let token = std::env::var("GOLDENBEE_TOKEN").unwrap_or_else(|_| "local-dev-token".into());
         let mut tokens = BTreeMap::new();
@@ -244,10 +281,14 @@ impl RuntimeConfig {
                 local: true,
                 residency: "local".into(),
                 context_window: Some(131_072),
+                max_output_tokens: None,
+                reasoning_levels: Vec::new(),
                 credential: None,
                 cost_rank: Some(0),
                 input_cost_micros_per_million: None,
                 candidate_cost_micros_per_million: None,
+                cache_read_cost_micros_per_million: None,
+                cache_write_cost_micros_per_million: None,
                 data_class: Some("local".into()),
                 fallbacks: Vec::new(),
             },
@@ -263,10 +304,14 @@ impl RuntimeConfig {
                 local: true,
                 residency: "local".into(),
                 context_window: Some(131_072),
+                max_output_tokens: None,
+                reasoning_levels: Vec::new(),
                 credential: None,
                 cost_rank: Some(0),
                 input_cost_micros_per_million: None,
                 candidate_cost_micros_per_million: None,
+                cache_read_cost_micros_per_million: None,
+                cache_write_cost_micros_per_million: None,
                 data_class: Some("local".into()),
                 fallbacks: Vec::new(),
             },
@@ -292,7 +337,7 @@ impl RuntimeConfig {
             package_version: String::new(),
             incarnation: format!("inc-{}", uuid::Uuid::new_v4()),
             config_revision: 1,
-            data_dir: data_dir.into(),
+            data_dir: data_dir.clone(),
             tokens,
             capabilities,
             routing_agents: std::collections::BTreeSet::new(),
@@ -301,7 +346,9 @@ impl RuntimeConfig {
             max_active: 4,
             max_queue: 32,
             per_principal: 8,
+            max_subagents: 8,
             event_retention: 2_000,
+            redaction_roots: vec![data_dir.clone()],
             drain_timeout_ms: 10_000,
             max_streams: DEFAULT_MAX_STREAMS,
             stream_buffer: DEFAULT_STREAM_BUFFER,
@@ -312,6 +359,7 @@ impl RuntimeConfig {
             providers,
             agent_requirements: BTreeMap::new(),
             agent_providers: BTreeMap::new(),
+            agent_reasoning: BTreeMap::new(),
             mcp_policies: Arc::new(RwLock::new(BTreeMap::new())),
             permissions: crate::policy::default_handle(),
             mcp: crate::mcp::McpConfig::default(),
