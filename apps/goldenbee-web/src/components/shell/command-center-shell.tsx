@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { cn } from "cn"
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { navigate, type AppRoute } from "@/app/router"
 import { StatusDot } from "@/components/shell/status-dot"
@@ -7,6 +6,11 @@ import { StatusBadge } from "@/components/shell/status-badge"
 import { IconRail } from "@/components/shell/icon-rail"
 import { ContextSidebar } from "@/components/shell/context-sidebar"
 import { SessionTabs } from "@/components/shell/session-tabs"
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
 import {
   CommandPalette,
   type PaletteAction,
@@ -427,6 +431,213 @@ export function CommandCenterShell({
     )
   }
 
+  function renderPanel(chatId: string) {
+    return (
+      <div
+        role="listitem"
+        data-panel-id={chatId}
+        className="flex min-h-0 min-w-0 flex-1"
+      >
+        <ChatView
+          store={store}
+          history={history}
+          chatId={chatId}
+          title={controller.titleFor(chatId)}
+          focused={chatId === controller.activeChatId}
+          panelLabel={`Session ${controller.titleFor(chatId)}`}
+          inspectionStore={inspections}
+          inspectorOpen={inspectorOpen}
+          onToggleInspector={() => toggleInspector()}
+          onFocus={() => controller.focusChat(chatId)}
+          onSolo={() => soloPanel(chatId)}
+          onNewChat={splitPanel}
+          onBackground={() => {
+            controller.backgroundChat(chatId)
+            setNotice(
+              "Session moved to background. Its Gateway task continues; nothing was cancelled.",
+            )
+          }}
+        />
+      </div>
+    )
+  }
+
+  function horizontalPair(first: string, second: string) {
+    return (
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="h-full min-h-0"
+      >
+        <ResizablePanel
+          defaultSize="50%"
+          minSize="20%"
+          className="flex min-h-0"
+        >
+          {renderPanel(first)}
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel
+          defaultSize="50%"
+          minSize="20%"
+          className="flex min-h-0"
+        >
+          {renderPanel(second)}
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    )
+  }
+
+  function renderWorkspace() {
+    const ids = visibleChatIds
+
+    if (ids.length === 0) {
+      return (
+        <div className="flex flex-1 items-center justify-center">
+          <Empty className="max-w-md border border-dashed border-line bg-surface/40">
+            <EmptyHeader>
+              <EmptyTitle>No visible session in this group</EmptyTitle>
+              <EmptyDescription>
+                Background sessions keep running at the Gateway. Restore one
+                from the sidebar, or start a new session.
+              </EmptyDescription>
+            </EmptyHeader>
+            <Button type="button" size="sm" onClick={splitPanel}>
+              New session
+            </Button>
+          </Empty>
+        </div>
+      )
+    }
+
+    if (ids.length === 1 || stackedPanels) {
+      if (ids.length === 1) {
+        return (
+          <div
+            role="list"
+            aria-label="Session panels"
+            data-panel-count="1"
+            data-layout="single"
+            className="flex min-h-0 flex-1"
+          >
+            {renderPanel(ids[0]!)}
+          </div>
+        )
+      }
+
+      return (
+        <ResizablePanelGroup
+          orientation="vertical"
+          role="list"
+          aria-label="Session panels"
+          data-panel-count={ids.length}
+          data-layout="stacked"
+          data-stacked="true"
+          className="min-h-0 flex-1"
+        >
+          {ids.map((chatId, index) => (
+            <Fragment key={chatId}>
+              <ResizablePanel
+                defaultSize={`${100 / ids.length}%`}
+                minSize="15%"
+                className="flex min-h-0"
+              >
+                {renderPanel(chatId)}
+              </ResizablePanel>
+              {index < ids.length - 1 ? (
+                <ResizableHandle withHandle />
+              ) : null}
+            </Fragment>
+          ))}
+        </ResizablePanelGroup>
+      )
+    }
+
+    if (ids.length === 2) {
+      return (
+        <ResizablePanelGroup
+          orientation="horizontal"
+          role="list"
+          aria-label="Session panels"
+          data-panel-count="2"
+          data-layout="double"
+          className="min-h-0 flex-1"
+        >
+          <ResizablePanel
+            defaultSize="50%"
+            minSize="25%"
+            className="flex min-h-0"
+          >
+            {renderPanel(ids[0]!)}
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel
+            defaultSize="50%"
+            minSize="25%"
+            className="flex min-h-0"
+          >
+            {renderPanel(ids[1]!)}
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      )
+    }
+
+    if (ids.length === 3) {
+      return (
+        <ResizablePanelGroup
+          orientation="vertical"
+          role="list"
+          aria-label="Session panels"
+          data-panel-count="3"
+          data-layout="triple"
+          className="min-h-0 flex-1"
+        >
+          <ResizablePanel
+            defaultSize="55%"
+            minSize="25%"
+            className="flex min-h-0"
+          >
+            {renderPanel(ids[0]!)}
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel
+            defaultSize="45%"
+            minSize="25%"
+            className="flex min-h-0"
+          >
+            {horizontalPair(ids[1]!, ids[2]!)}
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      )
+    }
+
+    return (
+      <ResizablePanelGroup
+        orientation="vertical"
+        role="list"
+        aria-label="Session panels"
+        data-panel-count="4"
+        data-layout="quad"
+        className="min-h-0 flex-1"
+      >
+        <ResizablePanel
+          defaultSize="50%"
+          minSize="25%"
+          className="flex min-h-0"
+        >
+          {horizontalPair(ids[0]!, ids[1]!)}
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel
+          defaultSize="50%"
+          minSize="25%"
+          className="flex min-h-0"
+        >
+          {horizontalPair(ids[2]!, ids[3]!)}
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    )
+  }
+
   if (!connected) {
     return (
       <div className="flex min-h-dvh flex-col bg-background">
@@ -541,81 +752,7 @@ export function CommandCenterShell({
                 aria-label={`Session group ${controller.activeGroup?.name ?? "Sessions"}`}
                 className="flex min-h-0 flex-1 gap-2"
               >
-                {visibleChatIds.length > 0 ? (
-                  <div
-                    role="list"
-                    aria-label="Session panels"
-                    data-panel-count={visibleChatIds.length}
-                    data-layout={
-                      visibleChatIds.length === 1
-                        ? "single"
-                        : visibleChatIds.length === 3
-                          ? "triple"
-                          : visibleChatIds.length === 4
-                            ? "quad"
-                            : "double"
-                    }
-                    className={cn(
-                      "grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] gap-2",
-                      stackedPanels ? "grid-cols-1" : "grid-cols-2",
-                    )}
-                  >
-                    {visibleChatIds.map((chatId, index) => (
-                      <div
-                        key={chatId}
-                        role="listitem"
-                        data-panel-id={chatId}
-                        className={cn(
-                          "flex min-h-0 min-w-0",
-                          visibleChatIds.length === 3 &&
-                            index === 0 &&
-                            !stackedPanels &&
-                            "col-span-2",
-                        )}
-                      >
-                        <ChatView
-                          store={store}
-                          history={history}
-                          chatId={chatId}
-                          title={controller.titleFor(chatId)}
-                          focused={chatId === controller.activeChatId}
-                          panelLabel={`Session ${controller.titleFor(chatId)}`}
-                          inspectionStore={inspections}
-                          inspectorOpen={inspectorOpen}
-                          onToggleInspector={() => toggleInspector()}
-                          onFocus={() => controller.focusChat(chatId)}
-                          onSolo={() => soloPanel(chatId)}
-                          onNewChat={splitPanel}
-                          onBackground={() => {
-                            controller.backgroundChat(chatId)
-                            setNotice(
-                              "Session moved to background. Its Gateway task continues; nothing was cancelled.",
-                            )
-                          }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex flex-1 items-center justify-center">
-                    <Empty className="max-w-md border border-dashed border-line bg-surface/40">
-                      <EmptyHeader>
-                        <EmptyTitle>No visible session in this group</EmptyTitle>
-                        <EmptyDescription>
-                          Background sessions keep running at the Gateway. Restore
-                          one from the sidebar, or start a new session.
-                        </EmptyDescription>
-                      </EmptyHeader>
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={splitPanel}
-                      >
-                        New session
-                      </Button>
-                    </Empty>
-                  </div>
-                )}
+                {renderWorkspace()}
 
                 {!narrow && inspectorOpen ? (
                   <SessionInspector

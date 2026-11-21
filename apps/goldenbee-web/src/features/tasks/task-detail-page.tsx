@@ -41,6 +41,8 @@ export interface TaskDetailGateway {
 export interface TaskDetailPageProps {
   client: TaskDetailGateway | null
   taskId: string
+  /** Render the evidence body without the page-level back link and title. */
+  embedded?: boolean
 }
 
 const eventLimit = 500
@@ -217,7 +219,11 @@ function ApprovalRow({ approval }: { approval: GatewayApproval }) {
  * approval list directly from the Gateway. It does not depend on a live chat
  * stream, so history and approvals stay readable after that stream closes.
  */
-export function TaskDetailPage({ client, taskId }: TaskDetailPageProps) {
+export function TaskDetailPage({
+  client,
+  taskId,
+  embedded = false,
+}: TaskDetailPageProps) {
   const taskQuery = useQuery({
     queryKey: ["task-detail", taskId, "task"],
     queryFn: () => client!.task(taskId),
@@ -261,22 +267,26 @@ export function TaskDetailPage({ client, taskId }: TaskDetailPageProps) {
   return (
     <article className="grid gap-4" aria-label={`Task ${taskId}`}>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <a
-            href={routeHref({ name: "chat" })}
-            className="inline-flex items-center gap-1 text-micro text-gold underline-offset-2 hover:underline"
-          >
-            <ArrowLeftIcon className="size-3" aria-hidden="true" />
-            Back to sessions
-          </a>
-          <h1 className="mt-1 truncate font-mono text-panel font-semibold tracking-tight">
-            {taskId}
-          </h1>
-          <p className="mt-1 text-meta text-muted-foreground">
-            Durable task projection, retained events, and recorded approvals.
-            This page does not depend on the live chat stream.
-          </p>
-        </div>
+        {!embedded ? (
+          <div className="min-w-0">
+            <a
+              href={routeHref({ name: "chat" })}
+              className="inline-flex items-center gap-1 text-micro text-gold underline-offset-2 hover:underline"
+            >
+              <ArrowLeftIcon className="size-3" aria-hidden="true" />
+              Back to sessions
+            </a>
+            <h1 className="mt-1 truncate font-mono text-panel font-semibold tracking-tight">
+              {taskId}
+            </h1>
+            <p className="mt-1 text-meta text-muted-foreground">
+              Durable task projection, retained events, and recorded approvals.
+              This page does not depend on the live chat stream.
+            </p>
+          </div>
+        ) : (
+          <p className="text-meta font-medium">Task evidence</p>
+        )}
         <div className="flex items-center gap-2">
           {task ? (
             <Badge variant="outline" className="h-5 rounded-md px-1.5 text-micro">

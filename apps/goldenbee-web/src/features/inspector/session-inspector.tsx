@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { isGatewayError, type Artifact } from "@goldenbee/sdk"
 
-import { routeHref } from "@/app/router"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { ChatInspectionStore } from "@/features/chat/chat-inspection-store"
@@ -10,7 +9,6 @@ import { useChatInspection } from "@/features/chat/chat-inspection-store"
 import type {
   ChatHistoryStore,
   RestoredChat,
-  StoredTask,
 } from "@/features/chat/local-chat-history"
 import { UsageFacts } from "@/features/usage/usage-facts"
 
@@ -18,10 +16,9 @@ export interface ArtifactGateway {
   artifacts(taskId: string): Promise<Artifact[]>
 }
 
-export type InspectorTab = "tasks" | "artifacts" | "details"
+export type InspectorTab = "artifacts" | "details"
 
 const tabs: Array<{ id: InspectorTab; label: string }> = [
-  { id: "tasks", label: "Tasks" },
   { id: "artifacts", label: "Artifacts" },
   { id: "details", label: "Details" },
 ]
@@ -80,11 +77,11 @@ function artifactError(error: unknown): { message: string; denial: boolean } {
 }
 
 /**
- * Focused-session evidence inspector.
+ * Focused-session context inspector.
  *
- * Tasks and Details read local records plus the focused panel's live durable
- * facts. Artifacts come from the Gateway artifact list route. There is no Files
- * tab: Gateway has no workspace file API in this release, so no tree is shown.
+ * It reads live durable session facts and the local chat record, and lists the
+ * current task's Gateway artifacts. Durable task history is intentionally kept
+ * out of this surface; the session panel opens `TaskBrowserDialog` on demand.
  */
 export function SessionInspector({
   history,
@@ -95,24 +92,14 @@ export function SessionInspector({
   open,
   onClose,
 }: SessionInspectorProps) {
-  const [tab, setTab] = useState<InspectorTab>("tasks")
+  const [tab, setTab] = useState<InspectorTab>("details")
   const [record, setRecord] = useState<RestoredChat | null>(null)
   const [recordError, setRecordError] = useState<string | null>(null)
   const inspection = useChatInspection(
     (state) => (chatId ? state.inspections[chatId] : undefined),
     inspections,
   )
-  // Normalize before the effect deps: the first publish changes `undefined` to
-  // `null`, which must not trigger a second history read.
   const liveTaskId = inspection?.taskId ?? null
-  const liveStatus = inspection?.status ?? null
-  // A status change can add or finalize a local task record. Keep the load
-  // trigger null until the record has been read once so the initial
-  // `undefined -> idle` publish does not cause a duplicate read.
-  const refreshStatus =
-    liveStatus !== null && record !== null && record.chat.status !== liveStatus
-      ? liveStatus
-      : null
 
   useEffect(() => {
     if (!history || !chatId) {
@@ -146,19 +133,11 @@ export function SessionInspector({
     return () => {
       cancelled = true
     }
-    // A new task or a terminal transition writes task records. Refresh the
-    // local evidence then, not on every durable cursor or streamed delta.
-  }, [chatId, history, liveTaskId, refreshStatus])
+  }, [chatId, history])
 
   const taskId = liveTaskId ?? record?.chat.activeTaskId ?? null
-  const status = inspection?.status ?? record?.chat.status ?? null
-  const durableSeq =
-    inspection?.lastDurableSeq ?? record?.chat.lastDurableSeq ?? 0
   const selection =
     inspection?.selection ?? record?.selection ?? record?.chat.selection ?? null
-  const tasks: StoredTask[] = record?.tasks ?? []
-  const currentTask =
-    tasks.find((task) => task.taskId === taskId) ?? null
   const gap = inspection?.gap ?? record?.chat.gap ?? null
   const recovery = inspection?.recovery ?? record?.chat.recovery ?? null
   const usage = inspection?.usage ?? null
@@ -223,11 +202,27 @@ export function SessionInspector({
         ))}
       </div>
 
+      {chatId && (gap || recovery?.kind === "detached" || recovery?.kind === "failed") ? (
+        <div className="grid gap-1 border-b border-line px-3 py-2">
+          {gap ? (
+            <p className="rounded-[7px] border border-gold/30 bg-gold/10 px-2 py-1.5 text-micro text-foreground">
+              Stream gap at sequence {gap.fromSeq} ({gap.reason}). Retained
+              history is incomplete.
+            </p>
+          ) : null}
+          {recovery?.kind === "detached" || recovery?.kind === "failed" ? (
+            <p className="rounded-[7px] border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-micro text-foreground">
+              {recovery.detail ??
+                "The local chat is detached from its Gateway task."}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {!chatId ? (
           <p className="text-meta text-muted-foreground">
-            Select a session panel to inspect its task evidence and runtime
-            facts.
+            Select a session panel to inspect its runtime facts.
           </p>
         ) : null}
 
@@ -235,95 +230,6 @@ export function SessionInspector({
           <p role="alert" className="text-meta text-destructive">
             {recordError}
           </p>
-        ) : null}
-
-        {chatId && tab === "tasks" ? (
-          <section
-            id="inspector-tasks"
-            role="tabpanel"
-            aria-label="Tasks"
-            className="grid gap-3"
-          >
-            <div>
-              <p className="text-micro font-bold tracking-[0.14em] text-dim uppercase">
-                Current task
-              </p>
-              {taskId ? (
-                <dl className="mt-1">
-                  <Fact
-                    label="Task id"
-                    value={
-                      <a
-                        href={routeHref({ name: "task", taskId })}
-                        className="break-all font-mono text-gold underline-offset-2 hover:underline"
-                      >
-                        {taskId}
-                      </a>
-                    }
-                  />
-                  <Fact
-                    label="State"
-                    value={currentTask?.state ?? status ?? "Unknown"}
-                  />
-                  <Fact
-                    label="Durable cursor"
-                    value={String(durableSeq)}
-                  />
-                </dl>
-              ) : (
-                <p className="mt-1 text-meta text-muted-foreground">
-                  No Gateway task is associated with this chat yet.
-                </p>
-              )}
-            </div>
-
-            <div>
-              <p className="text-micro font-bold tracking-[0.14em] text-dim uppercase">
-                Local task records
-              </p>
-              {tasks.length === 0 ? (
-                <p className="mt-1 text-meta text-muted-foreground">
-                  No local task records. Local records are created from tasks
-                  this browser observed; Gateway has no task-list route in this
-                  release.
-                </p>
-              ) : (
-                <ul className="mt-1 grid gap-2">
-                  {tasks.map((task) => (
-                    <li
-                      key={task.taskId}
-                      className="rounded-[7px] border border-line bg-surface-2 px-2 py-1.5"
-                    >
-                      <a
-                        href={routeHref({ name: "task", taskId: task.taskId })}
-                        className="block truncate font-mono text-micro text-gold underline-offset-2 hover:underline"
-                      >
-                        {task.taskId}
-                      </a>
-                      <p className="mt-0.5 text-micro text-muted-foreground">
-                        {task.state}
-                        {task.terminal ? " · terminal" : " · open"}
-                        {task.taskId === taskId ? " · current" : ""}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            {gap ? (
-              <p className="rounded-[7px] border border-gold/30 bg-gold/10 px-2 py-1.5 text-micro text-foreground">
-                Stream gap at sequence {gap.fromSeq} ({gap.reason}). Retained
-                history is incomplete.
-              </p>
-            ) : null}
-            {recovery?.kind === "detached" || recovery?.kind === "failed" ? (
-              <p className="rounded-[7px] border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-micro text-foreground">
-                {recovery.detail ??
-                  "The local chat is detached from its Gateway task."}
-              </p>
-            ) : null}
-          </section>
         ) : null}
 
         {chatId && tab === "artifacts" ? (
@@ -412,12 +318,6 @@ export function SessionInspector({
               <Fact
                 label="Session id"
                 value={inspection?.sessionId ?? record?.chat.sessionId ?? "—"}
-              />
-              <Fact label="Task id" value={taskId ?? "No task yet"} />
-              <Fact label="Status" value={status ?? "Unknown"} />
-              <Fact
-                label="Last durable cursor"
-                value={taskId ? String(durableSeq) : "No durable event yet"}
               />
               <Fact
                 label="Panel"

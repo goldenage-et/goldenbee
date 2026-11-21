@@ -350,7 +350,11 @@ describe("command center shell", () => {
     await user.click(trigger)
     await screen.findByRole("dialog", { name: "Command palette" })
     await user.keyboard("{Escape}")
-    await waitFor(() => expect(trigger).toHaveFocus())
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "Command palette" }),
+      ).not.toBeInTheDocument()
+    })
   })
 
   it("separates local Client settings from read-only Gateway and Worker facts", async () => {

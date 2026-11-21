@@ -192,7 +192,7 @@ describe("multi-panel session workspace", () => {
 
     const grid = await panelGrid(1)
     expect(grid).toHaveAttribute("data-layout", "single")
-    expect(grid.className).toContain("grid-cols-1")
+    expect(grid.querySelectorAll('[data-slot="resizable-handle"]')).toHaveLength(0)
     expect(panelItems(grid)).toHaveLength(1)
     expect(workspace.getState().activeChatId).toBe("chat-alpha")
   })
@@ -202,24 +202,22 @@ describe("multi-panel session workspace", () => {
 
     const grid = await panelGrid(2)
     expect(grid).toHaveAttribute("data-layout", "double")
-    expect(grid.className).toContain("grid-cols-2")
+    expect(grid.querySelectorAll('[data-slot="resizable-handle"]')).toHaveLength(1)
     expect(panelItems(grid)).toHaveLength(2)
     expect(await panelFor(/Beta task, focused/)).toBeInTheDocument()
     expect(screen.queryByRole("region", { name: /Alpha task, focused/ }))
       .not.toBeInTheDocument()
   })
 
-  it("lets the first of three panels span two columns", async () => {
+  it("renders three panels with resizable rows", async () => {
     renderWorkspace({
       chats: ["chat-alpha", "chat-beta", "chat-gamma"],
     })
 
     const grid = await panelGrid(3)
     expect(grid).toHaveAttribute("data-layout", "triple")
-    const items = panelItems(grid)
-    expect(items).toHaveLength(3)
-    expect(items[0]?.className).toContain("col-span-2")
-    expect(items[1]?.className).not.toContain("col-span-2")
+    expect(panelItems(grid)).toHaveLength(3)
+    expect(grid.querySelectorAll('[data-slot="resizable-handle"]')).toHaveLength(2)
   })
 
   it("renders four panels as a two-by-two grid", async () => {
@@ -229,8 +227,8 @@ describe("multi-panel session workspace", () => {
 
     const grid = await panelGrid(4)
     expect(grid).toHaveAttribute("data-layout", "quad")
-    expect(grid.className).toContain("grid-cols-2")
     expect(panelItems(grid)).toHaveLength(4)
+    expect(grid.querySelectorAll('[data-slot="resizable-handle"]')).toHaveLength(3)
   })
 
   it("collapses to one column below 1100px", async () => {
@@ -240,11 +238,25 @@ describe("multi-panel session workspace", () => {
     })
 
     const grid = await panelGrid(3)
-    await waitFor(() => expect(grid.className).toContain("grid-cols-1"))
-    expect(grid.className).not.toContain("grid-cols-2")
-    expect(panelItems(grid)[0]?.className).not.toContain(
-      "col-span-2",
+    await waitFor(() => expect(grid).toHaveAttribute("data-layout", "stacked"))
+    expect(grid).toHaveAttribute("data-stacked", "true")
+    expect(panelItems(grid)).toHaveLength(3)
+    expect(grid.querySelectorAll('[data-slot="resizable-handle"]')).toHaveLength(2)
+  })
+
+  it("opens task records from the session panel header", async () => {
+    const { user } = renderWorkspace({ chats: ["chat-alpha"] })
+    await panelGrid(1)
+
+    await user.click(
+      screen.getByRole("button", { name: "Open task records" }),
     )
+
+    const dialog = await screen.findByRole("dialog", { name: "Task records" })
+    expect(dialog).toBeInTheDocument()
+    expect(
+      await screen.findByText(/No task records yet/i),
+    ).toBeInTheDocument()
   })
 
   it("focuses a panel for the inspector without hiding the other panel", async () => {

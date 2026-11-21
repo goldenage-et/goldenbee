@@ -2,6 +2,7 @@ import {
   ArrowDownToLineIcon,
   Columns2Icon,
   FocusIcon,
+  ListTreeIcon,
   MessageSquareIcon,
   PanelRightIcon,
   ScanIcon,
@@ -48,6 +49,7 @@ import {
 } from "@/features/connection/connection-store"
 import { useGatewayClient } from "@/features/connection/use-gateway-client"
 import type { ChatGateway } from "@/features/chat/chat-runner"
+import { TaskBrowserDialog } from "@/features/inspector/task-browser-dialog"
 
 const busyStatuses = new Set([
   "submitting",
@@ -122,6 +124,7 @@ export function ChatView({
     () => preferences.read() ?? emptySelection,
   )
   const [selectionReady, setSelectionReady] = useState(!history)
+  const [taskBrowserOpen, setTaskBrowserOpen] = useState(false)
   const chat = useChat({
     client: client ?? gatewayClient,
     history: history ?? undefined,
@@ -361,6 +364,17 @@ export function ChatView({
           </span>
         ) : null}
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Open task records"
+            title="Task records"
+            disabled={!history}
+            onClick={() => setTaskBrowserOpen(true)}
+          >
+            <ListTreeIcon aria-hidden="true" />
+          </Button>
           {onFocus && !focused ? (
             <Button
               type="button"
@@ -571,6 +585,14 @@ export function ChatView({
           chat.send(text, resolved.selection)
         }}
         onStop={() => chat.stop()}
+      />
+
+      <TaskBrowserDialog
+        history={history ?? null}
+        client={gatewayClient}
+        chatId={liveChatId}
+        open={taskBrowserOpen}
+        onClose={() => setTaskBrowserOpen(false)}
       />
     </section>
   )
