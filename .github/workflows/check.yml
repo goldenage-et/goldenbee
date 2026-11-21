@@ -30,3 +30,61 @@ jobs:
           sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Check deterministic surface
         run: make check-ci
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install web workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Check TypeScript-only authored source
+        run: bun run check:ts-only
+      - name: Check Bun-only workspace lock
+        run: bun run check:workspace
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Lint
+        run: bun run lint
+      - name: Test SDK with Bun
+        run: bun test
+      - name: Test web app with Vitest via Bun
+        run: bun run --filter goldenbee-web test
+      - name: Build static web bundle
+        run: bun run build
+
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Build the real Gateway and Workers
+        run: cargo build --bin gb-gateway --bin general --bin effect-fixture
+      - name: Install web workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium with system dependencies
+        run: bun run --filter goldenbee-web e2e:install
+      - name: Run the real-browser acceptance journey
+        run: bun run --filter goldenbee-web e2e
+      - name: Keep Playwright evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/goldenbee-web/playwright-report
+            apps/goldenbee-web/test-results
+          if-no-files-found: ignore
+          retention-days: 7

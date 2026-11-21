@@ -1,0 +1,23 @@
+{
+  "name": "goldenbee-web-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.0",
+  "workspaces": [
+    "apps/goldenbee-web",
+    "packages/goldenbee-sdk"
+  ],
+  "scripts": {
+    "dev": "bun run --filter goldenbee-web dev",
+    "build": "bun run --filter goldenbee-web build",
+    "typecheck": "bun run check:workspace && bun run check:ts-only && bun run --filter @goldenbee/sdk typecheck && bun run --filter goldenbee-web typecheck",
+    "lint": "bun run check:ts-only && bun run --filter @goldenbee/sdk lint && bun run --filter goldenbee-web lint",
+    "test": "bun run check:workspace && bun run check:ts-only && bun test && bun run --filter goldenbee-web test",
+    "check:ts-only": "bun scripts/check-typescript-only.ts",
+    "check:workspace": "bun scripts/check-workspace.ts",
+    "check:build": "bun scripts/check-static-build.ts"
+  },
+  "engines": {
+    "bun": ">=1.2"
+  }
+}

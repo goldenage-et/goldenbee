@@ -10,6 +10,8 @@ members = [
     "workers/graph",
     "workers/knowledge",
 ]
+# The web Client is an npm/TypeScript application, not a Rust workspace member.
+exclude = ["apps/goldenbee-web"]
 resolver = "2"
 
 [workspace.package]
