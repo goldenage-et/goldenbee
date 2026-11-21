@@ -214,6 +214,7 @@ pub struct NativeExecutor {
     remote_mcp: Option<Arc<RemoteMcpRegistry>>,
     effect_approvals: BTreeMap<String, crate::EffectApprovalPolicy>,
     max_tool_concurrency: Option<usize>,
+    tool_kernel: crate::tools::ToolKernel,
 }
 
 impl NativeExecutor {
@@ -268,6 +269,7 @@ impl NativeExecutor {
             remote_mcp: None,
             effect_approvals: BTreeMap::new(),
             max_tool_concurrency: None,
+            tool_kernel: crate::tools::ToolKernel::new(),
         })
     }
 
@@ -340,6 +342,13 @@ impl NativeExecutor {
     /// Bound native parallel tool dispatch with the runtime limit.
     pub fn with_tool_concurrency(mut self, max_parallel: usize) -> Self {
         self.max_tool_concurrency = Some(max_parallel.max(1));
+        self
+    }
+
+    /// Attach the process-wide tool kernel so skill toolsets share the same
+    /// bounded execution pipeline.
+    pub fn with_tool_kernel(mut self, kernel: crate::tools::ToolKernel) -> Self {
+        self.tool_kernel = kernel;
         self
     }
 

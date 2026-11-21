@@ -109,6 +109,11 @@ impl WorkerInstance {
         self.inner.sessions.clone()
     }
 
+    /// Discoverable command registry for the active asset revision.
+    pub(crate) async fn command_registry(&self) -> Arc<crate::commands::CommandRegistry> {
+        self.inner.assets.read().await.commands.clone()
+    }
+
     /// Registered run-scope native plugins, when the package supplies them.
     pub fn plugins(&self) -> Option<Arc<PluginManager>> {
         self.inner.plugins.clone()
@@ -194,6 +199,19 @@ impl WorkerInstance {
     pub async fn reload(&self) -> WorkerResult<u64> {
         let mut settings = WorkerSettings::load(&self.inner.config_path)?;
         settings.kernel = Some(self.inner.kernel.clone());
+        if settings.file.skills.disclosure == "progressive"
+            && !self
+                .inner
+                .manifest
+                .features
+                .iter()
+                .any(|feature| feature == "skills-progressive-disclosure")
+        {
+            return Err(ApiError::new(
+                "config.capability_not_declared",
+                "skills.disclosure = \"progressive\" requires a package that declares progressive skill disclosure",
+            ));
+        }
         if let Some(name) = &settings.file.name {
             if name != &self.inner.name {
                 return Err(ApiError::new(
@@ -276,6 +294,7 @@ impl WorkerInstance {
                 providers,
                 effect_approvals: self.inner.effect_approvals.clone(),
                 max_parallel: settings.file.tools.max_parallel.max(1),
+                kernel: self.inner.kernel.clone(),
             },
         )?);
         // Reconcile after the candidate executor is built so a build failure

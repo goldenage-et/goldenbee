@@ -30,7 +30,9 @@ revision store and never create a second profile loader or authority.
 | `/a2a`, `/a2a/stream` | Native | ADK A2A JSON-RPC transport. |
 | `/v1/health` | New | Minimal public liveness. |
 | `/v1/status` | New | Authenticated health, readiness, lifecycle, and capacity projection. |
-| `/v1/capabilities` | New | Authenticated manifest and durability disclosure. |
+| `/v1/capabilities` | New | Authenticated manifest, command inventory, and durability disclosure. |
+| `/v1/commands` | New | List runtime and Worker-defined commands. Requires `task:read`. |
+| `/v1/commands/{name}` | New | Read one command descriptor, or invoke it with `POST`. Invocation requires `task:submit`. |
 | `/v1/drain` | New | Authorized bounded drain. Requires `instance:admin`. |
 | `/v1/tasks` | New | Durable task admission with caller-scoped idempotency. |
 | `/v1/tasks/{id}` | New | Durable task projection. |
@@ -151,6 +153,27 @@ revision, and asset revision provenance.
   child authority. `POST .../cancel` addresses each exact remote task id.
 - Gateway is not required for dispatch or recovery. A team task that already
   reached its Master continues over native A2A while Gateway is down.
+## Commands
+
+`GET /v1/commands` returns the same inventory the CLI prints: neutral
+`session.*`, `context.info`, `permissions.info`, `skills.list`, and
+`commands.list` entries plus Worker commands loaded from `paths.commands`.
+
+- `GET /v1/commands/{name}` requires `task:read`.
+- `POST /v1/commands/{name}` requires `task:submit` and accepts
+  `{"input": "...", "session_id": "...", "idempotency_key": "...",
+  "agent": "...", "limits": {...}}`.
+- Neutral commands return `{"command", "kind": "neutral", "result"}`.
+- Worker commands return `{"command", "kind": "worker", "result", "task"}` and
+  admit a normal durable task for the prebuilt narrowed command agent.
+- Malformed arguments, an agent override that differs from the command target,
+  and an undeclared model or tool fail before task admission.
+
+Worker commands can only narrow their target agent. Their `allowed_tools` must
+be a subset of tools the target agent already binds, and their `model` must be a
+model the Worker already declares. Command assets are resolved against the
+operator-selected configuration directory.
+
 ## Runtime Profile management
 
 Profiles remain Worker-owned configuration. Product Clients reach these routes

@@ -55,6 +55,7 @@ stream_keepalive_ms = 15000         # optional SSE keepalive interval
 agents = "./agents"
 prompts = "./prompts"
 skills = "./skills"
+commands = "./commands"
 
 [storage]
 directory = "./state"
@@ -532,10 +533,59 @@ fallback = "deny"                        # deny | deterministic
 `skills/<name>/SKILL.md` files are parsed by the pinned native
 `adk_skill::parse_skill_markdown` parser. The catalog is exposed through Worker
 context and resolved by agent definitions and profile revisions. A resolved
-agent receives a native `SkillIndex` containing only its selected skills; the
-pinned native selector chooses the relevant skill for each user turn and injects
-that prompt block. Loading a catalog never inserts every skill into every
-agent prompt, and skill text is instructional data, not executable code.
+agent receives a native `SkillIndex` containing only its selected skills.
+
+Two disclosure modes exist:
+
+```toml
+[skills]
+disclosure = "inherit"      # default: eager selection/injection
+max_instruction_chars = 8000
+max_resource_chars = 16000
+```
+
+- `inherit` keeps `LlmAgentBuilder::with_skills`: the pinned selector chooses
+  the relevant skill for each user turn and injects that prompt block.
+- `progressive` is available only when the package declares
+  `Worker::progressive_skills()`. The agent receives `list_skills` (names and
+  descriptions), `load_skill` (one body), and `load_skill_resource` (one file
+  under `references/`, `assets/`, or `scripts/`). Bodies are never injected up
+  front.
+
+Pinned gap: `adk_skill::SkillToolset` records activation in session state, but
+the Runner's `ToolContext::state()` returns `None` in ADK 2.3.0, so native L3
+always rejects an activated skill. The runtime adapter uses the pinned
+`adk_skill::build_skill_system_instruction` and `SkillIndex` but reads the
+immutable index directly. It never adds a tool: `allowed-tools` is validated
+against tools already bound to that agent. Scripts are readable resources only;
+they are never executed by the skill surface. To run one, the model must call
+the ordinary sandboxed command tool under its normal approval policy.
+
+`commands/*.toml` files define Worker slash commands and are loaded only from
+the operator-selected `paths.commands` directory. The file stem is the command
+name; subdirectories use Gemini-style namespacing (`review/security.toml` becomes
+`review:security`). Unknown fields, duplicate names, malformed placeholders, and
+`!{...}` shell interpolation fail startup.
+
+```toml
+description = "Summarize a topic"
+prompt = "Summarize {{args}} for an operator audience."
+allowed_tools = ["read_file"]
+model = "fast"                 # must be a model the Worker already declares
+agent = "general"              # must be a loaded (file-defined) agent
+
+[[arguments]]
+name = "audience"
+default = "operator"
+```
+
+Declared arguments are parsed as `--name value` or `--name=value`. Missing,
+unknown, duplicate, positional, and unclosed-quote inputs fail with
+`command.*` errors before task admission. A command may only narrow the target
+agent: `allowed_tools` must be a subset of the tools that agent already binds,
+and the command model must be a model already declared by an agent or the
+default model. A command with `allowed_tools` drops dynamic toolsets, MCP
+servers, and skill binding because those surfaces cannot be proven narrower.
 
 Asset files must resolve inside their configured directory. A prompt, agent, or
 `SKILL.md` symlink that escapes the configured root fails `asset.path_denied`
@@ -820,7 +870,11 @@ Known gaps:
 - Enhanced plugins (`adk_agent::LlmAgentBuilder::enhanced_plugin`) are not used;
   they overlap the per-agent callback surface and are not needed for this slice.
 - Skill binding uses the pinned native `SkillIndex`/`LlmAgentBuilder::with_skills`
-  selection path. A filesystem watcher is not installed; operators explicitly
-  validate and activate a candidate with `reload`/SIGHUP.
+  selection path, or `adk_skill::build_skill_system_instruction` with a bounded
+  runtime L1/L2/L3 adapter when the package and operator select progressive
+  disclosure. `adk_skill::SkillToolset` activation checks cannot be used because
+  the Runner's `ToolContext::state()` is `None`; that gap is documented above.
+  A filesystem watcher is not installed; operators explicitly validate and
+  activate a candidate with `reload`/SIGHUP.
 - `before_task` runs after durable admission, so a rejected task has a durable
   `failed` record rather than disappearing.
