@@ -1,3 +1,4 @@
+import { IDBFactory } from "fake-indexeddb"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it } from "vitest"
@@ -5,6 +6,16 @@ import { afterEach, describe, expect, it } from "vitest"
 import { App } from "@/App"
 import { ChatView } from "@/features/chat/chat-view"
 import type { ChatGateway, ChatStream } from "@/features/chat/chat-runner"
+import {
+  createInitialChatState,
+  type ChatState,
+} from "@/features/chat/chat-types"
+import {
+  createChatHistory,
+  createChatSnapshot,
+  LocalHistoryError,
+  type ChatHistoryStore,
+} from "@/features/chat/local-chat-history"
 import {
   createConnectionStore,
   type ConnectionStore,
@@ -18,6 +29,7 @@ import {
   type GatewaySubmitResponse,
   type GatewayTask,
   type StreamEvent,
+  type StreamPage,
   type WorkerSummary,
 } from "@goldenbee/sdk"
 
@@ -126,6 +138,7 @@ class TestStream implements ChatStream {
 class ChatGatewayDouble implements ChatGateway {
   submits: GatewaySubmitRequest[] = []
   watches: Array<{ taskId: string; after: number }> = []
+  taskCalls: string[] = []
   cancels: string[] = []
   streams: StreamEvent[][] = []
   submitError: GatewayError | null = null
@@ -179,6 +192,34 @@ class ChatGatewayDouble implements ChatGateway {
         },
       },
     )
+  }
+
+  task(taskId: string): Promise<GatewayTask> {
+    this.taskCalls.push(taskId)
+    return Promise.resolve({
+      task_id: taskId,
+      worker: "general-a",
+      worker_instance: "general-a",
+      connectivity: "online",
+      task: {
+        id: "worker-task",
+        namespace: "local",
+        caller: "operator",
+        agent: "general",
+        session_id: "chat-test",
+        state: "running",
+      },
+    })
+  }
+
+  events(taskId: string, after = 0): Promise<StreamPage> {
+    return Promise.resolve({
+      stream_id: `task:${taskId}`,
+      events: [],
+      next_seq: after,
+      oldest_seq: 1,
+      cursor_expired: false,
+    })
   }
 }
 
@@ -304,6 +345,110 @@ describe("chat view", () => {
 
     expect(await screen.findByText("Task cancelled")).toBeInTheDocument()
     expect(gateway.cancels).toEqual(["exec-1"])
+  })
+
+  it("restores the last chat, reconciles the active task, then enables input", async () => {
+    const history = createChatHistory({
+      factory: new IDBFactory(),
+      databaseName: "view-restore",
+    })
+    const state: ChatState = {
+      ...createInitialChatState("chat-restored"),
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          createdAt: 1,
+          parts: [{ type: "text", text: "restore me", streaming: false }],
+          selection: { worker: "general-a", agent: "general", profile: "default" },
+        },
+        {
+          id: "assistant-1",
+          role: "assistant",
+          createdAt: 2,
+          replyTo: "user-1",
+          taskId: "exec-restored",
+          parts: [
+            { type: "task", state: "running", attempt: 1 },
+            { type: "text", text: "restored answer", streaming: false },
+          ],
+        },
+      ],
+      status: "streaming",
+      activeTaskId: "exec-restored",
+      activeAssistantId: "assistant-1",
+      lastSeq: 9,
+      lastDurableSeq: 6,
+    }
+    await history.saveChat(
+      createChatSnapshot({
+        chatId: "chat-restored",
+        state,
+        selection: { worker: "general-a", agent: "general", profile: "default" },
+      }),
+    )
+    const gateway = new ChatGatewayDouble()
+    gateway.streams = [
+      [
+        event(7, "task.succeeded", {
+          state: "succeeded",
+          output: "restored answer",
+        }),
+      ],
+    ]
+    render(
+      <ChatView store={connectedStore()} history={history} client={gateway} />,
+    )
+
+    expect(await screen.findByText("restored answer")).toBeInTheDocument()
+    expect(await screen.findByText("restore me")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(gateway.taskCalls).toEqual(["exec-restored"])
+      expect(gateway.watches[0]).toMatchObject({
+        taskId: "exec-restored",
+        after: 6,
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled()
+    })
+    await history.close()
+  })
+
+  it("fails closed on corrupt history and recovers through reset local history", async () => {
+    let reset = false
+    const history: ChatHistoryStore = {
+      loadLastChat: async () => {
+        throw new LocalHistoryError(
+          "corrupt",
+          "The local chat database contains an unreadable record.",
+        )
+      },
+      reset: async () => {
+        reset = true
+      },
+      saveChat: async () => undefined,
+      saveSelection: async () => undefined,
+      loadChat: async () => null,
+      loadSelection: async () => null,
+      listChats: async () => [],
+      close: () => undefined,
+    }
+    const user = userEvent.setup()
+    render(<ChatView store={connectedStore()} history={history} />)
+
+    expect(
+      await screen.findByText("Local chat history could not be read"),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText("Message")).toBeDisabled()
+
+    await user.click(screen.getByRole("button", { name: "Reset local history" }))
+
+    expect(reset).toBe(true)
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message")).not.toBeDisabled()
+    })
+    expect(screen.getByText("Start a task")).toBeInTheDocument()
   })
 })
 

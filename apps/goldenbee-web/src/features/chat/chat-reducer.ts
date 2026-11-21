@@ -51,6 +51,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         lastSeq: 0,
         lastDurableSeq: 0,
         gap: null,
+        recovery: null,
       }
     }
 
@@ -65,6 +66,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         activeAssistantId: action.assistantMessageId,
         lastSeq: 0,
         lastDurableSeq: 0,
+        recovery: null,
       }
     }
 
@@ -206,6 +208,112 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
     }
 
+    case "task-projection": {
+      const projection = action.task.task
+      const next = messageWithParts(state, action.assistantMessageId, (message) => {
+        let updated = ensureTaskPart(
+          message,
+          projection.state,
+          projection.attempt ?? taskPart(message)?.attempt ?? 1,
+        )
+        updated = updateTaskPart(updated, (current) => ({
+          ...current,
+          state: projection.state,
+          attempt: projection.attempt ?? current.attempt,
+          output: projection.output ?? current.output,
+          error: projection.error ?? current.error,
+          uncertainty: projection.uncertainty ?? current.uncertainty,
+          usage: projection.usage ?? current.usage,
+        }))
+        return projection.output
+          ? reconcileOutput(updated, projection.output)
+          : updated
+      })
+      const status = statusForState(projection.state)
+      return {
+        ...next,
+        status,
+        activeTaskId: isTerminalStatus(status) ? null : action.task.task_id,
+        recovery: {
+          kind: "reconnected",
+          taskId: action.task.task_id,
+          detail: "The task was reconciled with the Gateway after reload.",
+        },
+      }
+    }
+
+    case "task-detached": {
+      const message = action.assistantMessageId
+        ? state.messages.find((candidate) => candidate.id === action.assistantMessageId)
+        : undefined
+      const next = message
+        ? messageWithParts(state, message.id, (current) =>
+            appendPart(current, {
+              type: "diagnostic",
+              eventKind: "history.detached",
+              detail: action.detail,
+            }),
+          )
+        : state
+      return {
+        ...next,
+        status: "failed",
+        activeTaskId: null,
+        recovery: {
+          kind: "detached",
+          taskId: action.taskId,
+          detail: action.detail,
+        },
+      }
+    }
+
+    case "recovery-failed": {
+      const message = action.assistantMessageId
+        ? state.messages.find((candidate) => candidate.id === action.assistantMessageId)
+        : undefined
+      const next = message
+        ? messageWithParts(state, message.id, (current) =>
+            appendPart(current, {
+              type: "error",
+              code: action.error.code,
+              message: action.error.message,
+              recovery: action.error.recovery,
+              retryable: action.error.retryable,
+              kind: "stream",
+            }),
+          )
+        : state
+      return {
+        ...next,
+        status: "failed",
+        activeTaskId: null,
+        recovery: {
+          kind: "failed",
+          taskId: action.taskId,
+          detail: action.error.message,
+        },
+      }
+    }
+
+    case "recovery-started":
+      return {
+        ...state,
+        status: "recovering",
+        activeTaskId: action.taskId,
+        recovery: {
+          kind: "reconciling",
+          taskId: action.taskId,
+          detail: "Reconciling the last task with the Gateway.",
+        },
+      }
+
+    case "cursor-reset":
+      return {
+        ...state,
+        lastSeq: 0,
+        lastDurableSeq: 0,
+      }
+
     case "stop-failed": {
       const next = messageWithParts(state, action.assistantMessageId, (message) =>
         appendPart(message, {
@@ -242,6 +350,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         lastSeq: 0,
         lastDurableSeq: 0,
         gap: null,
+        recovery: null,
       }
     }
 
