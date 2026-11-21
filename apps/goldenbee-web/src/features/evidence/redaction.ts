@@ -15,7 +15,7 @@ const sensitiveKey =
   /secret|token|passw|credential|authorization|cookie|api[-_]?key|private[-_]?key|bearer|session[-_]?key/i
 
 const pathPattern =
-  /(^|[\s"'(=:[,])((?:\/(?:home|Users|root|var|tmp|etc|opt|srv|mnt|private|proc|sys|usr|run|Volumes)\b)[^\s"'()[\],;]*)/g
+  /(^|[\s"'(=:[,])((?:\/(?:home|Users|root|var|tmp|etc|opt|srv|mnt|media|private|proc|sys|usr|run|Volumes|workspace|data|app|build|logs|kube)\b)[^\s"'()[\],;]*)/g
 const windowsPathPattern =
   /(^|[\s"'(=:[,])([A-Za-z]:\\[^\s"'()[\],;]*)/g
 const bearerPattern =
