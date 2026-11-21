@@ -487,6 +487,7 @@ impl Worker {
                                 }
                             }),
                             secret_refs: secret_refs.clone(),
+                            reasoning: None,
                             created_at: 0,
                         })
                     };

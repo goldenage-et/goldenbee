@@ -55,8 +55,8 @@ pub use execution::operations::{
     EffectRecovery, EffectStatus, EffectTerminal, OperationView,
 };
 pub use execution::providers::{
-    EnvironmentSecrets, MemorySecrets, ProviderRegistry, ProviderRequirements, ProviderView,
-    SecretSource,
+    adapter_applies_reasoning, EnvironmentSecrets, FallbackDecision, MemorySecrets,
+    ProviderRegistry, ProviderRequirements, ProviderView, SecretSource,
 };
 pub use execution::{ExecutionOutcome, Executor};
 pub use master::{
@@ -101,8 +101,8 @@ pub mod native {
     };
     pub use crate::execution::profile::ProfileAgentBuilder;
     pub use crate::execution::providers::{
-        EnvironmentSecrets, MemorySecrets, ProviderRegistry, ProviderRequirements, ProviderView,
-        SecretSource,
+        adapter_applies_reasoning, EnvironmentSecrets, FallbackDecision, MemorySecrets,
+        ProviderRegistry, ProviderRequirements, ProviderView, SecretSource,
     };
     pub use crate::execution::runner::{decode_native_user_id, native_user_id, NativeExecutor};
     pub use crate::process::{

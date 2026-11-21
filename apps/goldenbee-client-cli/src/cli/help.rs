@@ -50,7 +50,7 @@ pub(crate) fn help() {
          team validate|activate|deactivate <name> [--version <n>] [--json]\n  \
          profile list --worker <id> [--json]\n  \
          profile show <name> --worker <id> [--json]\n  \
-         profile create <name> --worker <id> --instruction <text> [--model <id>] [--capability <id>]... [--grant <scope>]... [--restriction <scope>]... [--composition <kind>] [--member <agent>]... [--skill <name>]... [--mcp <connection>]... [--secret-ref <reference>]... [--compaction-budget <tokens>] [--json]\n  \
+         profile create <name> --worker <id> --instruction <text> [--model <id>] [--capability <id>]... [--grant <scope>]... [--restriction <scope>]... [--composition <kind>] [--member <agent>]... [--skill <name>]... [--mcp <connection>]... [--secret-ref <reference>]... [--compaction-budget <tokens>] [--reasoning <level>] [--json]\n  \
          profile revise <name> --worker <id> --expected <n> --instruction <text> [profile options] [--json]\n  \
          profile validate <name> --worker <id> [--revision <n>] [--json]\n  \
          profile activate <name> --worker <id> --revision <n> [--json]\n  \

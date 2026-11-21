@@ -108,6 +108,8 @@ pub struct ManualAgentDefinition {
     pub description: String,
     /// Logical provider reference resolved at startup and reload.
     pub model: String,
+    /// Reasoning effort applied through the selected provider adapter.
+    pub reasoning: Option<common::ReasoningLevel>,
     /// Number of tools the factory binds, used for provider preflight.
     pub tools: usize,
     /// Native agent factory.
@@ -283,6 +285,45 @@ impl Worker {
                 ManualAgent::Defined(ManualAgentDefinition {
                     description: description.into(),
                     model: model.into(),
+                    reasoning: None,
+                    tools,
+                    build: ManualAgentBuild::Model(Arc::new(factory)),
+                }),
+            )
+            .is_some();
+        if duplicate_graph || duplicate_agent {
+            self.duplicate_ids.insert(id);
+        }
+        self
+    }
+
+    /// Register a model-resolved agent with an explicit reasoning level.
+    ///
+    /// The level is validated against the selected provider's declared
+    /// `reasoning_levels` during startup. An unsupported level fails before the
+    /// Worker serves.
+    pub fn model_agent_with_reasoning(
+        mut self,
+        id: impl Into<String>,
+        description: impl Into<String>,
+        model: impl Into<String>,
+        reasoning: common::ReasoningLevel,
+        tools: usize,
+        factory: impl Fn(Arc<dyn Llm>) -> std::result::Result<Arc<dyn Agent>, String>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        let id = id.into();
+        let duplicate_graph = self.graphs.contains_key(&id);
+        let duplicate_agent = self
+            .manual_agents
+            .insert(
+                id.clone(),
+                ManualAgent::Defined(ManualAgentDefinition {
+                    description: description.into(),
+                    model: model.into(),
+                    reasoning: Some(reasoning),
                     tools,
                     build: ManualAgentBuild::Model(Arc::new(factory)),
                 }),
@@ -319,6 +360,7 @@ impl Worker {
                 ManualAgent::Defined(ManualAgentDefinition {
                     description: description.into(),
                     model: model.into(),
+                    reasoning: None,
                     tools,
                     build: ManualAgentBuild::WithSettings(Arc::new(factory)),
                 }),

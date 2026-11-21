@@ -22,6 +22,7 @@ pub mod host;
 pub mod identity;
 pub mod limits;
 pub mod memory;
+pub mod model;
 pub mod package;
 pub mod plan;
 pub mod profile;
@@ -79,6 +80,7 @@ pub use host::{
 pub use identity::{scopes, Principal};
 pub use limits::{Capacity, Limits, Usage};
 pub use memory::{KnowledgeFact, MemoryItem};
+pub use model::ReasoningLevel;
 pub use package::{
     protocol_in_range, BuildEvidence, Instance, PackageManifest, Release, ReleaseMetadata,
     SeedAsset, RELEASE_METADATA_SCHEMA,

@@ -162,6 +162,11 @@
             "residency": { "type": "string" },
             "endpoint": { "type": ["string", "null"] },
             "credential": { "type": ["string", "null"] },
+            "max_output_tokens": { "type": ["integer", "null"], "minimum": 1 },
+            "reasoning": {
+              "type": ["string", "null"],
+              "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", null]
+            },
             "profile_revision": { "type": "integer", "minimum": 1 }
           }
         },

@@ -49,6 +49,7 @@ fn revision(limits: Limits) -> ProfileRevision {
         limits,
         compaction: None,
         secret_refs: Vec::new(),
+        reasoning: None,
         created_at: 0,
     }
 }
