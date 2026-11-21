@@ -10,6 +10,10 @@ export type AppRoute =
   | { name: "providers" }
   | { name: "provider"; id: string }
   | { name: "task"; taskId: string }
+  | { name: "teams" }
+  | { name: "team"; team: string }
+  | { name: "profiles"; worker?: string }
+  | { name: "profile"; worker: string; profile: string }
 
 /**
  * Hash routing keeps the static build free of a server route handler.
@@ -22,7 +26,7 @@ export function parseRoute(hash: string): AppRoute {
   if (raw.length === 0) {
     return { name: "overview" }
   }
-  const [section, id] = raw.split("/")
+  const [section, id, sub] = raw.split("/")
   if (section === "chat") {
     return { name: "chat" }
   }
@@ -42,6 +46,18 @@ export function parseRoute(hash: string): AppRoute {
   }
   if (section === "tasks" && id) {
     return { name: "task", taskId: decodeURIComponent(id) }
+  }
+  if (section === "teams") {
+    return id ? { name: "team", team: decodeURIComponent(id) } : { name: "teams" }
+  }
+  if (section === "profiles") {
+    if (!id) {
+      return { name: "profiles" }
+    }
+    const worker = decodeURIComponent(id)
+    return sub
+      ? { name: "profile", worker, profile: decodeURIComponent(sub) }
+      : { name: "profiles", worker }
   }
   return { name: "overview" }
 }
@@ -66,6 +82,16 @@ export function routeHref(route: AppRoute): string {
       return `#/providers/${encodeURIComponent(route.id)}`
     case "task":
       return `#/tasks/${encodeURIComponent(route.taskId)}`
+    case "teams":
+      return "#/teams"
+    case "team":
+      return `#/teams/${encodeURIComponent(route.team)}`
+    case "profiles":
+      return route.worker
+        ? `#/profiles/${encodeURIComponent(route.worker)}`
+        : "#/profiles"
+    case "profile":
+      return `#/profiles/${encodeURIComponent(route.worker)}/${encodeURIComponent(route.profile)}`
   }
 }
 
