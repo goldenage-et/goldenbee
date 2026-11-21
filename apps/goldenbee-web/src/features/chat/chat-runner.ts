@@ -6,6 +6,7 @@ import {
   type GatewaySubmitResponse,
   type GatewayTask,
   type StreamEvent,
+  type StreamPage,
 } from "@goldenbee/sdk"
 
 import type {
@@ -25,6 +26,13 @@ export interface ChatGateway {
     request: GatewaySubmitRequest,
     options?: GatewayRequestOptions,
   ): Promise<GatewaySubmitResponse>
+  task(taskId: string, options?: GatewayRequestOptions): Promise<GatewayTask>
+  events(
+    taskId: string,
+    after?: number,
+    limit?: number,
+    options?: GatewayRequestOptions,
+  ): Promise<StreamPage>
   watch(
     taskId: string,
     after?: number,
@@ -51,6 +59,13 @@ export interface RunTaskInput {
   selection: ChatSelection
   assistantMessageId: string
   idempotencyKey: string
+}
+
+export interface ResumeTaskInput {
+  taskId: string
+  assistantMessageId: string
+  /** Last durable sequence saved before the reload. */
+  after: number
 }
 
 const terminalKinds = new Set([
@@ -226,6 +241,30 @@ export class ChatRunner {
     await this.stream(response.task_id, input.assistantMessageId, controller.signal)
   }
 
+  /**
+   * Reconnect one task that was active before a reload.
+   *
+   * The caller has already reconciled the canonical task projection. The stream
+   * always starts at the saved durable cursor; an ephemeral delta sequence is
+   * never accepted across a reload.
+   */
+  async resumeTask(input: ResumeTaskInput): Promise<void> {
+    this.abortActive()
+    if (this.disposed) {
+      return
+    }
+    const controller = new AbortController()
+    this.controller = controller
+    this.taskId = input.taskId
+    this.assistantId = input.assistantMessageId
+    await this.stream(
+      input.taskId,
+      input.assistantMessageId,
+      controller.signal,
+      Math.max(0, input.after),
+    )
+  }
+
   /** Send the Gateway cancellation request and report the returned projection. */
   async stop(): Promise<void> {
     const taskId = this.taskId
@@ -295,9 +334,11 @@ export class ChatRunner {
     taskId: string,
     assistantMessageId: string,
     signal: AbortSignal,
+    initialAfter = 0,
   ): Promise<void> {
-    let after = 0
+    let after = Math.max(0, initialAfter)
     let attempt = 0
+    let gapRecoveries = 0
 
     while (!signal.aborted && !this.disposed) {
       let stream: ChatStream
@@ -307,15 +348,36 @@ export class ChatRunner {
         if (signal.aborted || this.disposed) {
           return
         }
-        if (isGatewayError(cause) && cause.isCursorExpired) {
-          this.dispatch({ type: "gap", reason: "cursor_expired", fromSeq: after })
-          this.finish()
-          return
-        }
-        if (isGatewayError(cause) && cause.kind === "cursor-invalid") {
-          this.dispatch({ type: "gap", reason: "cursor_invalid", fromSeq: after })
-          this.finish()
-          return
+        if (isCursorGap(cause)) {
+          if (gapRecoveries >= 2) {
+            this.dispatch({
+              type: "stream-error",
+              assistantMessageId,
+              error: {
+                code: "sdk.cursor_recovery_failed",
+                message:
+                  "The saved event cursor could not be reconciled with the Gateway.",
+                recovery: "Inspect the task on the Gateway or reset local history.",
+                retryable: false,
+              },
+            })
+            this.finish()
+            return
+          }
+          gapRecoveries += 1
+          const resumed = await this.reloadFromGap(
+            taskId,
+            assistantMessageId,
+            signal,
+            after,
+            cause,
+          )
+          if (resumed === null) {
+            return
+          }
+          after = resumed
+          attempt = 0
+          continue
         }
         if (!isRetryable(cause) || attempt >= this.maxReconnectAttempts) {
           this.dispatch({
@@ -367,15 +429,36 @@ export class ChatRunner {
         if (signal.aborted || this.disposed) {
           return
         }
-        if (isGatewayError(cause) && cause.isCursorExpired) {
-          this.dispatch({ type: "gap", reason: "cursor_expired", fromSeq: after })
-          this.finish()
-          return
-        }
-        if (isGatewayError(cause) && cause.kind === "cursor-invalid") {
-          this.dispatch({ type: "gap", reason: "cursor_invalid", fromSeq: after })
-          this.finish()
-          return
+        if (isCursorGap(cause)) {
+          if (gapRecoveries >= 2) {
+            this.dispatch({
+              type: "stream-error",
+              assistantMessageId,
+              error: {
+                code: "sdk.cursor_recovery_failed",
+                message:
+                  "The saved event cursor could not be reconciled with the Gateway.",
+                recovery: "Inspect the task on the Gateway or reset local history.",
+                retryable: false,
+              },
+            })
+            this.finish()
+            return
+          }
+          gapRecoveries += 1
+          const resumed = await this.reloadFromGap(
+            taskId,
+            assistantMessageId,
+            signal,
+            after,
+            cause,
+          )
+          if (resumed === null) {
+            return
+          }
+          after = resumed
+          attempt = 0
+          continue
         }
         if (!isRetryable(cause) || attempt >= this.maxReconnectAttempts) {
           this.dispatch({
@@ -419,6 +502,102 @@ export class ChatRunner {
       }
     }
   }
+
+  /**
+   * Recover a cursor that fell outside retention.
+   *
+   * The replay is explicitly incomplete: the UI keeps the gap notice, the
+   * canonical task projection replaces local truth, and retained events repopulate
+   * tool and approval identity. The stream then resumes at `next_seq`.
+   */
+  private async reloadFromGap(
+    taskId: string,
+    assistantMessageId: string,
+    signal: AbortSignal,
+    fromSeq: number,
+    cause: unknown,
+  ): Promise<number | null> {
+    const expired = isGatewayError(cause) && cause.isCursorExpired
+    this.dispatch({
+      type: "gap",
+      reason: expired ? "cursor_expired" : "cursor_invalid",
+      fromSeq,
+    })
+
+    let task: GatewayTask
+    try {
+      task = await this.client.task(taskId, { signal })
+    } catch (failure) {
+      if (signal.aborted || this.disposed) {
+        return null
+      }
+      if (isGatewayError(failure) && failure.kind === "not-found") {
+        this.dispatch({
+          type: "task-detached",
+          assistantMessageId,
+          taskId,
+          detail:
+            "The Gateway no longer exposes this task. Local history is kept, but the task cannot be resumed.",
+        })
+        this.finish()
+        return null
+      }
+      this.dispatch({
+        type: "stream-error",
+        assistantMessageId,
+        error: errorInfo(failure),
+      })
+      this.finish()
+      return null
+    }
+
+    this.dispatch({ type: "task-projection", assistantMessageId, task })
+    if (isTerminalState(task)) {
+      this.finish()
+      return null
+    }
+
+    // The retained page may start after the beginning of history. Reset the
+    // in-memory cursor before applying it so retained task/tool/approval events
+    // are not mistaken for duplicates of the expired cursor.
+    this.dispatch({ type: "cursor-reset" })
+
+    let after = 0
+    try {
+      const page = await this.client.events(taskId, 0, undefined, { signal })
+      for (const event of page.events) {
+        this.dispatch({ type: "event", assistantMessageId, event })
+        if (terminalKinds.has(event.kind)) {
+          this.finish()
+          return null
+        }
+        if (event.durable) {
+          after = Math.max(after, event.seq)
+        }
+      }
+      after = Math.max(after, page.next_seq)
+    } catch (failure) {
+      if (signal.aborted || this.disposed) {
+        return null
+      }
+      this.dispatch({
+        type: "stream-error",
+        assistantMessageId,
+        error: errorInfo(failure),
+      })
+      this.finish()
+      return null
+    }
+
+    return after
+  }
+}
+
+function isCursorGap(cause: unknown): boolean {
+  return (
+    isGatewayError(cause) &&
+    (cause.isCursorExpired || cause.kind === "cursor-invalid")
+  )
 }
 
 function isTerminalState(task: GatewayTask): boolean {

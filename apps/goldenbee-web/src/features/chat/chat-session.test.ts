@@ -11,6 +11,7 @@ import {
   type GatewaySubmitResponse,
   type GatewayTask,
   type StreamEvent,
+  type StreamPage,
 } from "@goldenbee/sdk"
 
 const selection: ChatSelection = {
@@ -117,6 +118,33 @@ class FakeGateway implements ChatGateway {
     const events = this.streams.shift() ?? []
     const holdOpen = events.length === 0
     return Promise.resolve(new FakeStream(events, options?.signal, holdOpen))
+  }
+
+  task(taskId: string): Promise<GatewayTask> {
+    return Promise.resolve({
+      task_id: taskId,
+      worker: "general-a",
+      worker_instance: "general-a",
+      connectivity: "online",
+      task: {
+        id: "worker-task",
+        namespace: "local",
+        caller: "operator",
+        agent: "general",
+        session_id: "chat-test",
+        state: "running",
+      },
+    })
+  }
+
+  events(taskId: string, after = 0): Promise<StreamPage> {
+    return Promise.resolve({
+      stream_id: `task:${taskId}`,
+      events: [],
+      next_seq: after,
+      oldest_seq: 1,
+      cursor_expired: false,
+    })
   }
 
   cancel(taskId: string): Promise<GatewayTask> {

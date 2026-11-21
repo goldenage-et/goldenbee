@@ -172,6 +172,19 @@ export interface ChatStreamGap {
   fromSeq: number
 }
 
+export type ChatRecoveryKind =
+  | "reconciling"
+  | "reconnected"
+  | "detached"
+  | "failed"
+
+/** Reload-time reconciliation of a task that outlived the browser session. */
+export interface ChatRecoveryNotice {
+  kind: ChatRecoveryKind
+  taskId: string
+  detail?: string
+}
+
 export interface ChatState {
   sessionId: string
   messages: ChatMessage[]
@@ -183,6 +196,7 @@ export interface ChatState {
   /** Highest durable sequence; the only cursor a reconnect may use. */
   lastDurableSeq: number
   gap: ChatStreamGap | null
+  recovery: ChatRecoveryNotice | null
 }
 
 /** Plain error data accepted by the reducer, independent of transport types. */
@@ -253,6 +267,25 @@ export type ChatAction =
       assistantMessageId: string
       idempotencyKey: string
     }
+  | { type: "recovery-started"; taskId: string }
+  | {
+      type: "task-projection"
+      assistantMessageId: string
+      task: GatewayTask
+    }
+  | {
+      type: "task-detached"
+      assistantMessageId: string | null
+      taskId: string
+      detail: string
+    }
+  | {
+      type: "recovery-failed"
+      assistantMessageId: string | null
+      taskId: string
+      error: ChatErrorInfo
+    }
+  | { type: "cursor-reset" }
   | { type: "reset"; sessionId: string }
 
 export function createInitialChatState(sessionId: string): ChatState {
@@ -265,5 +298,6 @@ export function createInitialChatState(sessionId: string): ChatState {
     lastSeq: 0,
     lastDurableSeq: 0,
     gap: null,
+    recovery: null,
   }
 }
