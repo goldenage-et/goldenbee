@@ -1,9 +1,8 @@
 import { useMemo, useState } from "react"
 
 import { useAppRoute } from "@/app/router"
-import { AppShell } from "@/components/shell/app-shell"
-import { AppNav } from "@/components/shell/app-nav"
-import { ChatView } from "@/features/chat/chat-view"
+import { CommandCenterShell } from "@/components/shell/command-center-shell"
+import { AttentionView } from "@/features/attention/attention-view"
 import {
   browserChatHistory,
   type ChatHistoryStore,
@@ -24,6 +23,19 @@ import {
   type ProviderClientFactory,
 } from "@/features/providers/provider-gateway"
 import { ProvidersScreen } from "@/features/providers/providers-screen"
+import {
+  clientSettingsStore,
+  type ClientSettingsStore,
+} from "@/features/workspace/client-settings"
+import {
+  gatewayProfilesStore,
+  type GatewayProfilesStore,
+} from "@/features/workspace/gateway-profiles"
+import { useWorkspaceController } from "@/features/workspace/use-workspace-controller"
+import {
+  workspaceStore,
+  type WorkspaceStore,
+} from "@/features/workspace/workspace-store"
 import { createGatewayClient } from "@goldenbee/sdk"
 
 export interface AppProps {
@@ -32,6 +44,12 @@ export interface AppProps {
   history?: ChatHistoryStore | null
   /** Test seam; production uses the browser Gateway client. */
   createProviderClient?: ProviderClientFactory
+  /** Local session layout; one record set per browser profile. */
+  workspace?: WorkspaceStore
+  /** Local presentation preferences. */
+  preferences?: ClientSettingsStore
+  /** Local Gateway address profiles (URL/name only). */
+  profiles?: GatewayProfilesStore
 }
 
 const defaultChatHistory = browserChatHistory()
@@ -40,6 +58,9 @@ export function App({
   store = connectionStore,
   history = defaultChatHistory,
   createProviderClient,
+  workspace = workspaceStore,
+  preferences = clientSettingsStore,
+  profiles = gatewayProfilesStore,
 }: AppProps) {
   const connected = useConnection((state) => state.status === "connected", store)
   const gatewayUrl = useConnection((state) => state.gatewayUrl, store)
@@ -48,6 +69,13 @@ export function App({
   const [factory] = useState<ProviderClientFactory>(
     () => createProviderClient ?? createProviderGatewayClient,
   )
+
+  const controller = useWorkspaceController({
+    workspace,
+    history,
+    connected,
+    route,
+  })
 
   const providerClient = useMemo(
     () => (connected ? factory({ baseUrl: gatewayUrl, token }) : null),
@@ -69,7 +97,9 @@ export function App({
   function connectedContent() {
     switch (route.name) {
       case "chat":
-        return <ChatView store={store} history={history} />
+        return null
+      case "attention":
+        return <AttentionView />
       case "packages":
         return hostClient ? <PackagesPage client={hostClient} /> : null
       case "instances":
@@ -90,9 +120,17 @@ export function App({
   }
 
   return (
-    <AppShell store={store} nav={connected ? <AppNav /> : undefined}>
+    <CommandCenterShell
+      store={store}
+      route={route}
+      connected={connected}
+      history={history}
+      controller={controller}
+      profiles={profiles}
+      settings={preferences}
+    >
       {connected ? connectedContent() : <ConnectionScreen store={store} />}
-    </AppShell>
+    </CommandCenterShell>
   )
 }
 

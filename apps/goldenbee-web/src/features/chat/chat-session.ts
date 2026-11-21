@@ -26,6 +26,8 @@ export interface ChatSessionOptions {
   chatId?: string
   /** Restored state from IndexedDB; omitted for a fresh chat. */
   initialState?: ChatState
+  /** Restored local title; kept until the next user turn names the chat. */
+  initialTitle?: string
   /** Restored non-secret selection. */
   initialSelection?: ChatSelection | null
   history?: ChatHistoryStore
@@ -134,6 +136,7 @@ export function createChatSession(options: ChatSessionOptions): ChatSession {
 
   let chatId = options.chatId ?? createChatId()
   let chatCreatedAt = now()
+  let restoredTitle = options.initialTitle
   let selection = initialSelection
   let state =
     options.initialState ??
@@ -152,6 +155,9 @@ export function createChatSession(options: ChatSessionOptions): ChatSession {
       state,
       selection,
       createdAt: chatCreatedAt,
+      title: state.messages.some((message) => message.role === "user")
+        ? undefined
+        : restoredTitle,
       now,
     })
     writeQueue = writeQueue
@@ -385,6 +391,7 @@ export function createChatSession(options: ChatSessionOptions): ChatSession {
       runner?.dispose()
       chatId = createChatId()
       chatCreatedAt = now()
+      restoredTitle = undefined
       state = createInitialChatState(createSessionId())
       runner = createRunner()
       for (const listener of listeners) {

@@ -26,7 +26,7 @@ export type ChatSessionView = ChatSession & {
  * then reports `ready`; input stays disabled while `loading` or `recovering`.
  */
 export function useChat(options: ChatSessionOptions): ChatSessionView {
-  const { client, sessionId, history } = options
+  const { client, sessionId, history, chatId } = options
   const optionsRef = useRef(options)
   const generation = useRef(0)
 
@@ -68,8 +68,14 @@ export function useChat(options: ChatSessionOptions): ChatSessionView {
     setRestoredSelection(null)
     let cancelled = false
 
-    void history
-      .loadLastChat()
+    // A controlled workspace chat has an explicit local id. Loading by id keeps
+    // every tab bound to its own record instead of whichever chat was saved
+    // last, and preserves the ticket 06 reconcile path.
+    const restore = chatId
+      ? history.loadChat(chatId)
+      : history.loadLastChat()
+
+    void restore
       .then((restored) => {
         if (cancelled || generation.current !== attempt) {
           return
@@ -85,6 +91,7 @@ export function useChat(options: ChatSessionOptions): ChatSessionView {
           chatId: restored.chat.id,
           initialState: restored.state,
           initialSelection: restored.selection,
+          initialTitle: restored.chat.title,
         })
         setRestoredSelection(restored.selection)
         setSession(restoredSession)
@@ -110,7 +117,7 @@ export function useChat(options: ChatSessionOptions): ChatSessionView {
     return () => {
       cancelled = true
     }
-  }, [history, client, sessionId])
+  }, [history, client, sessionId, chatId])
 
   useEffect(() => () => session.detach(), [session])
 

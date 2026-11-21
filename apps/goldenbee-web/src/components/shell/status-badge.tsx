@@ -1,12 +1,10 @@
-import { CircleDashedIcon, LoaderCircleIcon } from "lucide-react"
-
 import { Badge } from "@/components/ui/badge"
+import { StatusDot, type StatusTone } from "@/components/shell/status-dot"
 import {
   useConnection,
   type ConnectionStatus,
   type ConnectionStore,
 } from "@/features/connection/connection-store"
-import { cn } from "@/lib/utils"
 
 const labels: Record<ConnectionStatus, string> = {
   idle: "Not connected",
@@ -19,35 +17,27 @@ const labels: Record<ConnectionStatus, string> = {
   invalid: "Check details",
 }
 
-const tones: Partial<Record<ConnectionStatus, string>> = {
-  connected: "border-emerald-600/20 bg-emerald-500/10 text-emerald-700",
-  unauthorized: "border-destructive/20 bg-destructive/10 text-destructive",
-  forbidden: "border-destructive/20 bg-destructive/10 text-destructive",
-  unreachable: "border-destructive/20 bg-destructive/10 text-destructive",
-  error: "border-destructive/20 bg-destructive/10 text-destructive",
+const tones: Record<ConnectionStatus, StatusTone> = {
+  idle: "dim",
+  connecting: "gold",
+  connected: "positive",
+  unauthorized: "danger",
+  forbidden: "danger",
+  unreachable: "danger",
+  error: "danger",
+  invalid: "danger",
 }
 
+/** Connection status in the compact dot-plus-text form. */
 export function StatusBadge({ store }: { store: ConnectionStore }) {
   const status = useConnection((state) => state.status, store)
-  const busy = status === "connecting"
-
   return (
     <Badge
       variant="outline"
-      className={cn("h-6 gap-1.5 rounded-full px-2.5", tones[status])}
+      className="h-5 gap-1 rounded-[7px] border-line px-1.5 text-micro text-muted-foreground"
       aria-live="polite"
     >
-      {busy ? (
-        <LoaderCircleIcon className="animate-spin" aria-hidden="true" />
-      ) : (
-        <CircleDashedIcon
-          className={cn(
-            status === "connected" && "fill-emerald-600 text-emerald-600",
-          )}
-          aria-hidden="true"
-        />
-      )}
-      {labels[status]}
+      <StatusDot tone={tones[status]}>{labels[status]}</StatusDot>
     </Badge>
   )
 }
