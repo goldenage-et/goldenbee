@@ -68,6 +68,14 @@ use tokio_util::sync::CancellationToken;
 pub type WorkerResult<T> = std::result::Result<T, ApiError>;
 
 type AgentFactoryFn = Arc<dyn Fn(&WorkerSettings) -> WorkerResult<Arc<dyn Agent>> + Send + Sync>;
+type SettingsToolFn = Arc<dyn Fn(&WorkerSettings) -> Arc<dyn Tool> + Send + Sync>;
+
+/// A compiled tool rebuilt from resolved instance settings at startup.
+struct SettingsTool {
+    id: String,
+    descriptor: ToolDescriptor,
+    build: SettingsToolFn,
+}
 
 /// A package-owned agent constructed from the resolved instance configuration.
 ///
@@ -140,6 +148,10 @@ pub struct Worker {
     pub(crate) toolsets: BTreeMap<String, Arc<dyn Toolset>>,
     /// One process-wide pipeline applied to every tool source.
     pub(crate) kernel: ToolKernel,
+    /// Tools whose instance policy is only known after configuration loads.
+    /// Their static registration keeps the capability inventory truthful; the
+    /// resolved tool replaces it before assets bind.
+    settings_tools: Vec<SettingsTool>,
     /// Package-declared generic file/search capabilities.
     builtin_tools: BTreeSet<BuiltinTool>,
     /// A package-registered tool declared a workspace file effect or paths.
@@ -179,6 +191,7 @@ impl Worker {
             tool_permissions: BTreeMap::new(),
             toolsets: BTreeMap::new(),
             kernel,
+            settings_tools: Vec::new(),
             builtin_tools: BTreeSet::new(),
             tool_workspace_required: false,
             effect_reconcilers: BTreeMap::new(),
@@ -494,6 +507,34 @@ impl Worker {
         self.kernel.clone()
     }
 
+    /// Rebuild one registered tool from resolved instance settings at startup.
+    ///
+    /// The package still registers the static tool first, so `manifest()` and
+    /// `capabilities` remain truthful before a configuration exists. At startup
+    /// the factory receives the loaded [`WorkerSettings`] and replaces that
+    /// registration; the descriptor keeps the kernel evidence accurate.
+    ///
+    /// The General package uses this for its contained command tool so the
+    /// operator's `[sandbox]` profile, network, command ceiling, proxy, and
+    /// process limits reach the OS boundary. Configuration can only narrow the
+    /// compiled package policy.
+    pub fn tool_with_settings<F>(
+        mut self,
+        id: impl Into<String>,
+        descriptor: ToolDescriptor,
+        factory: F,
+    ) -> Self
+    where
+        F: Fn(&WorkerSettings) -> Arc<dyn Tool> + Send + Sync + 'static,
+    {
+        self.settings_tools.push(SettingsTool {
+            id: id.into(),
+            descriptor,
+            build: Arc::new(factory),
+        });
+        self
+    }
+
     pub(crate) fn insert_registered(
         mut self,
         id: String,
@@ -668,6 +709,7 @@ impl Worker {
                     .map(|tool| tool.id().to_string())
                     .collect(),
                 permissions: settings.file.permissions.clone(),
+                sandbox: settings.file.sandbox.clone(),
             })
             .map_err(|error| {
                 ApiError::new(
@@ -678,6 +720,20 @@ impl Worker {
                     ),
                 )
             })?;
+        for entry in std::mem::take(&mut self.settings_tools) {
+            if !self.tools.contains_key(&entry.id) {
+                return Err(ApiError::new(
+                    "asset.tool_unresolved",
+                    format!(
+                        "settings-resolved tool '{}' has no static registration",
+                        entry.id
+                    ),
+                ));
+            }
+            let tool = (entry.build)(&settings);
+            let wrapped = self.kernel.wrap(tool, entry.descriptor);
+            self.tools.insert(entry.id, wrapped);
+        }
         if !self.builtin_tools.is_empty() {
             for (id, tool, permissions) in crate::tools::builtin::tools(&self.kernel) {
                 self = self.insert_registered(id, tool, permissions);

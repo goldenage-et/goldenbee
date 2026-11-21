@@ -1,6 +1,6 @@
 //! bubblewrap, prlimit, and process-group execution.
 
-use super::{ExecOutput, Sandbox, SandboxError};
+use super::{ExecOutput, Sandbox, SandboxError, SandboxProfile};
 use std::future::Future;
 use std::path::{Component, Path};
 use std::process::Stdio;
@@ -30,6 +30,10 @@ impl Sandbox {
     where
         F: Future<Output = ()>,
     {
+        self.policy
+            .rules()
+            .check_command(command)
+            .map_err(SandboxError::policy)?;
         let guest_dir = self.guest_working_dir(working_dir)?;
         let mut process = self.command(command, &guest_dir);
         let started = Instant::now();
@@ -51,11 +55,11 @@ impl Sandbox {
         let read = read_both(
             &mut stdout,
             &mut stderr,
-            self.policy.limits.max_output_bytes,
+            self.policy.limits().max_output_bytes,
         );
         tokio::pin!(read);
         tokio::pin!(cancel);
-        let deadline = tokio::time::sleep(self.policy.limits.timeout);
+        let deadline = tokio::time::sleep(self.policy.limits().timeout);
         tokio::pin!(deadline);
 
         enum Selected {
@@ -74,7 +78,7 @@ impl Sandbox {
                 if stdout_truncated || stderr_truncated {
                     self.terminate(&mut child, pid).await?;
                     return Err(SandboxError::output_limit(
-                        self.policy.limits.max_output_bytes,
+                        self.policy.limits().max_output_bytes,
                     ));
                 }
                 let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
@@ -133,17 +137,25 @@ impl Sandbox {
     }
 
     fn command(&self, command: &str, guest_dir: &str) -> Command {
+        let limits = self.policy.limits();
+        let rules = self.policy.rules();
         let mut process = Command::new(&self.policy.prlimit);
         process
-            .arg(format!("--cpu={}", self.policy.limits.cpu_seconds))
-            .arg(format!("--as={}", self.policy.limits.memory_bytes))
-            .arg(format!("--nproc={}", self.policy.limits.max_processes))
-            .arg(format!("--fsize={}", self.policy.limits.max_file_bytes))
-            .arg(format!("--nofile={}", self.policy.limits.max_open_files))
+            .arg(format!("--cpu={}", limits.cpu_seconds))
+            .arg(format!("--as={}", limits.memory_bytes))
+            .arg(format!("--nproc={}", limits.max_processes))
+            .arg(format!("--fsize={}", limits.max_file_bytes))
+            .arg(format!("--nofile={}", limits.max_open_files))
             .arg("--")
             .arg(&self.policy.bubblewrap)
             .arg("--unshare-all")
-            .arg("--unshare-user")
+            .arg("--unshare-user");
+        if rules.network.enabled {
+            // `--unshare-all` removes the network namespace; re-share it only
+            // for an explicitly network-enabled policy.
+            process.arg("--share-net");
+        }
+        process
             .arg("--uid")
             .arg(self.policy.uid.to_string())
             .arg("--gid")
@@ -157,16 +169,80 @@ impl Sandbox {
         for (key, value) in &self.policy.environment {
             process.arg("--setenv").arg(key).arg(value);
         }
+        if rules.network.enabled {
+            if let Some(proxy) = &rules.network.proxy {
+                for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+                    if !self.policy.environment.contains_key(key) {
+                        process.arg("--setenv").arg(key).arg(proxy);
+                    }
+                }
+                if !rules.network.proxy_bypass.is_empty()
+                    && !self.policy.environment.contains_key("NO_PROXY")
+                {
+                    process
+                        .arg("--setenv")
+                        .arg("NO_PROXY")
+                        .arg(rules.network.proxy_bypass.join(","));
+                }
+            }
+        }
         process.arg("--proc").arg("/proc");
         process.arg("--dev").arg("/dev");
         process.arg("--tmpfs").arg("/tmp");
         for mount in &self.policy.read_only_mounts {
             process.arg("--ro-bind").arg(mount).arg(mount);
         }
+        if rules.network.enabled {
+            // Resolver metadata is the only host `/etc` content needed for a
+            // network-enabled command. Never mount the whole directory.
+            for path in ["/etc/resolv.conf", "/etc/hosts"] {
+                let path = Path::new(path);
+                if path.exists() {
+                    process.arg("--ro-bind").arg(path).arg(path);
+                }
+            }
+        }
+        // The workspace mount expresses the filesystem profile. `read-only`
+        // keeps every declared path visible but unwritable; `workspace-write`
+        // exposes the whole workspace or only the authorized roots.
+        match rules.profile {
+            SandboxProfile::ReadOnly => {
+                process
+                    .arg("--ro-bind")
+                    .arg(&self.policy.workspace)
+                    .arg("/workspace");
+            }
+            SandboxProfile::WorkspaceWrite => {
+                let roots = self.writable_roots();
+                if roots.is_empty() {
+                    process
+                        .arg("--bind")
+                        .arg(&self.policy.workspace)
+                        .arg("/workspace");
+                } else {
+                    process
+                        .arg("--ro-bind")
+                        .arg(&self.policy.workspace)
+                        .arg("/workspace");
+                    for root in roots {
+                        process.arg("--bind").arg(&root.host).arg(&root.guest);
+                    }
+                }
+                for protected in self.protected_paths() {
+                    process
+                        .arg("--ro-bind")
+                        .arg(&protected.host)
+                        .arg(&protected.guest);
+                }
+            }
+            SandboxProfile::FullAccess => {
+                process
+                    .arg("--bind")
+                    .arg(&self.policy.workspace)
+                    .arg("/workspace");
+            }
+        }
         process
-            .arg("--bind")
-            .arg(&self.policy.workspace)
-            .arg("/workspace")
             .arg("--chdir")
             .arg(guest_dir)
             .arg("--")
