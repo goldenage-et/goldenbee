@@ -33,6 +33,10 @@ export default defineConfig(({ mode }) => {
       setupFiles: ["./src/test/setup.ts"],
       include: ["src/**/*.test.{ts,tsx}"],
       restoreMocks: true,
+      // The jsdom suites start one environment per file; under a fully loaded
+      // machine a single interaction test can exceed the 5s default without
+      // being slow on its own.
+      testTimeout: 20_000,
     },
   }
 })
