@@ -9,6 +9,7 @@
 
 pub mod artifact;
 pub mod backup;
+pub mod checkpoint;
 pub mod control;
 pub mod delegation;
 pub mod diagnostics;
@@ -40,6 +41,10 @@ pub use artifact::{Artifact, ArtifactGrant};
 pub use backup::{
     BackupApproval, BackupArtifact, BackupExecution, BackupFile, BackupManifest, BackupProfile,
     BackupRelease, BackupTask, GatewayBackup, WorkerBackup, BACKUP_FORMAT, BACKUP_SCHEMA,
+};
+pub use checkpoint::{
+    CheckpointDiff, CheckpointFileView, CheckpointRestoreOutcome, CheckpointRestoreRequest,
+    CheckpointView, DiffHunk, DiffLine, FileDiff,
 };
 pub use control::{
     ControlAuditEntry, ControlCommand, ControlCommandRequest, ControlCommandResponse,
@@ -89,7 +94,9 @@ pub use providers::{
     PROVIDER_ENVELOPE_INFO, PROVIDER_ENVELOPE_TTL_MS,
 };
 pub use redaction::redact;
-pub use session::{SessionTurn, SessionView};
+pub use session::{
+    SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionTurn, SessionView,
+};
 pub use socket::{
     SocketCommand, SocketCommandFrame, SocketOutcome, SocketScope, SocketServerFrame, SocketTicket,
     SOCKET_HEARTBEAT_MS, SOCKET_IDLE_TIMEOUT_MS, SOCKET_MAX_FRAME_BYTES, SOCKET_MAX_SUBSCRIPTIONS,
