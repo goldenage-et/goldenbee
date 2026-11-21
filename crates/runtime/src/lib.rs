@@ -7,6 +7,7 @@
 
 mod agents;
 pub mod browser;
+pub mod checkpoints;
 mod core;
 mod data;
 mod execution;
@@ -39,8 +40,9 @@ pub use core::error::Result;
 pub use core::ids::new_id;
 pub use core::runtime::Runtime;
 pub use core::store::{
-    ArtifactRecord, ArtifactScope, AuditRecord, CleanupJob, Counters, DocumentRecord,
-    OperationRecord, ReleaseRecord, RetainedObligation, State, Store, DATA_SCHEMA,
+    ArtifactRecord, ArtifactScope, AuditRecord, BlobRef, CheckpointFileRecord, CheckpointRecord,
+    CheckpointRestore, CleanupJob, Counters, DocumentRecord, OperationRecord, ReleaseRecord,
+    RetainedObligation, State, Store, DATA_SCHEMA,
 };
 pub use core::{config, crypto};
 pub use data::artifacts::ArtifactContent;

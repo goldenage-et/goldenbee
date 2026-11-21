@@ -27,9 +27,17 @@ use uuid::Uuid;
 /// File name used for the canonical native session store.
 pub const SESSION_STORE_FILE: &str = "native-sessions.json";
 
+/// Directory below the session store that holds durable transcript exports.
+pub const SESSION_EXPORT_DIR: &str = "session-exports";
+
 /// Persisted native session schema. Older schemas are read as-is; a newer one
 /// is refused rather than silently rewritten.
-pub const SESSION_STORE_SCHEMA: u32 = 1;
+///
+/// Schema 2 adds management metadata: an operator-visible title, the source of
+/// a fork, an explicit creation time, and durable transcript export records.
+/// Every added field is `#[serde(default)]`, so a schema-1 store opens and is
+/// upgraded in place without losing canonical events or state.
+pub const SESSION_STORE_SCHEMA: u32 = 2;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredState {
@@ -67,6 +75,59 @@ struct StoredSession {
     state: HashMap<String, Value>,
     events: Vec<Event>,
     updated_at: DateTime<Utc>,
+    /// Operator-visible title set by rename or fork.
+    #[serde(default)]
+    title: Option<String>,
+    /// Explicit creation time; older records fall back to `updated_at`.
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+    /// Source session for an independent fork.
+    #[serde(default)]
+    forked_from: Option<String>,
+    /// Durable transcript exports of this session.
+    #[serde(default)]
+    exports: Vec<SessionExportRecord>,
+}
+
+/// One durable transcript export. The transcript itself lives in a
+/// content-addressed file below the session store; this record is the index.
+#[derive(Clone, Serialize, Deserialize)]
+struct SessionExportRecord {
+    digest: String,
+    bytes: usize,
+    turns: usize,
+    exported_at: DateTime<Utc>,
+    file: String,
+}
+
+/// Management summary of one canonical session.
+#[derive(Debug, Clone)]
+pub struct SessionSummary {
+    /// Native application identity.
+    pub app_name: String,
+    /// Native user identity.
+    pub user_id: String,
+    /// Session identity.
+    pub session_id: String,
+    /// Operator-visible title.
+    pub title: Option<String>,
+    /// Source session for an independent fork.
+    pub forked_from: Option<String>,
+    /// Number of canonical events.
+    pub event_count: usize,
+    /// Creation time in milliseconds.
+    pub created_at: i64,
+    /// Last update time in milliseconds.
+    pub updated_at: i64,
+}
+
+/// One canonical session with its events for management views.
+#[derive(Debug, Clone)]
+pub struct SessionDetails {
+    /// Summary metadata.
+    pub summary: SessionSummary,
+    /// Canonical native events.
+    pub events: Vec<Event>,
 }
 
 /// Durable [`SessionService`] backed by one atomically replaced file.
@@ -83,7 +144,7 @@ impl FileSessionService {
     /// durable session promise from storage that cannot persist.
     pub fn open(path: impl Into<PathBuf>) -> crate::Result<Self> {
         let path = path.into();
-        let state = if path.exists() {
+        let mut state = if path.exists() {
             let bytes = std::fs::read(&path).map_err(|error| {
                 crate::Error::new(
                     "session.storage_unavailable",
@@ -109,6 +170,10 @@ impl FileSessionService {
         } else {
             StoredState::default()
         };
+        // Schema 2 is additive: older records load with defaults and are
+        // rewritten at the current schema below. No event or state value is
+        // dropped.
+        state.schema = SESSION_STORE_SCHEMA;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
                 crate::Error::new(
@@ -151,18 +216,25 @@ impl FileSessionService {
         cutoff_ms: i64,
         preserve: &std::collections::BTreeSet<String>,
     ) -> crate::Result<usize> {
-        self.update(|state| {
-            let before = state.sessions.len();
-            state.sessions.retain(|_, session| {
-                preserve.contains(&session.session_id)
-                    || session.updated_at.timestamp_millis() >= cutoff_ms
-            });
-            let removed = before - state.sessions.len();
-            prune_orphan_user_states(state);
-            Ok(removed)
-        })
-        .await
-        .map_err(|error| crate::Error::new("session.retention_failed", error.to_string()))
+        let (removed, files) = self
+            .update(|state| {
+                let before = state.sessions.len();
+                let mut files = Vec::new();
+                state.sessions.retain(|_, session| {
+                    let keep = preserve.contains(&session.session_id)
+                        || session.updated_at.timestamp_millis() >= cutoff_ms;
+                    if !keep {
+                        files.extend(session.exports.iter().map(|record| record.file.clone()));
+                    }
+                    keep
+                });
+                prune_orphan_user_states(state);
+                Ok((before - state.sessions.len(), files))
+            })
+            .await
+            .map_err(|error| crate::Error::new("session.retention_failed", error.to_string()))?;
+        self.remove_export_files(&files)?;
+        Ok(removed)
     }
 
     /// Hard-delete every session and user-scoped state for one native user id.
@@ -171,19 +243,27 @@ impl FileSessionService {
     /// runtime identity adapter, so a colliding session id under another caller
     /// cannot be erased by mistake.
     pub async fn erase_user(&self, native_user_id: &str) -> crate::Result<usize> {
-        self.update(|state| {
-            let before = state.sessions.len();
-            state
-                .sessions
-                .retain(|_, session| session.user_id != native_user_id);
-            for users in state.user_states.values_mut() {
-                users.remove(native_user_id);
-            }
-            prune_orphan_user_states(state);
-            Ok(before - state.sessions.len())
-        })
-        .await
-        .map_err(|error| crate::Error::new("session.erasure_failed", error.to_string()))
+        let (removed, files) = self
+            .update(|state| {
+                let before = state.sessions.len();
+                let mut files = Vec::new();
+                state.sessions.retain(|_, session| {
+                    let keep = session.user_id != native_user_id;
+                    if !keep {
+                        files.extend(session.exports.iter().map(|record| record.file.clone()));
+                    }
+                    keep
+                });
+                for users in state.user_states.values_mut() {
+                    users.remove(native_user_id);
+                }
+                prune_orphan_user_states(state);
+                Ok((before - state.sessions.len(), files))
+            })
+            .await
+            .map_err(|error| crate::Error::new("session.erasure_failed", error.to_string()))?;
+        self.remove_export_files(&files)?;
+        Ok(removed)
     }
 
     async fn update<R>(
@@ -205,6 +285,378 @@ impl FileSessionService {
         let state = self.state.lock().await;
         read(&state)
     }
+
+    /// List sessions owned by one native identity, newest first.
+    pub async fn summaries(
+        &self,
+        app_name: &str,
+        user_id: &str,
+    ) -> crate::Result<Vec<SessionSummary>> {
+        let app_name = app_name.to_string();
+        let user_id = user_id.to_string();
+        let mut sessions = self
+            .read(|state| {
+                state
+                    .sessions
+                    .values()
+                    .filter(|stored| stored.app_name == app_name && stored.user_id == user_id)
+                    .map(summarize)
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
+        Ok(sessions)
+    }
+
+    /// Read one canonical session, scoped to the exact native identity.
+    pub async fn details(
+        &self,
+        app_name: &str,
+        user_id: &str,
+        session_id: &str,
+    ) -> crate::Result<SessionDetails> {
+        validate_identity(app_name, user_id, session_id).map_err(adk_error)?;
+        let key = session_key(app_name, user_id, session_id);
+        self.read(|state| {
+            state
+                .sessions
+                .get(&key)
+                .map(|stored| SessionDetails {
+                    summary: summarize(stored),
+                    events: stored.events.clone(),
+                })
+                .ok_or_else(|| not_found(app_name, user_id, session_id))
+        })
+        .await
+        .map_err(adk_error)
+    }
+
+    /// Most recently updated session for one native identity.
+    pub async fn latest(&self, app_name: &str, user_id: &str) -> crate::Result<SessionSummary> {
+        let app_name = app_name.to_string();
+        let user_id = user_id.to_string();
+        self.read(|state| {
+            state
+                .sessions
+                .values()
+                .filter(|stored| stored.app_name == app_name && stored.user_id == user_id)
+                .max_by_key(|stored| stored.updated_at)
+                .map(summarize)
+                .ok_or_else(|| {
+                    crate::Error::new(
+                        "session.not_found",
+                        "this caller has no canonical session to continue",
+                    )
+                })
+        })
+        .await
+    }
+
+    /// Create an independent branch from a frozen prefix of `source`.
+    ///
+    /// The source session is never mutated. The fork keeps its own identity,
+    /// state, and event sequence for later turns.
+    pub async fn fork(
+        &self,
+        app_name: &str,
+        user_id: &str,
+        source: &str,
+        request: &common::SessionForkRequest,
+    ) -> crate::Result<SessionSummary> {
+        validate_identity(app_name, user_id, source).map_err(adk_error)?;
+        validate_identity(app_name, user_id, &request.session_id).map_err(adk_error)?;
+        if source == request.session_id {
+            return Err(crate::Error::new(
+                "session.fork_conflict",
+                "a fork must use a new session identity",
+            ));
+        }
+        let title = request.title.as_deref().map(validate_title).transpose()?;
+        let source_key = session_key(app_name, user_id, source);
+        let fork_key = session_key(app_name, user_id, &request.session_id);
+        let now = Utc::now();
+        self.update(move |state| {
+            let original = state
+                .sessions
+                .get(&source_key)
+                .ok_or_else(|| not_found(app_name, user_id, source))?;
+            if state.sessions.contains_key(&fork_key) {
+                return Err(AdkError::new(
+                    ErrorComponent::Session,
+                    ErrorCategory::InvalidInput,
+                    "session.conflict",
+                    format!("session '{}' already exists", request.session_id),
+                ));
+            }
+            let fork = StoredSession {
+                app_name: app_name.to_string(),
+                user_id: user_id.to_string(),
+                session_id: request.session_id.clone(),
+                state: original.state.clone(),
+                events: original.events.clone(),
+                updated_at: now,
+                title: title.or_else(|| original.title.clone()),
+                created_at: Some(now),
+                forked_from: Some(source.to_string()),
+                exports: Vec::new(),
+            };
+            let summary = summarize(&fork);
+            state.sessions.insert(fork_key, fork);
+            Ok(summary)
+        })
+        .await
+        .map_err(adk_error)
+    }
+
+    /// Rename one session without touching canonical history.
+    pub async fn rename(
+        &self,
+        app_name: &str,
+        user_id: &str,
+        session_id: &str,
+        title: &str,
+    ) -> crate::Result<SessionSummary> {
+        validate_identity(app_name, user_id, session_id).map_err(adk_error)?;
+        let title = validate_title(title)?;
+        let key = session_key(app_name, user_id, session_id);
+        self.update(move |state| {
+            let stored = state
+                .sessions
+                .get_mut(&key)
+                .ok_or_else(|| not_found(app_name, user_id, session_id))?;
+            stored.title = Some(title);
+            stored.updated_at = Utc::now();
+            Ok(summarize(stored))
+        })
+        .await
+        .map_err(adk_error)
+    }
+
+    /// Export the canonical session history to a durable, content-addressed
+    /// transcript and return it. Re-exporting the same history is idempotent.
+    pub async fn export(
+        &self,
+        app_name: &str,
+        user_id: &str,
+        session_id: &str,
+        namespace: &str,
+        principal: &str,
+    ) -> crate::Result<common::SessionTranscript> {
+        let details = self.details(app_name, user_id, session_id).await?;
+        let turns = super::transcript::turns(&details.events);
+        let digest = super::transcript::digest(&turns);
+        let exported_at = Utc::now();
+        let file = export_file_name(&digest);
+        let transcript = common::SessionTranscript {
+            session_id: session_id.to_string(),
+            namespace: namespace.to_string(),
+            principal: principal.to_string(),
+            digest: digest.clone(),
+            bytes: 0,
+            turn_count: turns.len(),
+            exported_at: exported_at.timestamp_millis(),
+            turns,
+        };
+        let bytes = serde_json::to_vec(&transcript).map_err(|error| {
+            crate::Error::new(
+                "session.export_failed",
+                format!("cannot serialize transcript: {error}"),
+            )
+        })?;
+        let transcript = common::SessionTranscript {
+            bytes: bytes.len(),
+            ..transcript
+        };
+        let bytes = serde_json::to_vec(&transcript).map_err(|error| {
+            crate::Error::new(
+                "session.export_failed",
+                format!("cannot serialize transcript: {error}"),
+            )
+        })?;
+        let paths = self.export_paths(&file)?;
+        std::fs::create_dir_all(&paths.directory).map_err(|error| {
+            crate::Error::new(
+                "session.export_failed",
+                format!("cannot create transcript directory: {error}"),
+            )
+        })?;
+        atomic_write(&paths.file, &bytes).map_err(|error| {
+            crate::Error::new(
+                "session.export_failed",
+                format!("cannot persist transcript: {error}"),
+            )
+        })?;
+
+        let key = session_key(app_name, user_id, session_id);
+        let record = SessionExportRecord {
+            digest: digest.clone(),
+            bytes: bytes.len(),
+            turns: transcript.turn_count,
+            exported_at,
+            file: file.clone(),
+        };
+        let stored_at = self
+            .update(move |state| {
+                let stored = state
+                    .sessions
+                    .get_mut(&key)
+                    .ok_or_else(|| not_found(app_name, user_id, session_id))?;
+                if let Some(existing) = stored
+                    .exports
+                    .iter()
+                    .find(|existing| existing.digest == record.digest)
+                {
+                    return Ok(existing.exported_at);
+                }
+                let at = record.exported_at;
+                stored.exports.push(record);
+                Ok(at)
+            })
+            .await
+            .map_err(adk_error)?;
+        Ok(common::SessionTranscript {
+            exported_at: stored_at.timestamp_millis(),
+            digest,
+            ..transcript
+        })
+    }
+
+    /// Read the newest durable transcript export, creating one when the
+    /// session has never been exported.
+    pub async fn transcript(
+        &self,
+        app_name: &str,
+        user_id: &str,
+        session_id: &str,
+        namespace: &str,
+        principal: &str,
+    ) -> crate::Result<common::SessionTranscript> {
+        let key = session_key(app_name, user_id, session_id);
+        let newest = self
+            .read(|state| {
+                state.sessions.get(&key).and_then(|stored| {
+                    stored
+                        .exports
+                        .iter()
+                        .max_by_key(|record| record.exported_at)
+                        .cloned()
+                })
+            })
+            .await;
+        let Some(record) = newest else {
+            return self
+                .export(app_name, user_id, session_id, namespace, principal)
+                .await;
+        };
+        let paths = self.export_paths(&record.file)?;
+        let bytes = std::fs::read(&paths.file).map_err(|error| {
+            crate::Error::new(
+                "session.export_corrupt",
+                format!("transcript export is unreadable: {error}"),
+            )
+        })?;
+        let transcript: common::SessionTranscript =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                crate::Error::new(
+                    "session.export_corrupt",
+                    format!("transcript export is not valid JSON: {error}"),
+                )
+            })?;
+        if transcript.session_id != session_id
+            || transcript.digest != record.digest
+            || super::transcript::digest(&transcript.turns) != record.digest
+        {
+            return Err(crate::Error::new(
+                "session.export_corrupt",
+                "transcript export does not match its recorded digest",
+            ));
+        }
+        Ok(transcript)
+    }
+
+    fn export_paths(&self, file: &str) -> crate::Result<ExportPaths> {
+        let name = std::path::Path::new(file);
+        if name.file_name().and_then(|name| name.to_str()) != Some(file) || !file.ends_with(".json")
+        {
+            return Err(crate::Error::new(
+                "session.export_corrupt",
+                "transcript export record has an invalid file name",
+            ));
+        }
+        let directory = self
+            .path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(SESSION_EXPORT_DIR);
+        Ok(ExportPaths {
+            file: directory.join(file),
+            directory,
+        })
+    }
+
+    fn remove_export_files(&self, files: &[String]) -> crate::Result<()> {
+        for file in files {
+            let paths = self.export_paths(file)?;
+            match std::fs::remove_file(&paths.file) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(crate::Error::new(
+                        "session.retention_failed",
+                        format!("cannot remove transcript export: {error}"),
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+struct ExportPaths {
+    directory: PathBuf,
+    file: PathBuf,
+}
+
+fn summarize(stored: &StoredSession) -> SessionSummary {
+    let created_at = stored
+        .created_at
+        .unwrap_or(stored.updated_at)
+        .timestamp_millis();
+    SessionSummary {
+        app_name: stored.app_name.clone(),
+        user_id: stored.user_id.clone(),
+        session_id: stored.session_id.clone(),
+        title: stored.title.clone(),
+        forked_from: stored.forked_from.clone(),
+        event_count: stored.events.len(),
+        created_at,
+        updated_at: stored.updated_at.timestamp_millis(),
+    }
+}
+
+fn validate_title(title: &str) -> crate::Result<String> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > 200 || title.chars().any(char::is_control) {
+        return Err(crate::Error::new(
+            "validation.session_title",
+            "session title must be 1-200 printable characters",
+        ));
+    }
+    Ok(title.to_string())
+}
+
+fn export_file_name(digest: &str) -> String {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    format!("{hex}.json")
+}
+
+fn adk_error(error: AdkError) -> crate::Error {
+    let code = if error.code.is_empty() {
+        "session.management_failed"
+    } else {
+        error.code
+    };
+    crate::Error::new(code, error.message)
 }
 
 #[async_trait::async_trait]
@@ -250,6 +702,10 @@ impl SessionService for FileSessionService {
                     state: session_delta,
                     events: Vec::new(),
                     updated_at: timestamp,
+                    title: None,
+                    created_at: Some(timestamp),
+                    forked_from: None,
+                    exports: Vec::new(),
                 },
             );
             Ok(Box::new(FileSession {
