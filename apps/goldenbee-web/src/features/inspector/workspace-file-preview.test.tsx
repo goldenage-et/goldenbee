@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it } from "vitest"
 import type { ReactNode } from "react"
 
@@ -38,18 +39,31 @@ function renderPreview(
       path={file.path}
       liveVersion={0}
       liveStatus="live"
-      onClose={() => undefined}
     />,
     { wrapper },
   )
 }
 
 describe("workspace file preview", () => {
-  it("renders the bounded text preview and live status", async () => {
+  it("previews html and switches to source", async () => {
+    const user = userEvent.setup()
     renderPreview()
-    expect(await screen.findByText("<h1>hi</h1>")).toBeInTheDocument()
+    expect(
+      await screen.findByTitle("Preview index.html"),
+    ).toBeInTheDocument()
     expect(screen.getByText("Live")).toBeInTheDocument()
     expect(screen.getAllByText("index.html").length).toBeGreaterThan(0)
+
+    await user.click(screen.getByRole("button", { name: "Source" }))
+    expect(await screen.findByText("<h1>hi</h1>")).toBeInTheDocument()
+  })
+
+  it("renders markdown preview and source", async () => {
+    const user = userEvent.setup()
+    renderPreview({ path: "README.md", text: "**bold**" })
+    expect(await screen.findByText("bold")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Source" }))
+    expect(await screen.findByText("**bold**")).toBeInTheDocument()
   })
 
   it("does not render binary bytes", async () => {

@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
+import { useEffect, useState } from "react"
 import type { WorkspaceFile } from "@goldenbee/sdk"
 
+import { Markdown } from "@/components/ai-elements/markdown"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import type { WorkspaceLiveStatus } from "@/features/inspector/use-workspace-live"
 
 export interface WorkspacePreviewGateway {
@@ -15,7 +16,7 @@ export interface WorkspaceFilePreviewProps {
   path: string
   liveVersion: number
   liveStatus: WorkspaceLiveStatus
-  onClose(): void
+  onClose?(): void
 }
 
 function formatSize(size: number): string {
@@ -36,13 +37,25 @@ function formatTime(value: number): string {
   return Number.isNaN(date.getTime()) ? "Not reported" : date.toISOString()
 }
 
+type PreviewKind = "markdown" | "html" | null
+
+function previewKind(path: string): PreviewKind {
+  const lower = path.toLowerCase()
+  if (lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".mdx")) {
+    return "markdown"
+  }
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+    return "html"
+  }
+  return null
+}
+
 export function WorkspaceFilePreview({
   client,
   worker,
   path,
   liveVersion,
   liveStatus,
-  onClose,
 }: WorkspaceFilePreviewProps) {
   const file = useQuery({
     queryKey: ["workspace-preview", worker, path, liveVersion],
@@ -50,37 +63,65 @@ export function WorkspaceFilePreview({
     enabled: worker !== null && client !== null && path.length > 0,
     retry: false,
   })
+  const kind = previewKind(path)
+  const [view, setView] = useState<"preview" | "source">("preview")
 
-  const name = path.split("/").at(-1) ?? path
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    setView("preview")
+  }, [path])
 
   return (
     <section
       aria-label={`File preview ${path}`}
       className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[9px] border border-line bg-surface"
     >
-      <header className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-micro font-bold tracking-[0.14em] text-dim uppercase">
-            File preview
-          </p>
-          <h2 className="truncate text-meta font-semibold text-foreground">
-            {name}
-          </h2>
-          <p className="break-all font-mono text-micro text-dim">{path}</p>
-        </div>
-        <Badge variant="outline" className="h-5 rounded px-1.5 text-micro">
+      <header className="flex items-center gap-2 border-b border-line px-2.5 py-1.5">
+        <p className="min-w-0 flex-1 truncate font-mono text-micro text-foreground">
+          {path}
+        </p>
+        {kind ? (
+          <div
+            role="group"
+            aria-label="File view"
+            className="flex items-center rounded-[5px] border border-line bg-surface-2 p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={view === "preview"}
+              onClick={() => setView("preview")}
+              className={
+                view === "preview"
+                  ? "rounded-[3px] bg-surface-3 px-1.5 py-0.5 text-micro font-medium text-foreground"
+                  : "rounded-[3px] px-1.5 py-0.5 text-micro text-muted-foreground hover:text-foreground"
+              }
+            >
+              Preview
+            </button>
+            <button
+              type="button"
+              aria-pressed={view === "source"}
+              onClick={() => setView("source")}
+              className={
+                view === "source"
+                  ? "rounded-[3px] bg-surface-3 px-1.5 py-0.5 text-micro font-medium text-foreground"
+                  : "rounded-[3px] px-1.5 py-0.5 text-micro text-muted-foreground hover:text-foreground"
+              }
+            >
+              Source
+            </button>
+          </div>
+        ) : null}
+        <Badge variant="outline" className="h-4 rounded px-1 text-micro">
           {liveStatus === "live"
             ? "Live"
             : liveStatus === "reconnecting"
               ? "Reconnecting"
               : "Read-only"}
         </Badge>
-        <Button type="button" size="sm" variant="ghost" onClick={onClose}>
-          Close
-        </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto p-3">
+      <div className="min-h-0 flex-1 overflow-auto p-2.5">
         {!worker ? (
           <p className="text-meta text-muted-foreground">
             The focused session has no Worker yet.
@@ -105,33 +146,39 @@ export function WorkspaceFilePreview({
             </p>
           </div>
         ) : file.data ? (
-          <div className="grid gap-2">
-            <dl className="flex flex-wrap gap-x-4 gap-y-1 text-micro text-muted-foreground">
-              <div className="flex gap-1">
-                <dt className="text-dim">Size</dt>
-                <dd>{formatSize(file.data.size)}</dd>
-              </div>
-              <div className="flex gap-1">
-                <dt className="text-dim">Modified</dt>
-                <dd>{formatTime(file.data.modified_at)}</dd>
-              </div>
+          <div className="grid gap-1.5">
+            <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-micro text-dim">
+              <span>{formatSize(file.data.size)}</span>
+              <span>{formatTime(file.data.modified_at)}</span>
               {file.data.digest ? (
-                <div className="flex min-w-0 gap-1">
-                  <dt className="text-dim">Digest</dt>
-                  <dd className="truncate font-mono">{file.data.digest}</dd>
-                </div>
+                <span className="max-w-full truncate font-mono">
+                  {file.data.digest}
+                </span>
               ) : null}
               {file.data.truncated ? (
-                <div className="text-gold">Preview truncated</div>
+                <span className="text-gold">truncated</span>
               ) : null}
-              {file.data.binary ? <div className="text-gold">Binary</div> : null}
-            </dl>
+              {file.data.binary ? (
+                <span className="text-gold">binary</span>
+              ) : null}
+            </p>
             {file.data.binary ? (
-              <p className="text-meta text-muted-foreground">
+              <p className="text-micro text-muted-foreground">
                 Binary content is not previewed.
               </p>
+            ) : kind === "markdown" && view === "preview" ? (
+              <div className="min-h-0 overflow-auto rounded-[6px] border border-line bg-surface-2 p-3">
+                <Markdown>{file.data.text ?? ""}</Markdown>
+              </div>
+            ) : kind === "html" && view === "preview" ? (
+              <iframe
+                title={`Preview ${path}`}
+                sandbox=""
+                srcDoc={file.data.text ?? ""}
+                className="h-[60vh] w-full rounded-[6px] border border-line bg-white"
+              />
             ) : (
-              <pre className="min-h-0 overflow-auto whitespace-pre-wrap break-words rounded-[7px] border border-line bg-surface-2 p-3 text-micro text-foreground">
+              <pre className="min-h-0 overflow-auto whitespace-pre-wrap break-words rounded-[6px] border border-line bg-surface-2 p-2.5 text-micro text-foreground">
                 {file.data.text ?? ""}
               </pre>
             )}
