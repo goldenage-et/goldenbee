@@ -22,6 +22,7 @@ mod peers;
 mod plans;
 mod profiles;
 mod retention;
+mod runs;
 mod sessions;
 mod tasks;
 
@@ -49,6 +50,10 @@ pub struct WorkerState {
     pub browser: Option<Arc<BrowserController>>,
     /// Active command registry for this asset revision.
     pub(crate) commands: Option<Arc<crate::commands::CommandRegistry>>,
+    /// Configured default agent for a run that omits one.
+    pub default_agent: Option<String>,
+    /// Trusted plugin bundles active for this revision.
+    pub plugins: Vec<crate::plugins::PluginView>,
 }
 
 impl WorkerState {
@@ -60,6 +65,8 @@ impl WorkerState {
             a2a_durable: false,
             browser: None,
             commands: None,
+            default_agent: None,
+            plugins: Vec::new(),
         }
     }
 
@@ -80,6 +87,18 @@ impl WorkerState {
         self.commands = Some(commands);
         self
     }
+
+    /// Attach the configured default agent for agent-omitted headless runs.
+    pub fn with_default_agent(mut self, agent: impl Into<String>) -> Self {
+        self.default_agent = Some(agent.into());
+        self
+    }
+
+    /// Attach the trusted plugin inventory for this asset revision.
+    pub fn with_plugins(mut self, plugins: Vec<crate::plugins::PluginView>) -> Self {
+        self.plugins = plugins;
+        self
+    }
 }
 
 /// Harness management routes. Merge these with the native ADK router, then
@@ -97,6 +116,7 @@ pub fn api_router(state: WorkerState) -> Router {
         )
         .route("/v1/drain", post(lifecycle::drain))
         .route("/v1/tasks", get(tasks::list).post(tasks::submit))
+        .route("/v1/runs", post(runs::run))
         .route("/v1/tasks/{id}", get(tasks::task))
         .route("/v1/tasks/{id}/operations", get(tasks::operations))
         .route("/v1/tasks/{id}/events", get(tasks::events))

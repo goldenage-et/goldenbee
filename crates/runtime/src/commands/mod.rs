@@ -140,6 +140,8 @@ pub(crate) struct LoadedCommands {
     pub mcp: BTreeMap<String, Vec<String>>,
     /// Command routes whose model reference resolves through a provider profile.
     pub providers: BTreeMap<String, String>,
+    /// Reasoning level selected by a command route's target agent.
+    pub reasoning: BTreeMap<String, common::ReasoningLevel>,
     /// Provider preflight requirements for command routes.
     pub requirements: BTreeMap<String, crate::AgentRequirement>,
 }
@@ -147,11 +149,17 @@ pub(crate) struct LoadedCommands {
 /// Load command assets, validate their narrowing against declared assets, and
 /// build one bounded agent per command.
 pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
-    let assets = asset::load(input.settings.commands_dir.as_deref())?;
+    let mut command_dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(directory) = input.settings.commands_dir.as_ref() {
+        command_dirs.push(directory.clone());
+    }
+    command_dirs.extend(input.settings.plugin_commands.iter().cloned());
+    let assets = asset::load(&command_dirs)?;
     let mut commands = BTreeMap::new();
     let mut agents = BTreeMap::new();
     let mut mcp = BTreeMap::new();
     let mut providers = BTreeMap::new();
+    let mut reasoning = BTreeMap::new();
     let mut requirements = BTreeMap::new();
     let mut descriptors: Vec<CommandDescriptor> = neutral::NEUTRAL
         .iter()
@@ -220,6 +228,9 @@ pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
         if input.providers.profiles().contains_key(model_reference) {
             providers.insert(route.clone(), model_reference.to_string());
         }
+        if let Some(level) = spec.reasoning {
+            reasoning.insert(route.clone(), level);
+        }
         requirements.insert(
             route.clone(),
             crate::AgentRequirement {
@@ -265,6 +276,7 @@ pub(crate) fn load(input: CommandInput<'_>) -> WorkerResult<LoadedCommands> {
         agents,
         mcp,
         providers,
+        reasoning,
         requirements,
     })
 }

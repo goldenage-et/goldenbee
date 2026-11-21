@@ -15,7 +15,7 @@ use crate::execution::model::{DeterministicModel, HttpModel};
 use crate::{ApiError, ProviderProfile};
 use adk_rust::{AdkError, ErrorCategory, ErrorComponent, Llm, LlmRequest, LlmResponseStream};
 use async_trait::async_trait;
-use common::{ContextCompaction, ResolvedModel};
+use common::{ContextCompaction, ReasoningLevel, ResolvedModel};
 use futures::StreamExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
@@ -28,6 +28,31 @@ pub const ADAPTERS: &[&str] = &[
     "openai-compatible",
     "openrouter",
 ];
+
+/// Whether the pinned adapter exposes a request field for reasoning effort.
+///
+/// `openai-compatible` carries `reasoning_effort` on its construction config;
+/// `openrouter` carries `reasoning.effort` in its request options. The other
+/// adapters have no pinned field, so a declared reasoning level on them is a
+/// startup-time typed gap instead of a silent no-op.
+pub fn adapter_applies_reasoning(adapter: &str) -> bool {
+    matches!(adapter, "openai-compatible" | "openrouter")
+}
+
+fn openai_reasoning_effort(
+    level: ReasoningLevel,
+) -> adk_rust::model::openai::OpenAIReasoningEffort {
+    use adk_rust::model::openai::OpenAIReasoningEffort;
+    match level {
+        ReasoningLevel::None => OpenAIReasoningEffort::None,
+        ReasoningLevel::Minimal => OpenAIReasoningEffort::Minimal,
+        ReasoningLevel::Low => OpenAIReasoningEffort::Low,
+        ReasoningLevel::Medium => OpenAIReasoningEffort::Medium,
+        ReasoningLevel::High => OpenAIReasoningEffort::High,
+        ReasoningLevel::XHigh => OpenAIReasoningEffort::XHigh,
+        ReasoningLevel::Max => OpenAIReasoningEffort::Max,
+    }
+}
 
 /// A secret *reference*, resolved at model construction.
 pub trait SecretSource: Send + Sync {
@@ -159,6 +184,8 @@ pub struct ProviderRequirements {
     pub tools: usize,
     /// Maximum declared token budget, zero when unset.
     pub max_tokens: u64,
+    /// Reasoning effort requested for this invocation.
+    pub reasoning: Option<ReasoningLevel>,
 }
 
 impl ProviderRequirements {
@@ -168,12 +195,31 @@ impl ProviderRequirements {
             modalities: vec!["text".into()],
             tools: 0,
             max_tokens: 0,
+            reasoning: None,
         }
+    }
+
+    /// Select a reasoning level for this invocation.
+    pub fn with_reasoning(mut self, reasoning: Option<ReasoningLevel>) -> Self {
+        self.reasoning = reasoning;
+        self
     }
 }
 
+/// Observable notification that a policy-allowed fallback produced the
+/// invocation.
+#[derive(Debug, Clone)]
+pub struct FallbackDecision {
+    /// Provider that failed before producing output.
+    pub from: ResolvedModel,
+    /// Provider that produced the successful stream.
+    pub to: ResolvedModel,
+    /// Stable primary failure reason, such as `unavailable`.
+    pub reason: String,
+}
+
 /// Observable notification that a policy-allowed fallback was used.
-pub type FallbackReporter = Arc<dyn Fn(ResolvedModel) + Send + Sync>;
+pub type FallbackReporter = Arc<dyn Fn(FallbackDecision) + Send + Sync>;
 
 /// One concrete provider decision plus its native adapter.
 pub struct ResolvedProvider {
@@ -204,6 +250,18 @@ pub struct ProviderView {
     pub residency: String,
     /// Declared context window.
     pub context_window: Option<u64>,
+    /// Declared maximum output tokens for one call.
+    pub max_output_tokens: Option<u64>,
+    /// Declared reasoning levels.
+    pub reasoning_levels: Vec<ReasoningLevel>,
+    /// Input price in millionths per million tokens.
+    pub input_cost_micros_per_million: Option<u64>,
+    /// Candidate price in millionths per million tokens.
+    pub candidate_cost_micros_per_million: Option<u64>,
+    /// Cache-read price in millionths per million tokens.
+    pub cache_read_cost_micros_per_million: Option<u64>,
+    /// Cache-write price in millionths per million tokens.
+    pub cache_write_cost_micros_per_million: Option<u64>,
     /// Credential reference, never a value.
     pub credential: Option<String>,
     /// Whether the credential reference is currently revoked.
@@ -303,6 +361,12 @@ impl ProviderRegistry {
             local: profile.local,
             residency: profile.residency.clone(),
             context_window: profile.context_window,
+            max_output_tokens: profile.max_output_tokens,
+            reasoning_levels: profile.reasoning_levels.clone(),
+            input_cost_micros_per_million: profile.input_cost_micros_per_million,
+            candidate_cost_micros_per_million: profile.candidate_cost_micros_per_million,
+            cache_read_cost_micros_per_million: profile.cache_read_cost_micros_per_million,
+            cache_write_cost_micros_per_million: profile.cache_write_cost_micros_per_million,
             credential: profile.credential.clone(),
             credential_revoked: profile
                 .credential
@@ -339,6 +403,10 @@ impl ProviderRegistry {
             credential: profile.credential.clone(),
             input_cost_micros_per_million: profile.input_cost_micros_per_million,
             candidate_cost_micros_per_million: profile.candidate_cost_micros_per_million,
+            cache_read_cost_micros_per_million: profile.cache_read_cost_micros_per_million,
+            cache_write_cost_micros_per_million: profile.cache_write_cost_micros_per_million,
+            max_output_tokens: profile.max_output_tokens,
+            reasoning: requirements.reasoning,
             profile_revision,
         })
     }
@@ -389,7 +457,7 @@ impl ProviderRegistry {
         observer: Option<FallbackReporter>,
     ) -> std::result::Result<ResolvedProvider, ApiError> {
         let record = self.record(id, profile_revision, requirements)?;
-        let primary = self.build(id)?;
+        let primary = self.build(id, requirements.reasoning)?;
         let mut fallbacks = Vec::new();
         if include_fallbacks {
             for fallback_id in &self.profiles[id].fallbacks {
@@ -401,7 +469,7 @@ impl ProviderRegistry {
                 })?;
                 fallback_policy(&self.profiles[id], fallback_profile)?;
                 let fallback_record = self.record(fallback_id, profile_revision, requirements)?;
-                let model = self.build(fallback_id)?;
+                let model = self.build(fallback_id, requirements.reasoning)?;
                 fallbacks.push(Slot {
                     record: fallback_record,
                     model,
@@ -564,6 +632,31 @@ impl ProviderRegistry {
                 format!("provider '{id}' does not support the bound tool schema"),
             ));
         }
+        if let Some(reasoning) = requirements.reasoning {
+            if !adapter_applies_reasoning(&profile.adapter) {
+                return Err(ApiError::new(
+                    "provider.reasoning_unsupported",
+                    format!(
+                        "provider '{id}' uses adapter '{}', which has no reasoning level request field",
+                        profile.adapter
+                    ),
+                )
+                .with("provider", id)
+                .with("adapter", profile.adapter.clone())
+                .with("reasoning", reasoning.as_str()));
+            }
+            if !profile.reasoning_levels.contains(&reasoning) {
+                return Err(ApiError::new(
+                    "provider.reasoning_unsupported",
+                    format!(
+                        "provider '{id}' does not declare reasoning level '{}'",
+                        reasoning.as_str()
+                    ),
+                )
+                .with("provider", id)
+                .with("reasoning", reasoning.as_str()));
+            }
+        }
         if profile.residency.trim().is_empty() {
             return Err(ApiError::new(
                 "provider.residency_unknown",
@@ -690,7 +783,11 @@ impl ProviderRegistry {
             .collect()
     }
 
-    fn build(&self, id: &str) -> std::result::Result<Arc<dyn Llm>, ApiError> {
+    fn build(
+        &self,
+        id: &str,
+        reasoning: Option<ReasoningLevel>,
+    ) -> std::result::Result<Arc<dyn Llm>, ApiError> {
         let profile = self.profiles.get(id).ok_or_else(|| {
             ApiError::new(
                 "provider.unknown",
@@ -737,7 +834,13 @@ impl ProviderRegistry {
                 let mut config = OpenAICompatibleConfig::new(key, profile.model.clone())
                     .with_base_url(endpoint.to_string());
                 config.parallel_tool_calls = profile.tool_calling;
-                let model = OpenAICompatible::new(config).map_err(|error| {
+                // The pinned adapter's full reasoning vocabulary includes the
+                // newer `xhigh` and `max` values only through this constructor.
+                let model = OpenAICompatible::new_with_reasoning_effort(
+                    config,
+                    reasoning.map(openai_reasoning_effort),
+                )
+                .map_err(|error| {
                     ApiError::new(
                         "provider.construction_failed",
                         common::redact(&format!(
@@ -811,6 +914,42 @@ fn validate_profile(
             "provider.model_missing",
             format!("provider '{id}' has no concrete model"),
         ));
+    }
+    if profile.context_window == Some(0) {
+        return Err(ApiError::new(
+            "provider.context_unsupported",
+            format!("provider '{id}' declares a zero-token context window"),
+        ));
+    }
+    if profile.max_output_tokens == Some(0) {
+        return Err(ApiError::new(
+            "provider.output_limit_unsupported",
+            format!("provider '{id}' declares a zero-token maximum output"),
+        ));
+    }
+    if let (Some(window), Some(max_output)) = (profile.context_window, profile.max_output_tokens) {
+        if max_output > window {
+            return Err(ApiError::new(
+                "provider.output_limit_unsupported",
+                format!(
+                    "provider '{id}' declares a {max_output}-token maximum output above its {window}-token context window"
+                ),
+            )
+            .with("provider", id)
+            .with("context_window", window.to_string())
+            .with("max_output_tokens", max_output.to_string()));
+        }
+    }
+    if !profile.reasoning_levels.is_empty() && !adapter_applies_reasoning(&profile.adapter) {
+        return Err(ApiError::new(
+            "provider.reasoning_unsupported",
+            format!(
+                "provider '{id}' declares reasoning levels but adapter '{}' has no pinned reasoning request field",
+                profile.adapter
+            ),
+        )
+        .with("provider", id)
+        .with("adapter", profile.adapter.clone()));
     }
     if let Some(reference) = &profile.credential {
         if !validate_credential_reference(reference) {
@@ -951,6 +1090,50 @@ impl ProviderModel {
                 .contains(reference)
         })
     }
+
+    /// Apply the slot catalog's declared output ceiling and, for OpenRouter,
+    /// the pinned request-level reasoning option.
+    fn prepare_request(
+        &self,
+        mut request: LlmRequest,
+        slot: &Slot,
+    ) -> adk_rust::Result<LlmRequest> {
+        let needs_output = slot.record.max_output_tokens.is_some();
+        let needs_reasoning =
+            slot.record.adapter == "openrouter" && slot.record.reasoning.is_some();
+        if !needs_output && !needs_reasoning {
+            return Ok(request);
+        }
+        let config = request.config.get_or_insert_with(Default::default);
+        if let Some(ceiling) = slot.record.max_output_tokens {
+            let requested = config
+                .max_output_tokens
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or(ceiling);
+            let effective = requested.min(ceiling);
+            config.max_output_tokens = i32::try_from(effective).ok();
+        }
+        if let Some(reasoning) = slot
+            .record
+            .reasoning
+            .filter(|_| slot.record.adapter == "openrouter")
+        {
+            use adk_rust::model::openrouter::{
+                OpenRouterReasoningConfig, OpenRouterRequestOptions,
+            };
+            let mut options = OpenRouterRequestOptions::from_generate_config(Some(&*config))
+                .map_err(reasoning_option_error)?
+                .unwrap_or_default();
+            options.reasoning = Some(OpenRouterReasoningConfig {
+                effort: Some(reasoning.as_str().into()),
+                ..Default::default()
+            });
+            options
+                .insert_into_config(config)
+                .map_err(reasoning_option_error)?;
+        }
+        Ok(request)
+    }
 }
 
 #[async_trait]
@@ -967,6 +1150,8 @@ impl Llm for ProviderModel {
         if self.revoked(&self.primary) {
             return Err(revoked_error());
         }
+        let raw_request = request;
+        let request = self.prepare_request(raw_request.clone(), &self.primary)?;
         let secrets = self.primary.secrets.clone();
         match self
             .primary
@@ -976,19 +1161,31 @@ impl Llm for ProviderModel {
         {
             Ok(stream) => Ok(redact_stream(stream, secrets)),
             Err(error) if fallback_eligible(&error) && !self.fallbacks.is_empty() => {
+                let reason = error.category.to_string();
                 let mut last = redact_error(error, &secrets);
                 for slot in &self.fallbacks {
                     if self.revoked(slot) {
                         continue;
                     }
+                    let slot_request = match self.prepare_request(raw_request.clone(), slot) {
+                        Ok(request) => request,
+                        Err(error) => {
+                            last = redact_error(error, &slot.secrets);
+                            continue;
+                        }
+                    };
                     match slot
                         .model
-                        .generate_content(request.clone(), stream_response)
+                        .generate_content(slot_request, stream_response)
                         .await
                     {
                         Ok(stream) => {
                             if let Some(observer) = &self.observer {
-                                observer(slot.record.clone());
+                                observer(FallbackDecision {
+                                    from: self.primary.record.clone(),
+                                    to: slot.record.clone(),
+                                    reason: reason.clone(),
+                                });
                             }
                             return Ok(redact_stream(stream, slot.secrets.clone()));
                         }
@@ -1017,6 +1214,17 @@ fn revoked_error() -> AdkError {
         ErrorCategory::Unauthorized,
         "provider.credential_revoked",
         "provider credential is revoked",
+    )
+}
+
+fn reasoning_option_error(error: AdkError) -> AdkError {
+    AdkError::new(
+        ErrorComponent::Model,
+        ErrorCategory::Unsupported,
+        "provider.reasoning_unsupported",
+        common::redact(&format!(
+            "openrouter reasoning options could not be applied: {error}"
+        )),
     )
 }
 

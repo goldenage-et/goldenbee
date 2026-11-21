@@ -22,11 +22,13 @@ pub mod host;
 pub mod identity;
 pub mod limits;
 pub mod memory;
+pub mod model;
 pub mod package;
 pub mod plan;
 pub mod profile;
 pub mod providers;
 pub mod redaction;
+pub mod run;
 pub mod session;
 pub mod socket;
 pub mod stream;
@@ -80,6 +82,7 @@ pub use host::{
 pub use identity::{scopes, Principal};
 pub use limits::{Capacity, Limits, Usage};
 pub use memory::{KnowledgeFact, MemoryItem};
+pub use model::ReasoningLevel;
 pub use package::{
     protocol_in_range, BuildEvidence, Instance, PackageManifest, Release, ReleaseMetadata,
     SeedAsset, RELEASE_METADATA_SCHEMA,
@@ -100,6 +103,11 @@ pub use providers::{
     PROVIDER_ENVELOPE_INFO, PROVIDER_ENVELOPE_TTL_MS,
 };
 pub use redaction::redact;
+pub use run::{
+    error_exit_code, exit, exit_code, JsonlFrame, JsonlItem, RunFile, RunImage, RunInput,
+    RunRequest, RunResult, RunSource, IMAGE_MEDIA_TYPES, MAX_RUN_FILES, MAX_RUN_FILE_BYTES,
+    MAX_RUN_IMAGES, MAX_RUN_IMAGE_BYTES, MAX_RUN_TEXT_BYTES, MAX_RUN_WAIT_MS, RUN_PROTOCOL_SCHEMA,
+};
 pub use session::{
     SessionCompaction, SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionTurn,
     SessionView,
@@ -125,10 +133,10 @@ pub use telemetry::{
     is_bounded_label, trace_id, traceparent_id, MetricQuality, MetricSample, BOUNDED_LABEL_KEYS,
 };
 pub use worker::{
-    AddWorkerRequest, AddWorkerResponse, AdminWorkerSummary, CapabilityDescriptor,
-    RegistryAuditEntry, UpdateWorkerRequest, WorkerDescriptor, WorkerDiscoveryFilter,
-    WorkerIncarnation, WorkerLease, WorkerLeaseRequest, WorkerRegistrationRequest, WorkerSummary,
-    LOCALITY_LOCAL, LOCALITY_REMOTE,
+    AddWorkerRequest, AddWorkerResponse, AdminWorkerSummary, BrowserCapabilityInventory,
+    CapabilityDescriptor, CapabilityInventory, PluginCapabilityInventory, RegistryAuditEntry,
+    UpdateWorkerRequest, WorkerDescriptor, WorkerDiscoveryFilter, WorkerIncarnation, WorkerLease,
+    WorkerLeaseRequest, WorkerRegistrationRequest, WorkerSummary, LOCALITY_LOCAL, LOCALITY_REMOTE,
 };
 
 /// Wire protocol version implemented by this crate.

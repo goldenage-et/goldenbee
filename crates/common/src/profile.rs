@@ -57,6 +57,13 @@ pub struct ProfileRevision {
     pub instruction: String,
     /// Model reference.
     pub model: String,
+    /// Optional reasoning effort applied through the native adapter.
+    ///
+    /// The selected provider must declare this level and the adapter must
+    /// expose the corresponding field; otherwise admission fails with a typed
+    /// `provider.reasoning_unsupported` error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<crate::ReasoningLevel>,
     /// Capability IDs the profile may use.
     #[serde(default)]
     pub capabilities: Vec<String>,

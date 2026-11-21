@@ -709,6 +709,7 @@ async fn composed_parent_profile_honours_an_allowed_child_model_and_rejects_agen
                 revision: 0,
                 instruction: "COMPOSED-PARENT".into(),
                 model: "deterministic".into(),
+                reasoning: None,
                 capabilities: vec!["general".into()],
                 grants: vec!["task:submit".into()],
                 restrictions: Vec::new(),

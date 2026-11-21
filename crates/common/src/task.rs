@@ -151,6 +151,21 @@ pub struct ResolvedModel {
     /// million tokens, when configured. Used only for local estimates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_cost_micros_per_million: Option<u64>,
+    /// Operator-declared cache-read price in millionths of a currency unit per
+    /// million tokens, when configured. Falls back to the input price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_cost_micros_per_million: Option<u64>,
+    /// Operator-declared cache-write price in millionths of a currency unit per
+    /// million tokens, when configured. Falls back to the input price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_cost_micros_per_million: Option<u64>,
+    /// Declared or requested maximum output tokens for one model call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Reasoning level applied to every request, when the native adapter
+    /// exposes the corresponding request field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<crate::ReasoningLevel>,
     /// Effective immutable profile revision that selected the provider.
     pub profile_revision: u64,
 }
@@ -170,6 +185,9 @@ pub struct Task {
     pub session_id: String,
     /// Original input.
     pub input: String,
+    /// Bounded inline images admitted with the text input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_images: Vec<crate::run::RunImage>,
     /// Idempotency key.
     pub idempotency_key: String,
     /// Canonical request digest.

@@ -4,12 +4,12 @@ use crate::agent::{manual_agent, MANUAL_MODEL, MANUAL_TOOLS};
 use crate::artifact::ArtifactTool;
 use crate::callbacks::native_callbacks;
 use crate::hooks::{audit_plugin, PackageHooks};
-use crate::sandbox::{default_sandbox_workspace, sandbox_tool};
+use crate::sandbox::{default_sandbox_workspace, sandbox_policy, sandbox_tool};
 use adk_rust::Tool;
-use runtime::native::PackageManifest;
+use runtime::native::{PackageManifest, SandboxCommandTool};
 use runtime::policy::PermissionMode;
 use runtime::subagents::{SubagentConfig, SubagentDefinition};
-use runtime::worker::Worker;
+use runtime::worker::{ToolDescriptor, ToolEffect, ToolRisk, Worker};
 use std::sync::Arc;
 
 /// The package's single Worker definition.
@@ -34,6 +34,21 @@ pub fn worker_with_subagents(subagents: SubagentConfig) -> Result<Worker, String
         .tool(
             "exec_command",
             Arc::new(sandbox_tool(default_sandbox_workspace())) as Arc<dyn Tool>,
+        )
+        // Rebuild the contained command tool once the operator `[sandbox]`
+        // policy is known. The static registration above keeps `manifest()`
+        // truthful; this replacement projects the resolved profile, network,
+        // command ceiling, proxy, and process limits onto the OS boundary.
+        .tool_with_settings(
+            "exec_command",
+            ToolDescriptor::new("exec:command")
+                .risk(ToolRisk::Medium)
+                .effect(ToolEffect::None),
+            |settings| {
+                let policy = sandbox_policy(default_sandbox_workspace())
+                    .with_rules(settings.sandbox_rules().clone());
+                Arc::new(SandboxCommandTool::new(policy)) as Arc<dyn Tool>
+            },
         )
         .tool("save_artifact", Arc::new(ArtifactTool) as Arc<dyn Tool>)
         .browser("browser")

@@ -310,7 +310,7 @@ async fn image_tool_returns_a_typed_renderable_descriptor_and_rejects_non_images
     )
     .await;
     assert!(
-        output(&task).contains("tool.path_denied"),
+        output(&task).contains("sandbox.path_denied"),
         "{}",
         output(&task)
     );
@@ -411,6 +411,11 @@ fn web_instance(
     policy: runtime::native::WebPolicy,
 ) -> impl std::future::Future<Output = runtime::worker::WorkerInstance> {
     let config = fixture(data, tools, default_tools_config());
+    // Web tools declare a network capability. Ticket 04's sandbox defaults to
+    // network-disabled, so these tests opt in explicitly, as an operator must.
+    let mut text = std::fs::read_to_string(&config).expect("worker config");
+    text.push_str("\n[sandbox.network]\nenabled = true\n");
+    std::fs::write(&config, text).expect("sandbox network config");
     async move {
         Worker::new("parity", "0.1.0")
             .web_policy(policy)

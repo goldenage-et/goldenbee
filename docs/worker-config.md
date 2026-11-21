@@ -552,6 +552,64 @@ advances the policy revision and records a `permission.policy` audit entry.
 Each tool call snapshots the policy when it starts, so a change applies only to
 later calls and earlier evidence keeps the revision that actually decided it.
 
+## Sandbox profiles and network policy
+
+The runtime owns the sandbox policy. The operator selects one profile and may
+add network, path, command, proxy, and process ceilings. The policy is evaluated
+before authorization and dispatch in the same kernel, so a profile, plugin,
+command, subagent, or model request can only narrow it. The package-declared OS
+boundary adopts the same rules through `SandboxPolicy::with_rules(...)`.
+
+```toml
+[sandbox]
+profile = "workspace-write"       # read-only | workspace-write | full-access
+writable_roots = ["src", "tests"] # workspace-write only; omitted means all
+protected_paths = [".git", ".agents", ".codex", ".aws"]
+protected_grants = []             # explicit metadata grants
+command_allow = ["git status", "cargo "]  # omitted means every command
+command_max_bytes = 16384
+
+[sandbox.network]
+enabled = false                   # default: no network
+allow_hosts = ["api.example.com"] # omitted means every host while enabled
+proxy = "http://127.0.0.1:3128"   # exported as HTTP(S)_PROXY when enabled
+proxy_bypass = ["localhost"]
+
+[sandbox.limits]
+timeout = 10000                   # milliseconds
+max_processes = 4096              # RLIMIT_NPROC and prlimit --nproc
+max_open_files = 256
+memory_bytes = 536870912
+cpu_seconds = 5
+max_file_bytes = 16777216
+max_output_bytes = 1048576
+```
+
+| Profile | Workspace reads | Workspace writes | Protected metadata |
+| --- | --- | --- | --- |
+| `read-only` | allow | deny (`sandbox.read_only`) | deny |
+| `workspace-write` | allow | only authorized roots | explicit grant required |
+| `full-access` | allow | allow | allowed and recorded as an exception |
+
+`workspace-write` with `writable_roots` omitted authorizes the whole workspace.
+A path outside the workspace, a `..` escape, or a symlink that resolves outside
+is denied with `sandbox.path_denied`. `read-only` mounts the workspace
+read-only inside bubblewrap; `workspace-write` mounts only the authorized roots
+writable and overlays protected paths read-only; `full-access` mounts the
+workspace writable. Network is a separate axis: when disabled, the kernel
+denies every declared network tool with `sandbox.network_disabled` and bubblewrap
+does not share the host network namespace. When enabled, `allow_hosts` limits
+declared destinations (`sandbox.network_denied`), and the proxy environment is
+exported to contained processes.
+
+Every call appends a durable `sandbox.decision` event with the profile, decision,
+stable code, workspace-relative paths, command digest, domain, policy snapshot,
+and any protected-path exceptions. A denial also writes a redacted
+`sandbox.decision` audit entry with outcome `deny`; `full-access` writes an
+`exception` entry for every protected path it allows. A denied call never
+executes; a denied mutation produces only a failed `tool.effect` record, never a
+committed one.
+
 ## Agent definitions
 
 Agent files live in the configured `agents` directory. Each `*.toml` is one
@@ -561,6 +619,7 @@ native `LlmAgent`:
 name = "general"
 description = "General purpose native ADK agent"
 model = "deterministic"
+reasoning = "high"
 prompt = "general"
 skills = ["tone"]
 tools = ["exec_command"]
@@ -575,6 +634,11 @@ toolsets = []
   `http+URL` diagnostic reference remains available and reads no environment.
   Provider endpoints and credentials are never read from package code or from
   ad-hoc environment variables.
+- `reasoning` optionally selects a reasoning effort such as `low`, `medium`, or
+  `high`. The selected provider must declare the level in `reasoning_levels` and
+  use an adapter with a pinned reasoning request field. Otherwise startup fails
+  with a typed `provider.reasoning_unsupported` gap instead of silently ignoring
+  the request. The applied level is recorded in the task's `resolved_model`.
 - `prompt` resolves to `<prompts>/<id>.md`.
 - `skills` resolve to `<skills>/<name>/SKILL.md` catalog entries.
 - `tools` and `toolsets` resolve only to capabilities registered by compiled
@@ -606,9 +670,13 @@ tool_calling = true
 local = true
 residency = "local"
 context_window = 32768
+max_output_tokens = 4096
+reasoning_levels = ["low", "medium", "high"]
 cost_rank = 0
 input_cost_micros_per_million = 0      # optional estimate basis
 candidate_cost_micros_per_million = 0
+cache_read_cost_micros_per_million = 0
+cache_write_cost_micros_per_million = 0
 data_class = "local"
 fallbacks = ["deterministic"]
 
@@ -636,9 +704,21 @@ data_class = "shared"
   installed. `gateway:<id>` is produced only by Gateway-managed model loading.
 - `input_cost_micros_per_million` and `candidate_cost_micros_per_million`
   optionally declare an operator price in millionths of a currency unit per
-  million tokens. They only produce a labelled cost estimate; they are never
-  reported as provider billing. Without them, monetary cost remains
-  unavailable rather than zero.
+  million tokens. `cache_read_cost_micros_per_million` and
+  `cache_write_cost_micros_per_million` price provider-reported cache tokens;
+  when unset, the input price applies. Cost is computed only from
+  provider-reported prompt, candidate, and cache counts over these prices.
+  A call whose provider reported no usage gains no cost, and a labelled cost
+  estimate is never reported as provider billing.
+- `context_window` is the declared model window. `max_output_tokens` is the
+  per-call output ceiling; the runtime applies it to the native request and
+  rejects a catalog where it exceeds the declared window.
+- `reasoning_levels` lists the efforts this model supports. Only
+  `openai-compatible` and `openrouter` adapters expose a pinned reasoning field
+  in ADK 2.3.0; declaring levels on any other adapter fails startup with
+  `provider.reasoning_unsupported`. A profile or agent request outside the
+  declared list is rejected at admission, and a fallback that cannot apply the
+  same level is rejected before work starts.
 - `allow_remote = true` is required before a non-local provider is admitted.
   A provider declared `local = true` must have a loopback endpoint.
 - Preflight rejects a missing text modality, bound tools when `tool_calling` is
@@ -646,13 +726,15 @@ data_class = "shared"
   when a budget is set), a missing or revoked credential, and an unapproved
   remote deployment.
 - `fallbacks` is an explicit allowlist. A candidate must preserve locality,
-  residency, credential authority, cost rank, and data-handling class; chains
-  and self-fallback are rejected. Only rate-limit, timeout, or unavailable
-  primary errors may fall back, and fallback happens only before any output.
-  Fallback applies to a profile composition, where the selected provider is
-  reported back and replaces the task's recorded provider. An agent-level
-  reference resolves the primary only, so its recorded provider is always the
-  one that actually ran.
+  residency, credential authority, cost rank, data-handling class, and declared
+  reasoning support; chains and self-fallback are rejected. Only rate-limit,
+  timeout, or unavailable primary errors may fall back, and fallback happens
+  only before any output. Fallback applies to a profile composition, where the
+  selected provider is reported back and replaces the task's recorded provider.
+  An agent-level reference resolves the primary only, so its recorded provider
+  is always the one that actually ran. A durable `model.fallback` event records
+  the task attempt, the failing primary, the provider that actually ran, and the
+  primary failure reason.
 - Revoking a credential blocks new provider calls through already-built models.
   No package rebuild or restart is required.
 
@@ -795,8 +877,9 @@ worker.run().await?;
 
 - Loaded file agents are the default composition.
 - Manual native agents, tools, and toolsets are optional registrations.
-- Every hook is compiled package code. Configuration can select package-defined
-  settings but cannot execute scripts from an asset directory.
+- Package hooks are compiled code. Operator-selected trusted plugins may also
+  declare external command hooks; see [Plugins](#plugins). No asset alone can
+  add compiled Rust behavior.
 - `Worker::manifest()` derives the installed capability inventory from compiled
   registrations. `capabilities` reports that list separately from configured
   agent names.
@@ -846,8 +929,10 @@ general --config worker.toml profile export research
   `SubmitTaskRequest`.
 - A profile revision with `members` rebuilds the selected file-defined native
   agents with that revision's instruction, model, tools, toolsets, and skills.
-  Skills are bound through the native selection index, so only the matching
-  skill is injected into a turn.
+  An optional `reasoning` level is validated against the selected provider
+  catalog and applied to every member the revision rebuilds. Skills are bound
+  through the native selection index, so only the matching skill is injected
+  into a turn.
 - `--workflow` binds members and limits to a registered native template:
   `single`, `sequential`, `parallel`, `loop`, `team`, `fan-out-fan-in`, or
   `review-loop`. Templates lower through pinned `adk-agent`
@@ -910,9 +995,37 @@ Worker hooks run at real runtime points:
 | Hook | Point |
 | --- | --- |
 | `on_start` | after configuration, assets, storage, recovery planning, and native execution are ready; before admission opens or a listener accepts work |
+| `session_start` | once when an admitted turn first opens a session identity in this process |
+| `prompt_submit` | after durable admission, before `before_task`; an explicit denial blocks the prompt |
 | `before_task` | after durable task admission; an error rejects execution and records a failed task |
+| `pre_tool` | after permission, approval, and sandbox decisions; only an explicit denial is honored |
+| `post_tool` | after the bounded tool result and effect evidence; observation only |
+| `pre_compact` | before pinned native context compaction rewrites request history |
+| `post_compact` | after native compaction produced the next event list |
+| `stop` | after the terminal outcome is committed |
+| `subagent_stop` | when a runtime-local child task reaches a terminal outcome |
 | `after_task` | after the terminal outcome is persisted; an error is recorded as redacted evidence and cannot change the outcome |
+| `session_end` | during shutdown, before `on_shutdown`, for every session started in this process |
 | `on_shutdown` | after admission stops and admitted work drains; before native plugins close |
+
+Every handler runs in registration order under one deadline:
+
+```toml
+[hooks]
+timeout_ms = 5000
+max_output_bytes = 65536
+```
+
+A handler that returns an error appends a durable `hook.failed` task event. A
+handler that exceeds the deadline appends `hook.timeout`. Both include the hook
+label, event name, kind, redacted message, and applied timeout, and add a trace
+and audit entry. Hook failure never changes the committed task outcome or the
+authorization decision. `before_task`, `startup`, and `shutdown` keep their
+existing fail-closed behavior; observation hooks continue after a failure.
+
+Hooks run after authorization. A `pre_tool` or `prompt_submit` denial can only
+restrict; returning `allow` cannot widen a denied permission, sandbox, approval,
+or effect receipt.
 
 Startup order is `initializing → recovering (reconciliation plan) → warming
 (on_start) → ready (admission opens) → recovered accepted work dispatched`.
@@ -950,6 +1063,82 @@ Mandatory authentication, namespace/capability admission, and profile
 validation run outside hook code. A plugin or callback can short-circuit a valid
 run but cannot create admission for an unknown agent or bypass bearer
 authentication.
+
+## Plugins
+
+A plugin is a data-only bundle selected by the operator. It never loads Rust
+code. One directory contains `plugin.toml` plus optional command, skill, hook,
+and MCP assets:
+
+```toml
+manifest_version = 1
+name = "example"
+version = "1.0.0"
+description = "Example capability bundle"
+tools = ["exec_command"]
+
+[commands]
+directory = "commands"
+
+[skills]
+directory = "skills"
+
+[[hooks]]
+name = "audit-tool"
+event = "pre_tool"
+command = "hooks/audit.py"
+matcher = "exec_command"
+timeout_ms = 2000
+
+[trust]
+signer = "operator-example"
+signature = "base64-url-safe-ed25519"
+digest = "sha256:<content-digest>"
+```
+
+```toml
+[plugins]
+directory = "plugins"
+
+[plugins.allow]
+example = "*"
+
+[plugins.trusted_signers]
+"operator-example" = "<base64-url-safe-ed25519-public-key>"
+```
+
+- `directory` resolves against the configuration file. Each non-hidden
+  subdirectory must contain `plugin.toml`.
+- `tools` is a declaration, not a capability grant. Every id must resolve to a
+  compiled Worker tool or a declared `mcp:<server>[:<tool>]` before activation.
+- `commands` and `skills` roots must resolve inside the plugin directory. A
+  duplicate command or skill id fails closed; a plugin never overwrites a
+  Worker-owned asset.
+- MCP server ids must not collide with Worker or other plugin definitions.
+- Bundle activation is recorded in `<storage>/plugins.json`. Repeating the same
+  bundle is a no-op; a changed bundle is recorded as an update; a bundle
+  removed from the operator directory is recorded as a removal.
+- `GET /v1/capabilities` returns active plugin inventory with trust source,
+  signer, content digest, and component counts. Host paths and credentials are
+  never included.
+
+Trust is explicit and fail-closed:
+
+1. A signed manifest must declare `[trust].signer`, `[trust].signature`, and
+   `[trust].digest`. The signer key must exist in `plugins.trusted_signers`,
+   the signature must verify over the canonical manifest digest, and the
+   content digest must match every bundled file.
+2. Otherwise `plugins.allow` must name the plugin. A value of `*` trusts the
+   current content; a `sha256:` value pins the exact bundle content.
+3. A bundle with neither source fails startup with `plugin.untrusted`.
+   Changed bundled content under a pinned digest fails with `plugin.tampered`.
+
+External hooks use the Gemini-style JSON stdin/stdout protocol:
+one JSON object on stdin, optional `{"decision":"continue|deny|block","reason":"..."}`
+on stdout, exit `0` for success and `2` for a block. The runtime owns the
+deadline, output ceiling, and permission boundary; a plugin hook cannot grant
+authority. Goldenbee's manifest and trust fields are its own schema, not
+Codex's.
 
 ## Reload
 

@@ -28,6 +28,7 @@ fn revision(
         limits: Limits::default(),
         compaction: None,
         secret_refs: Vec::new(),
+        reasoning: None,
         created_at: 0,
     }
 }

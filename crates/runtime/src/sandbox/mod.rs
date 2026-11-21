@@ -12,22 +12,31 @@
 //! mechanisms fail closed; there is no host fallback.
 
 mod process;
+mod rules;
+
+pub use rules::{
+    NetworkRules, SandboxAction, SandboxDecision, SandboxException, SandboxProfile, SandboxRequest,
+    SandboxRules, SandboxViolation, DEFAULT_COMMAND_MAX_BYTES, DEFAULT_PROTECTED_PATHS,
+};
 
 use adk_rust::{Tool, ToolContext};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 /// Resource and duration ceilings applied to one sandboxed command.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SandboxLimits {
     /// Wall-clock deadline for the command.
+    #[serde(with = "duration_ms")]
     pub timeout: Duration,
     /// Maximum bytes captured from each of stdout and stderr.
     pub max_output_bytes: usize,
@@ -57,6 +66,58 @@ impl Default for SandboxLimits {
     }
 }
 
+impl SandboxLimits {
+    /// Reject a ceiling that cannot be enforced by `prlimit`.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.timeout.is_zero() {
+            return Err("timeout");
+        }
+        if self.max_output_bytes == 0 {
+            return Err("max_output_bytes");
+        }
+        for (name, value) in [
+            ("memory_bytes", self.memory_bytes),
+            ("cpu_seconds", self.cpu_seconds),
+            ("max_processes", self.max_processes),
+            ("max_file_bytes", self.max_file_bytes),
+            ("max_open_files", self.max_open_files),
+        ] {
+            if value == 0 {
+                return Err(name);
+            }
+        }
+        Ok(())
+    }
+
+    /// Return limits that never widen either side.
+    pub fn narrowed_by(&self, other: &SandboxLimits) -> SandboxLimits {
+        SandboxLimits {
+            timeout: self.timeout.min(other.timeout),
+            max_output_bytes: self.max_output_bytes.min(other.max_output_bytes),
+            memory_bytes: self.memory_bytes.min(other.memory_bytes),
+            cpu_seconds: self.cpu_seconds.min(other.cpu_seconds),
+            max_processes: self.max_processes.min(other.max_processes),
+            max_file_bytes: self.max_file_bytes.min(other.max_file_bytes),
+            max_open_files: self.max_open_files.min(other.max_open_files),
+        }
+    }
+}
+
+/// Operator configuration writes and reads `timeout` as milliseconds.
+mod duration_ms {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(value.as_millis() as u64)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        let millis = u64::deserialize(deserializer)?;
+        Ok(Duration::from_millis(millis))
+    }
+}
+
 /// Explicit host policy for one contained command environment.
 #[derive(Debug, Clone)]
 pub struct SandboxPolicy {
@@ -68,12 +129,13 @@ pub struct SandboxPolicy {
     bubblewrap: PathBuf,
     prlimit: PathBuf,
     kill: PathBuf,
-    limits: SandboxLimits,
+    rules: SandboxRules,
 }
 
 impl SandboxPolicy {
     /// Policy with only the runtime directories mounted read-only and the
-    /// workspace writable at `/workspace`. Network access is always disabled.
+    /// workspace writable at `/workspace`. Network access is disabled and
+    /// workspace metadata paths are protected by default.
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let read_only_mounts = ["/usr", "/bin", "/lib", "/lib64", "/sbin"]
             .into_iter()
@@ -93,25 +155,44 @@ impl SandboxPolicy {
             bubblewrap: PathBuf::from("/usr/bin/bwrap"),
             prlimit: PathBuf::from("/usr/bin/prlimit"),
             kill: PathBuf::from("/usr/bin/kill"),
-            limits: SandboxLimits::default(),
+            rules: SandboxRules::default(),
         }
+    }
+
+    /// Adopt runtime-owned sandbox rules: profile, network, protected paths,
+    /// writable roots, command ceiling, proxy, and process limits.
+    pub fn with_rules(mut self, rules: SandboxRules) -> Self {
+        self.rules = rules;
+        self
+    }
+
+    /// Select the read-only, workspace-write, or full-access profile.
+    pub fn with_profile(mut self, profile: SandboxProfile) -> Self {
+        self.rules.profile = profile;
+        self
+    }
+
+    /// Enable or disable network access for contained commands.
+    pub fn with_network(mut self, enabled: bool) -> Self {
+        self.rules.network.enabled = enabled;
+        self
     }
 
     /// Set the wall-clock deadline.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.limits.timeout = timeout;
+        self.rules.limits.timeout = timeout;
         self
     }
 
     /// Set the captured output byte ceiling for stdout and stderr separately.
     pub fn with_output_limit(mut self, max_output_bytes: usize) -> Self {
-        self.limits.max_output_bytes = max_output_bytes;
+        self.rules.limits.max_output_bytes = max_output_bytes;
         self
     }
 
     /// Replace all resource ceilings.
     pub fn with_limits(mut self, limits: SandboxLimits) -> Self {
-        self.limits = limits;
+        self.rules.limits = limits;
         self
     }
 
@@ -161,7 +242,17 @@ impl SandboxPolicy {
 
     /// Resource ceilings applied to each command.
     pub fn limits(&self) -> &SandboxLimits {
-        &self.limits
+        &self.rules.limits
+    }
+
+    /// Effective runtime-owned sandbox rules.
+    pub fn rules(&self) -> &SandboxRules {
+        &self.rules
+    }
+
+    /// Selected filesystem profile.
+    pub fn profile(&self) -> SandboxProfile {
+        self.rules.profile
     }
 }
 
@@ -218,11 +309,35 @@ impl SandboxError {
         }
     }
 
+    fn policy(violation: SandboxViolation) -> Self {
+        Self {
+            code: match violation.code.as_str() {
+                "sandbox.read_only" => "sandbox.read_only",
+                "sandbox.network_disabled" => "sandbox.network_disabled",
+                "sandbox.network_denied" => "sandbox.network_denied",
+                "sandbox.protected_path" => "sandbox.protected_path",
+                "sandbox.path_denied" => "sandbox.path_denied",
+                "sandbox.command_denied" => "sandbox.command_denied",
+                "sandbox.command_limit" => "sandbox.command_limit",
+                _ => "sandbox.invalid_policy",
+            },
+            message: violation.message,
+        }
+    }
+
     /// Tool-facing error code, matching the native `exec_command` JSON shape.
     pub fn tool_code(&self) -> &'static str {
         match self.code {
             "sandbox.unavailable" => "sandbox_unavailable",
             "sandbox.output_limit" => "output_limit",
+            "sandbox.read_only" => "sandbox_read_only",
+            "sandbox.network_disabled" => "sandbox_network_disabled",
+            "sandbox.network_denied" => "sandbox_network_denied",
+            "sandbox.protected_path" => "sandbox_protected_path",
+            "sandbox.path_denied" => "sandbox_path_denied",
+            "sandbox.command_denied" => "sandbox_command_denied",
+            "sandbox.command_limit" => "sandbox_command_limit",
+            "sandbox.invalid_policy" => "sandbox_invalid_policy",
             _ => "execution_error",
         }
     }
@@ -253,10 +368,25 @@ pub struct ExecOutput {
     pub cancelled: bool,
 }
 
+/// One workspace path resolved to its host and guest mount points.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedMount {
+    pub(crate) host: PathBuf,
+    pub(crate) guest: PathBuf,
+}
+
+/// Host paths resolved from workspace-relative sandbox rules.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedSandboxRules {
+    writable_roots: Vec<ResolvedMount>,
+    protected_paths: Vec<ResolvedMount>,
+}
+
 /// One validated Linux containment boundary.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     policy: SandboxPolicy,
+    resolved: ResolvedSandboxRules,
 }
 
 /// Program and arguments that enter the validated boundary.
@@ -277,29 +407,10 @@ impl Sandbox {
                 "the sandbox identity must not be root",
             ));
         }
-        if policy.limits.timeout.is_zero() {
-            return Err(SandboxError::invalid_policy(
-                "the command timeout must be greater than zero",
-            ));
-        }
-        if policy.limits.max_output_bytes == 0 {
-            return Err(SandboxError::invalid_policy(
-                "the output limit must be greater than zero",
-            ));
-        }
-        for (name, value) in [
-            ("memory", policy.limits.memory_bytes),
-            ("cpu", policy.limits.cpu_seconds),
-            ("process", policy.limits.max_processes),
-            ("file", policy.limits.max_file_bytes),
-            ("descriptor", policy.limits.max_open_files),
-        ] {
-            if value == 0 {
-                return Err(SandboxError::invalid_policy(format!(
-                    "the {name} limit must be greater than zero"
-                )));
-            }
-        }
+        policy
+            .rules
+            .validate()
+            .map_err(SandboxError::invalid_policy)?;
         for (key, value) in &policy.environment {
             if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
                 return Err(SandboxError::invalid_policy(
@@ -328,6 +439,7 @@ impl Sandbox {
                 "the host root cannot be the writable workspace",
             ));
         }
+        let resolved = resolve_rules(&workspace, &policy.rules)?;
         policy.workspace = workspace;
         for mount in &policy.read_only_mounts {
             if !mount.is_absolute() || !mount.exists() {
@@ -371,13 +483,99 @@ impl Sandbox {
                 "prlimit failed its version probe",
             ));
         }
-        Ok(Self { policy })
+        Ok(Self { policy, resolved })
     }
 
     /// Policy in force for this boundary.
     pub fn policy(&self) -> &SandboxPolicy {
         &self.policy
     }
+
+    /// Workspace-relative writable roots resolved to host paths.
+    pub(crate) fn writable_roots(&self) -> &[ResolvedMount] {
+        &self.resolved.writable_roots
+    }
+
+    /// Workspace-relative protected paths resolved to host paths.
+    pub(crate) fn protected_paths(&self) -> &[ResolvedMount] {
+        &self.resolved.protected_paths
+    }
+}
+
+/// Resolve workspace-relative rule paths and reject escapes.
+fn resolve_rules(
+    workspace: &Path,
+    rules: &SandboxRules,
+) -> Result<ResolvedSandboxRules, SandboxError> {
+    let mut writable_roots = Vec::new();
+    for root in rules.writable_roots.iter().flatten() {
+        let path = resolve_inside(workspace, root).ok_or_else(|| {
+            SandboxError::invalid_policy(format!("writable root escapes the workspace: {root}"))
+        })?;
+        if !path.exists() {
+            return Err(SandboxError::invalid_policy(format!(
+                "writable root is not an existing directory: {root}"
+            )));
+        }
+        if !path.is_dir() {
+            return Err(SandboxError::invalid_policy(format!(
+                "writable root is not a directory: {root}"
+            )));
+        }
+        writable_roots.push(ResolvedMount {
+            host: path,
+            guest: Path::new("/workspace").join(root),
+        });
+    }
+    let mut protected_paths = Vec::new();
+    for path in &rules.protected_paths {
+        if rules.protected_grants.iter().any(|grant| grant == path) {
+            continue;
+        }
+        let Some(host) = resolve_inside(workspace, path) else {
+            return Err(SandboxError::invalid_policy(format!(
+                "protected path escapes the workspace: {path}"
+            )));
+        };
+        // A missing metadata directory needs no read-only overlay.
+        if host.exists() {
+            protected_paths.push(ResolvedMount {
+                host,
+                guest: Path::new("/workspace").join(path),
+            });
+        }
+    }
+    Ok(ResolvedSandboxRules {
+        writable_roots,
+        protected_paths,
+    })
+}
+
+/// Join a workspace-relative rule path, normalize `..`, and verify that the
+/// canonical result stays inside the canonical workspace.
+fn resolve_inside(workspace: &Path, relative: &str) -> Option<PathBuf> {
+    let path = workspace.join(relative);
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    let canonical = match fs::canonicalize(&normalized) {
+        Ok(canonical) => canonical,
+        Err(_) => {
+            let parent = normalized.parent()?;
+            let name = normalized.file_name()?;
+            fs::canonicalize(parent).ok()?.join(name)
+        }
+    };
+    canonical.starts_with(workspace).then_some(normalized)
 }
 
 fn require_executable(path: &Path) -> Result<(), SandboxError> {

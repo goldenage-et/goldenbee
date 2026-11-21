@@ -4,7 +4,9 @@
 //! host effects: files, sockets, credentials, process tables, and resource
 //! limits. They do not assert on internal path-string checks.
 
-use runtime::native::sandbox::{Sandbox, SandboxPolicy};
+use runtime::native::sandbox::{
+    NetworkRules, Sandbox, SandboxPolicy, SandboxProfile, SandboxRules,
+};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -363,6 +365,153 @@ async fn separate_boundaries_use_independent_identities_and_resource_policies() 
         second_output.stderr,
         second_output.exit_code
     );
+}
+
+#[tokio::test]
+async fn read_only_profile_blocks_writes_and_keeps_reads() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = workspace(root.path());
+    fs::write(workspace.join("existing.txt"), "READABLE-CONTENT").unwrap();
+    let sandbox =
+        Sandbox::new(SandboxPolicy::new(&workspace).with_profile(SandboxProfile::ReadOnly))
+            .expect("read-only boundary is available");
+
+    let output = sandbox
+        .exec(
+            "cat existing.txt; printf 'MUTATED' > existing.txt; printf 'NEW' > new.txt; echo write=$?",
+            None,
+        )
+        .await
+        .expect("read-only writes fail observably");
+
+    assert!(
+        output.stdout.contains("READABLE-CONTENT"),
+        "read was denied: {}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("write=") && !output.stdout.contains("write=0"),
+        "write unexpectedly succeeded: stdout={} stderr={}",
+        output.stdout,
+        output.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("existing.txt")).unwrap(),
+        "READABLE-CONTENT"
+    );
+    assert!(!workspace.join("new.txt").exists());
+}
+
+#[tokio::test]
+async fn protected_metadata_and_writable_root_allowlist_are_enforced() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = workspace(root.path());
+    fs::create_dir_all(workspace.join(".git")).unwrap();
+    fs::write(workspace.join(".git/config"), "ORIGINAL").unwrap();
+    fs::create_dir_all(workspace.join("notes")).unwrap();
+    fs::create_dir_all(workspace.join("other")).unwrap();
+    let rules = SandboxRules {
+        writable_roots: Some(vec!["notes".into()]),
+        ..SandboxRules::default()
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::new(&workspace).with_rules(rules)).expect("boundary");
+
+    let output = sandbox
+        .exec(
+            "printf 'notes' > notes/a.txt; echo notes=$?; \
+             printf 'other' > other/a.txt; echo other=$?; \
+             printf 'git' > .git/config; echo git=$?",
+            None,
+        )
+        .await
+        .expect("policy failures are observable");
+
+    assert!(
+        output.stdout.contains("notes=0"),
+        "authorized root was not writable: {}",
+        output.stdout
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("notes/a.txt")).unwrap(),
+        "notes"
+    );
+    assert!(
+        !output.stdout.contains("other=0"),
+        "unauthorized root was writable: {}",
+        output.stdout
+    );
+    assert!(!workspace.join("other/a.txt").exists());
+    assert!(
+        !output.stdout.contains("git=0"),
+        "protected metadata was writable: {}",
+        output.stdout
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join(".git/config")).unwrap(),
+        "ORIGINAL"
+    );
+}
+
+#[tokio::test]
+async fn network_enabled_policy_reaches_the_host_and_reports_a_proxy_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("host listener");
+    let port = listener.local_addr().unwrap().port();
+    let rules = SandboxRules {
+        network: NetworkRules {
+            enabled: true,
+            proxy: Some("http://127.0.0.1:3128".into()),
+            ..NetworkRules::default()
+        },
+        ..SandboxRules::default()
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::new(workspace(root.path())).with_rules(rules))
+        .expect("network-enabled boundary is available");
+
+    let output = sandbox
+        .exec(
+            &format!(
+                "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port}' && echo connected; \
+                 printf 'proxy=%s' \"$HTTP_PROXY\""
+            ),
+            None,
+        )
+        .await
+        .expect("network-enabled command runs");
+
+    assert!(
+        output.stdout.contains("connected"),
+        "network was not enabled: stdout={} stderr={}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        output.stdout.contains("proxy=http://127.0.0.1:3128"),
+        "proxy environment was not exported: {}",
+        output.stdout
+    );
+    // The test listener is never accepted, so the kernel completes the TCP
+    // handshake into the backlog; that still proves the namespace is shared.
+    drop(listener);
+}
+
+#[tokio::test]
+async fn command_ceiling_denies_before_the_process_starts() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = workspace(root.path());
+    let marker = format!("t32-command-ceiling-{}", std::process::id());
+    let rules = SandboxRules {
+        command_allow: Some(vec!["printf allowed".into()]),
+        ..SandboxRules::default()
+    };
+    let sandbox = Sandbox::new(SandboxPolicy::new(&workspace).with_rules(rules)).expect("boundary");
+
+    let error = sandbox
+        .exec(&format!("/bin/bash -c 'exec -a {marker} sleep 300'"), None)
+        .await
+        .expect_err("unlisted command must be denied");
+    assert_eq!(error.code, "sandbox.command_denied");
+    assert!(processes_containing(&marker).is_empty());
 }
 
 #[tokio::test]

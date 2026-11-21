@@ -30,7 +30,11 @@ pub use config::{
     FileConfig, GatewayConfig, ModelsConfig, PathsConfig, ResolvedModels, StorageConfig,
     TokenConfig, WorkerSettings,
 };
-pub use hooks::{TaskHookContext, WorkerHooks};
+pub use hooks::{
+    CompactHookContext, CompactHookOutcome, HookDecision, HookFailure, HookFailureKind, HookPolicy,
+    HookReporter, SessionHookContext, StopHookContext, SubagentStopHookContext, TaskHookContext,
+    ToolHookContext, ToolHookOutcome, WorkerHooks,
+};
 pub use instance::{ShutdownReport, WorkerContext, WorkerInstance};
 
 use crate::agents::graph::{build_graphs, GraphRegistration, GraphRuntime};
@@ -72,6 +76,14 @@ use tokio_util::sync::CancellationToken;
 pub type WorkerResult<T> = std::result::Result<T, ApiError>;
 
 type AgentFactoryFn = Arc<dyn Fn(&WorkerSettings) -> WorkerResult<Arc<dyn Agent>> + Send + Sync>;
+type SettingsToolFn = Arc<dyn Fn(&WorkerSettings) -> Arc<dyn Tool> + Send + Sync>;
+
+/// A compiled tool rebuilt from resolved instance settings at startup.
+struct SettingsTool {
+    id: String,
+    descriptor: ToolDescriptor,
+    build: SettingsToolFn,
+}
 
 /// A package-owned agent constructed from the resolved instance configuration.
 ///
@@ -108,6 +120,8 @@ pub struct ManualAgentDefinition {
     pub description: String,
     /// Logical provider reference resolved at startup and reload.
     pub model: String,
+    /// Reasoning effort applied through the selected provider adapter.
+    pub reasoning: Option<common::ReasoningLevel>,
     /// Number of tools the factory binds, used for provider preflight.
     pub tools: usize,
     /// Native agent factory.
@@ -144,6 +158,10 @@ pub struct Worker {
     pub(crate) toolsets: BTreeMap<String, Arc<dyn Toolset>>,
     /// One process-wide pipeline applied to every tool source.
     pub(crate) kernel: ToolKernel,
+    /// Tools whose instance policy is only known after configuration loads.
+    /// Their static registration keeps the capability inventory truthful; the
+    /// resolved tool replaces it before assets bind.
+    settings_tools: Vec<SettingsTool>,
     /// Package-declared generic file/search capabilities.
     builtin_tools: BTreeSet<BuiltinTool>,
     /// Package-declared destination policy for the web tools.
@@ -192,6 +210,7 @@ impl Worker {
             tool_permissions: BTreeMap::new(),
             toolsets: BTreeMap::new(),
             kernel,
+            settings_tools: Vec::new(),
             builtin_tools: BTreeSet::new(),
             web_policy: None,
             process_policy: None,
@@ -287,6 +306,45 @@ impl Worker {
                 ManualAgent::Defined(ManualAgentDefinition {
                     description: description.into(),
                     model: model.into(),
+                    reasoning: None,
+                    tools,
+                    build: ManualAgentBuild::Model(Arc::new(factory)),
+                }),
+            )
+            .is_some();
+        if duplicate_graph || duplicate_agent {
+            self.duplicate_ids.insert(id);
+        }
+        self
+    }
+
+    /// Register a model-resolved agent with an explicit reasoning level.
+    ///
+    /// The level is validated against the selected provider's declared
+    /// `reasoning_levels` during startup. An unsupported level fails before the
+    /// Worker serves.
+    pub fn model_agent_with_reasoning(
+        mut self,
+        id: impl Into<String>,
+        description: impl Into<String>,
+        model: impl Into<String>,
+        reasoning: common::ReasoningLevel,
+        tools: usize,
+        factory: impl Fn(Arc<dyn Llm>) -> std::result::Result<Arc<dyn Agent>, String>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        let id = id.into();
+        let duplicate_graph = self.graphs.contains_key(&id);
+        let duplicate_agent = self
+            .manual_agents
+            .insert(
+                id.clone(),
+                ManualAgent::Defined(ManualAgentDefinition {
+                    description: description.into(),
+                    model: model.into(),
+                    reasoning: Some(reasoning),
                     tools,
                     build: ManualAgentBuild::Model(Arc::new(factory)),
                 }),
@@ -323,6 +381,7 @@ impl Worker {
                 ManualAgent::Defined(ManualAgentDefinition {
                     description: description.into(),
                     model: model.into(),
+                    reasoning: None,
                     tools,
                     build: ManualAgentBuild::WithSettings(Arc::new(factory)),
                 }),
@@ -575,6 +634,34 @@ impl Worker {
         self.kernel.clone()
     }
 
+    /// Rebuild one registered tool from resolved instance settings at startup.
+    ///
+    /// The package still registers the static tool first, so `manifest()` and
+    /// `capabilities` remain truthful before a configuration exists. At startup
+    /// the factory receives the loaded [`WorkerSettings`] and replaces that
+    /// registration; the descriptor keeps the kernel evidence accurate.
+    ///
+    /// The General package uses this for its contained command tool so the
+    /// operator's `[sandbox]` profile, network, command ceiling, proxy, and
+    /// process limits reach the OS boundary. Configuration can only narrow the
+    /// compiled package policy.
+    pub fn tool_with_settings<F>(
+        mut self,
+        id: impl Into<String>,
+        descriptor: ToolDescriptor,
+        factory: F,
+    ) -> Self
+    where
+        F: Fn(&WorkerSettings) -> Arc<dyn Tool> + Send + Sync + 'static,
+    {
+        self.settings_tools.push(SettingsTool {
+            id: id.into(),
+            descriptor,
+            build: Arc::new(factory),
+        });
+        self
+    }
+
     pub(crate) fn insert_registered(
         mut self,
         id: String,
@@ -705,8 +792,17 @@ impl Worker {
             } else {
                 vec![
                     "startup".into(),
+                    "session_start".into(),
+                    "prompt_submit".into(),
                     "before_task".into(),
+                    "pre_tool".into(),
+                    "post_tool".into(),
+                    "pre_compact".into(),
+                    "post_compact".into(),
+                    "stop".into(),
+                    "subagent_stop".into(),
                     "after_task".into(),
+                    "session_end".into(),
                     "shutdown".into(),
                 ]
             },
@@ -724,6 +820,10 @@ impl Worker {
         }
         let config_path = canonical_config(config_path.as_ref())?;
         let mut settings = WorkerSettings::load(&config_path)?;
+        // Plugins are operator-selected data. Trust, asset containment, and
+        // tool resolution are checked before any component is activated.
+        let plugins = crate::plugins::load(&settings)?;
+        settings.apply_plugins(&plugins)?;
         if let Some(name) = &settings.file.name {
             if name != &self.name {
                 return Err(ApiError::new(
@@ -781,6 +881,7 @@ impl Worker {
                     .map(|tool| tool.id().to_string())
                     .collect(),
                 permissions: settings.file.permissions.clone(),
+                sandbox: settings.file.sandbox.clone(),
             })
             .map_err(|error| {
                 ApiError::new(
@@ -791,6 +892,20 @@ impl Worker {
                     ),
                 )
             })?;
+        for entry in std::mem::take(&mut self.settings_tools) {
+            if !self.tools.contains_key(&entry.id) {
+                return Err(ApiError::new(
+                    "asset.tool_unresolved",
+                    format!(
+                        "settings-resolved tool '{}' has no static registration",
+                        entry.id
+                    ),
+                ));
+            }
+            let tool = (entry.build)(&settings);
+            let wrapped = self.kernel.wrap(tool, entry.descriptor);
+            self.tools.insert(entry.id, wrapped);
+        }
         if !self.builtin_tools.is_empty() {
             for (id, tool, permissions) in crate::tools::builtin::tools(&self.kernel) {
                 self = self.insert_registered(id, tool, permissions);
@@ -924,6 +1039,15 @@ impl Worker {
                 format!("package registration and a generic file tool both claim id '{id}'"),
             ));
         }
+        // Every plugin tool declaration must resolve to a compiled tool or a
+        // declared MCP server before the bundle is recorded as active.
+        let mcp_ids: BTreeSet<String> = settings.file.mcp.servers.keys().cloned().collect();
+        plugins.validate_tools(&self.tools, &mcp_ids)?;
+        let plugin_views = plugins.views.clone();
+        let base_hooks = std::mem::take(&mut self.hooks);
+        let hook_policy = settings.hook_policy();
+        let mut effective_hooks = base_hooks.clone();
+        effective_hooks.extend(plugins.hooks.iter().cloned());
         let browser = match &self.browser {
             Some(id) => {
                 Some(BrowserController::start(id.clone(), browser_settings(&settings)?).await)
@@ -1001,6 +1125,10 @@ impl Worker {
             &providers,
             graph.as_ref(),
         )?;
+        // Activation evidence is written only after plugin assets resolved
+        // against the Worker's own catalog, so a rejected bundle leaves no
+        // half-active record.
+        let plugin_changes = plugins.commit()?;
         let local_mcp = Arc::new(McpRegistry::new(
             &settings.file.grants,
             Some(self.kernel.clone()),
@@ -1047,8 +1175,37 @@ impl Worker {
         // startup code cannot be mistaken for a ready Worker.
         runtime.close_admission().await;
         runtime.set_phase(common::LifecyclePhase::Recovering).await;
-        let hooks = composite_hooks(std::mem::take(&mut self.hooks));
+        let hooks = composite_hooks(
+            effective_hooks,
+            hook_policy,
+            Some(Arc::new(runtime.clone())),
+        );
         runtime.set_hooks(hooks.clone()).await;
+        for change in &plugin_changes {
+            let detail = match change.action {
+                "removed" => {
+                    "bundle is no longer present in the operator plugin directory".to_string()
+                }
+                action => plugin_views
+                    .iter()
+                    .find(|view| view.name == change.name)
+                    .map(|view| {
+                        format!(
+                            "{action} version={} trust={} signer={} digest={} components={}",
+                            view.version,
+                            view.trust,
+                            view.signer,
+                            view.digest,
+                            view.components.join(",")
+                        )
+                    })
+                    .unwrap_or_else(|| action.to_string()),
+            };
+            let operation = format!("plugin.{}", change.action);
+            let _ = runtime
+                .audit("runtime", &operation, &change.name, change.action, &detail)
+                .await;
+        }
 
         let remote_mcp = RemoteMcpRegistry::new(
             settings.file.mcp.clone(),
@@ -1110,7 +1267,9 @@ impl Worker {
                 callbacks: self.callbacks,
                 mcp: local_mcp,
                 remote_mcp,
-                hooks,
+                hooks: RwLock::new(hooks),
+                package_hooks: base_hooks,
+                plugin_views: RwLock::new(plugin_views),
                 plugins,
                 browser,
                 revision,
@@ -1120,7 +1279,7 @@ impl Worker {
             }),
         };
 
-        if let Some(hooks) = &instance.inner.hooks {
+        if let Some(hooks) = instance.inner.hooks.read().await.clone() {
             if let Err(error) = hooks.startup(&instance).await {
                 instance.inner.mcp.shutdown().await;
                 executor.close().await;
@@ -1278,10 +1437,14 @@ pub(crate) fn browser_settings(settings: &WorkerSettings) -> WorkerResult<Browse
     }
 }
 
-fn composite_hooks(hooks: Vec<Arc<dyn WorkerHooks>>) -> Option<Arc<dyn WorkerHooks>> {
-    match hooks.len() {
-        0 => None,
-        1 => hooks.into_iter().next(),
-        _ => Some(Arc::new(CompositeHooks(hooks))),
+fn composite_hooks(
+    hooks: Vec<Arc<dyn WorkerHooks>>,
+    policy: crate::worker::HookPolicy,
+    reporter: Option<Arc<dyn crate::worker::HookReporter>>,
+) -> Option<Arc<dyn WorkerHooks>> {
+    if hooks.is_empty() {
+        None
+    } else {
+        Some(Arc::new(CompositeHooks::new(hooks, policy, reporter)))
     }
 }

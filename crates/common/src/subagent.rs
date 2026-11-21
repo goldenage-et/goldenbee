@@ -206,6 +206,7 @@ mod tests {
             agent: "echo".into(),
             session_id: "sub_1".into(),
             input: "hello".into(),
+            input_images: Vec::new(),
             idempotency_key: "sub:spawn:1".into(),
             request_digest: "sha256:x".into(),
             profile: "default".into(),

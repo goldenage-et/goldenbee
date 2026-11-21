@@ -21,6 +21,8 @@ pub(crate) struct AdmitRequest {
     pub session_id: String,
     /// User input.
     pub input: String,
+    /// Bounded inline images admitted with the text input.
+    pub input_images: Vec<common::RunImage>,
     /// Caller-scoped idempotency key.
     pub idempotency_key: String,
     /// Canonical digest of the accepted payload.
@@ -94,12 +96,34 @@ impl Runtime {
                 "input exceeds the 1 MB management limit",
             ));
         }
+        // Inline images are bounded before any durable write. A malformed image
+        // fails here, so no task is admitted and no execution begins.
+        if request.input_images.len() > common::MAX_RUN_IMAGES {
+            return Err(ApiError::new(
+                "validation.input_too_large",
+                "input has more images than the published limit",
+            )
+            .with("limit", common::MAX_RUN_IMAGES.to_string()));
+        }
+        let mut input_bytes = request.input.len();
+        for image in &request.input_images {
+            image.validate()?;
+            input_bytes = input_bytes.saturating_add(image.decoded_len());
+        }
+        if input_bytes > common::MAX_RUN_TEXT_BYTES {
+            return Err(ApiError::new(
+                "validation.input_too_large",
+                "combined text and image input exceeds the published limit",
+            )
+            .with("limit_bytes", common::MAX_RUN_TEXT_BYTES.to_string()));
+        }
 
         let AdmitRequest {
             namespace,
             agent: requested_agent,
             session_id,
             input,
+            input_images,
             idempotency_key,
             request_digest: digest,
             profile: profile_name,
@@ -311,6 +335,7 @@ impl Runtime {
                     agent: agent.clone(),
                     session_id: session_id.clone(),
                     input: input.clone(),
+                    input_images: input_images.clone(),
                     idempotency_key: idempotency_key.clone(),
                     request_digest: digest.clone(),
                     profile: profile_name.clone(),
@@ -410,6 +435,17 @@ impl Runtime {
     /// owns no new dispatch.
     pub(crate) async fn dispatch_admitted(&self, task: &Task) -> TaskState {
         let cancel = tokio_util::sync::CancellationToken::new();
+        self.session_start_hook(&crate::worker::SessionHookContext {
+            task_id: Some(task.id.clone()),
+            namespace: task.namespace.clone(),
+            caller: task.caller.clone(),
+            agent: task.agent.clone(),
+            session_id: task.session_id.clone(),
+            profile: task.profile.clone(),
+            profile_revision: task.profile_revision,
+            asset_revision: task.asset_revision,
+        })
+        .await;
         let hook_ctx = crate::worker::TaskHookContext {
             task_id: task.id.clone(),
             namespace: task.namespace.clone(),
@@ -423,6 +459,19 @@ impl Runtime {
             settings: self.settings().await,
             cancel: cancel.clone(),
         };
+        if let crate::worker::HookDecision::Deny { reason } =
+            self.prompt_submit_hook(&hook_ctx).await
+        {
+            self.finish_task(
+                &task.id,
+                crate::ExecutionOutcome::failure(ApiError::new(
+                    "hook.prompt_blocked",
+                    format!("prompt was blocked by a hook: {}", common::redact(&reason)),
+                )),
+            )
+            .await;
+            return TaskState::Failed;
+        }
         if let Err(error) = self.before_task_hook(&hook_ctx).await {
             self.finish_task(&task.id, crate::ExecutionOutcome::failure(error))
                 .await;

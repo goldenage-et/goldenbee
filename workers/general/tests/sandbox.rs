@@ -6,6 +6,15 @@ use std::process::Command;
 mod fixture;
 
 fn run(input: &str, data_dir: &std::path::Path, extra: &[(&str, &str)]) -> serde_json::Value {
+    run_with_sandbox(input, data_dir, extra, None)
+}
+
+fn run_with_sandbox(
+    input: &str,
+    data_dir: &std::path::Path,
+    extra: &[(&str, &str)],
+    sandbox: Option<&str>,
+) -> serde_json::Value {
     let model = extra
         .iter()
         .find(|(key, _)| *key == "GOLDENBEE_MODEL")
@@ -22,6 +31,11 @@ fn run(input: &str, data_dir: &std::path::Path, extra: &[(&str, &str)]) -> serde
             token_scopes: vec!["*".into()],
         },
     );
+    if let Some(sandbox) = sandbox {
+        let mut text = std::fs::read_to_string(&fixture.config).expect("worker config");
+        text.push_str(&format!("\n[sandbox]\n{sandbox}"));
+        std::fs::write(&fixture.config, text).expect("sandbox config");
+    }
     let mut command = Command::new(env!("CARGO_BIN_EXE_general"));
     command
         .args([
@@ -91,6 +105,73 @@ fn native_agent_cannot_read_a_forbidden_host_path() {
         output.contains("No such file") || output.contains("not found"),
         "{output}"
     );
+}
+
+#[test]
+fn operator_read_only_profile_blocks_a_workspace_write() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let workspace = data_dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("existing.txt"), "READABLE").unwrap();
+    let evidence = run_with_sandbox(
+        "sandbox:cat existing.txt; printf 'MUTATED' > denied.txt; echo write=$?",
+        data_dir.path(),
+        &[("GOLDENBEE_MODEL", "deterministic")],
+        Some("profile = \"read-only\"\n"),
+    );
+    assert_eq!(evidence["state"], "succeeded");
+    let output = evidence["output"].as_str().unwrap_or_default();
+    assert!(output.contains("READABLE"), "{output}");
+    assert!(
+        !output.contains("write=0"),
+        "read-only sandbox allowed a write: {output}"
+    );
+    assert!(
+        !workspace.join("denied.txt").exists(),
+        "read-only sandbox wrote the workspace"
+    );
+}
+
+#[test]
+fn operator_network_disabled_blocks_a_process_network_attempt() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let evidence = run_with_sandbox(
+        &format!("/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port}'; echo network=$?"),
+        data_dir.path(),
+        &[("GOLDENBEE_MODEL", "deterministic")],
+        Some("profile = \"workspace-write\"\n\n[sandbox.network]\nenabled = false\n"),
+    );
+    let output = evidence["output"].as_str().unwrap_or_default();
+    assert!(
+        !output.contains("network=0"),
+        "network was reachable under a disabled policy: {output}"
+    );
+    assert!(
+        listener.accept().is_err(),
+        "host listener received a sandbox connection"
+    );
+}
+
+#[test]
+fn operator_command_ceiling_blocks_an_unlisted_command() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let workspace = data_dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let evidence = run_with_sandbox(
+        "sandbox:touch denied.txt",
+        data_dir.path(),
+        &[("GOLDENBEE_MODEL", "deterministic")],
+        Some("profile = \"workspace-write\"\ncommand_allow = [\"printf \"]\n"),
+    );
+    let output = evidence["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains("sandbox_command_denied"),
+        "command ceiling was not enforced: {output}"
+    );
+    assert!(!workspace.join("denied.txt").exists());
 }
 
 #[test]

@@ -249,6 +249,7 @@ async fn profile_skill_selection_bounds_the_discoverable_catalog() {
                 limits: Limits::default(),
                 compaction: None,
                 secret_refs: Vec::new(),
+                reasoning: None,
                 created_at: 0,
             },
         )

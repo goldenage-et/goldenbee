@@ -30,6 +30,8 @@ pub struct ProfileRevisionOptions {
     pub secret_refs: Vec<String>,
     /// Context compaction budget.
     pub compaction_budget: Option<u64>,
+    /// Reasoning effort applied through the selected provider.
+    pub reasoning: Option<ReasoningLevel>,
 }
 
 /// One profile action.
@@ -169,6 +171,7 @@ pub(crate) fn profile_revision(options: &ProfileRevisionOptions) -> ProfileRevis
                 ..common::ContextCompaction::default()
             }),
         secret_refs: options.secret_refs.clone(),
+        reasoning: options.reasoning,
         created_at: 0,
     }
 }
