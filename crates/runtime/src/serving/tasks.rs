@@ -92,9 +92,9 @@ pub(super) async fn task(
         .map_err(failure)
 }
 
-/// Read-only evidence linking task, attempt, native invocation, and every
-/// protected effect operation. The Worker Instance owns the receipts; this
-/// route only projects them.
+/// Read-only evidence linking task, attempt, native invocation, terminal
+/// result, and every protected effect operation. The Worker Instance owns the
+/// receipts; this route only projects them.
 pub(super) async fn operations(
     State(state): State<WorkerState>,
     Extension(principal): Extension<Principal>,
@@ -108,11 +108,28 @@ pub(super) async fn operations(
             .await
             .unwrap_or(crate::EffectEvidence {
                 task_id: task.id.clone(),
+                trace_id: Some(task.trace_id.clone()).filter(|trace| !trace.is_empty()),
+                state: task.state,
+                terminal: task.state.is_terminal(),
                 attempt: task.attempt,
                 native_invocation_id: task.native_invocation_id.clone(),
                 operations: Vec::new(),
             }),
     ))
+}
+
+/// Typed, redacted audit evidence for one task.
+pub(super) async fn audit(
+    State(state): State<WorkerState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> JsonResult<Vec<common::AuditEntry>> {
+    state
+        .runtime
+        .audit_entries(&principal, &id, 500)
+        .await
+        .map(Json)
+        .map_err(failure)
 }
 
 fn default_limit() -> usize {

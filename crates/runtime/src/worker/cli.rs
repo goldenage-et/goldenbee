@@ -1040,9 +1040,19 @@ impl Worker {
                 let code = match outcome {
                     Ok(result) => {
                         if json {
+                            let effect_evidence =
+                                instance.runtime().effect_evidence(&result.task_id).await;
+                            let mut value = serde_json::to_value(&result)
+                                .unwrap_or_else(|_| serde_json::json!({}));
+                            if let Some(object) = value.as_object_mut() {
+                                object.insert(
+                                    "effect_evidence".into(),
+                                    serde_json::json!(effect_evidence),
+                                );
+                            }
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&result)
+                                serde_json::to_string_pretty(&value)
                                     .unwrap_or_else(|_| "{}".into())
                             );
                         } else if !jsonl {

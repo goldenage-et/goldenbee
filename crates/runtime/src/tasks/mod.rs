@@ -402,6 +402,7 @@ impl Runtime {
                     &source,
                     &incarnation,
                     retention,
+                    &self.redactor(),
                     &id,
                     accepted_seq,
                     "task.accepted",
@@ -428,6 +429,7 @@ impl Runtime {
                     &source,
                     asset_revision,
                     &trace_id,
+                    &self.redactor(),
                 );
                 Ok((task, false))
             })

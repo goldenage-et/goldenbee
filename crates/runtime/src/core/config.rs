@@ -194,6 +194,13 @@ pub struct RuntimeConfig {
     pub per_principal: usize,
     /// Durable event retention per stream.
     pub event_retention: usize,
+    /// Filesystem roots whose absolute paths may appear in evidence.
+    ///
+    /// Any other host path is redacted before an event, audit record, trace,
+    /// effect receipt, or diagnostic is persisted or projected. Packages add
+    /// their operator-selected workspace; the runtime always allows its own
+    /// data directory.
+    pub redaction_roots: Vec<PathBuf>,
     /// Maximum time admitted work may finish after admission closes.
     pub drain_timeout_ms: u64,
     /// Maximum concurrently open event streams in this process.
@@ -251,6 +258,7 @@ impl RuntimeConfig {
     /// Local development configuration. One admin token is bound to the local
     /// namespace and is intended only for loopback access.
     pub fn local(data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
         let namespace = std::env::var("GOLDENBEE_NAMESPACE").unwrap_or_else(|_| "local".into());
         let token = std::env::var("GOLDENBEE_TOKEN").unwrap_or_else(|_| "local-dev-token".into());
         let mut tokens = BTreeMap::new();
@@ -323,7 +331,7 @@ impl RuntimeConfig {
             package_version: String::new(),
             incarnation: format!("inc-{}", uuid::Uuid::new_v4()),
             config_revision: 1,
-            data_dir: data_dir.into(),
+            data_dir: data_dir.clone(),
             tokens,
             capabilities,
             routing_agents: std::collections::BTreeSet::new(),
@@ -333,6 +341,7 @@ impl RuntimeConfig {
             max_queue: 32,
             per_principal: 8,
             event_retention: 2_000,
+            redaction_roots: vec![data_dir.clone()],
             drain_timeout_ms: 10_000,
             max_streams: DEFAULT_MAX_STREAMS,
             stream_buffer: DEFAULT_STREAM_BUFFER,

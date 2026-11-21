@@ -10,9 +10,9 @@
 //! this store, and a Client cannot authorize a retry by presenting an
 //! operation id.
 
+use crate::core::redaction::Redactor;
 use crate::{new_id, now, OperationRecord, Result, Runtime};
-use common::{ApiError, Task};
-use serde::Serialize;
+use common::{ApiError, EffectEvidence, OperationView, Task};
 
 /// Operation is reserved and may be in flight.
 pub const STATUS_RESERVED: &str = "reserved";
@@ -196,35 +196,6 @@ pub enum BeginOutcome {
     },
 }
 
-/// Safe, read-only projection of one operation.
-#[derive(Debug, Clone, Serialize)]
-pub struct OperationView {
-    /// Operation identity.
-    pub id: String,
-    /// Owning task identity.
-    pub task_id: String,
-    /// Exact operation digest.
-    pub digest: String,
-    /// Operation status.
-    pub status: String,
-    /// Dispatch attempts.
-    pub attempt: u32,
-    /// Native invocation that dispatched it.
-    pub invocation_id: Option<String>,
-    /// Owning tool.
-    pub tool: String,
-    /// Stable external idempotency key.
-    pub idempotency_key: String,
-    /// Policy recorded with the attempt.
-    pub policy: String,
-    /// Redacted external reference.
-    pub external_ref: Option<String>,
-    /// Redacted receipt or reconciliation detail.
-    pub receipt: Option<String>,
-    /// Update time.
-    pub updated_at: i64,
-}
-
 impl From<&OperationRecord> for OperationView {
     fn from(operation: &OperationRecord) -> Self {
         Self {
@@ -239,23 +210,13 @@ impl From<&OperationRecord> for OperationView {
             policy: operation.policy.clone(),
             external_ref: operation.external_ref.clone(),
             receipt: operation.receipt.clone(),
+            terminal: matches!(
+                operation.status.as_str(),
+                STATUS_COMMITTED | STATUS_ABSENT | STATUS_FAILED
+            ),
             updated_at: operation.updated_at,
         }
     }
-}
-
-/// Public evidence linking task, attempt, native invocation, operations, and
-/// external references.
-#[derive(Debug, Clone, Serialize)]
-pub struct EffectEvidence {
-    /// Public task handle.
-    pub task_id: String,
-    /// Current task attempt.
-    pub attempt: u32,
-    /// Confirmed native invocation, when known.
-    pub native_invocation_id: Option<String>,
-    /// Operations under this task.
-    pub operations: Vec<OperationView>,
 }
 
 /// Counts from startup effect reconciliation.
@@ -282,13 +243,13 @@ pub enum EffectTerminal {
     Absent,
 }
 
-fn safe_text(value: &str, limit: usize) -> String {
-    common::redact(value).chars().take(limit).collect()
+fn safe_text(redactor: &Redactor, value: &str, limit: usize) -> String {
+    redactor.text(value).chars().take(limit).collect()
 }
 
-fn safe_ref(value: Option<&str>) -> Option<String> {
+fn safe_ref(redactor: &Redactor, value: Option<&str>) -> Option<String> {
     value
-        .map(|value| safe_text(value, 512))
+        .map(|value| safe_text(redactor, value, 512))
         .filter(|value| !value.is_empty())
 }
 
@@ -435,6 +396,7 @@ impl Runtime {
         external_ref: Option<&str>,
         receipt: &str,
     ) -> Result<OperationRecord> {
+        let redactor = self.redactor();
         self.store()
             .write(|state| {
                 let operation = state.operations.get_mut(operation_id).ok_or_else(|| {
@@ -444,8 +406,8 @@ impl Runtime {
                     return Ok(operation.clone());
                 }
                 operation.status = STATUS_COMMITTED.into();
-                operation.external_ref = safe_ref(external_ref);
-                operation.receipt = Some(safe_text(receipt, 4096));
+                operation.external_ref = safe_ref(&redactor, external_ref);
+                operation.receipt = Some(safe_text(&redactor, receipt, 4096));
                 operation.updated_at = now();
                 Ok(operation.clone())
             })
@@ -469,14 +431,15 @@ impl Runtime {
                 "unsupported operation status",
             ));
         }
+        let redactor = self.redactor();
         self.store()
             .write(|state| {
                 let operation = state.operations.get_mut(operation_id).ok_or_else(|| {
                     ApiError::new("operation.not_found", "operation is not visible")
                 })?;
                 operation.status = status.to_string();
-                operation.external_ref = safe_ref(external_ref);
-                operation.receipt = Some(safe_text(detail, 4096));
+                operation.external_ref = safe_ref(&redactor, external_ref);
+                operation.receipt = Some(safe_text(&redactor, detail, 4096));
                 operation.updated_at = now();
                 Ok(operation.clone())
             })
@@ -573,22 +536,29 @@ impl Runtime {
     }
 
     /// Public, read-only evidence projection for one task.
+    ///
+    /// The projection links every protected operation to the owning task, the
+    /// attempt, the confirmed native invocation, and the task's terminal result.
     pub async fn effect_evidence(&self, task_id: &str) -> Option<EffectEvidence> {
         let (task, operations) = self
             .store()
             .read(|state| {
                 let task = state.tasks.get(task_id).cloned()?;
-                let operations = state
+                let mut operations = state
                     .operations
                     .values()
                     .filter(|operation| operation.task_id == task_id)
                     .map(OperationView::from)
-                    .collect();
+                    .collect::<Vec<_>>();
+                operations.sort_by(|left, right| left.id.cmp(&right.id));
                 Some((task, operations))
             })
             .await?;
         Some(EffectEvidence {
             task_id: task.id,
+            trace_id: Some(task.trace_id.clone()).filter(|trace| !trace.is_empty()),
+            state: task.state,
+            terminal: task.state.is_terminal(),
             attempt: task.attempt,
             native_invocation_id: task.native_invocation_id,
             operations,
