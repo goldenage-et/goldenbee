@@ -189,6 +189,11 @@ pub struct Worker {
     /// subagent operations at all.
     subagents: Option<crate::subagents::SubagentConfig>,
     browser: Option<String>,
+    /// Package settings key that names the workspace exposed for browsing.
+    ///
+    /// General uses the default `[tools].workspace`; packages with a custom
+    /// workspace (for example coding) name their own setting.
+    workspace_setting: Option<String>,
     pub(crate) duplicate_ids: BTreeSet<String>,
 }
 
@@ -230,6 +235,7 @@ impl Worker {
             progressive_skills: false,
             subagents: None,
             browser: None,
+            workspace_setting: None,
             duplicate_ids: BTreeSet::new(),
         }
     }
@@ -546,6 +552,16 @@ impl Worker {
     /// package did not declare here.
     pub fn knowledge_tools(mut self) -> Self {
         self.knowledge = true;
+        self
+    }
+
+    /// Name the package setting that resolves to the browsable workspace root.
+    ///
+    /// The value is resolved against the configuration directory, with the same
+    /// containment rules as other package paths. Packages without a custom
+    /// workspace keep the default `[tools].workspace`.
+    pub fn workspace_setting(mut self, key: impl Into<String>) -> Self {
+        self.workspace_setting = Some(key.into());
         self
     }
 
@@ -1273,6 +1289,7 @@ impl Worker {
                 plugin_views: RwLock::new(plugin_views),
                 plugins,
                 browser,
+                workspace_setting: self.workspace_setting,
                 revision,
                 cancel,
                 shutdown: tokio::sync::OnceCell::new(),

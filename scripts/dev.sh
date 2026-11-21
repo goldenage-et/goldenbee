@@ -223,6 +223,8 @@ build_parallelism = "1"
 max_build_seconds = "120"
 max_output_bytes = "262144"
 max_memory_bytes = "1073741824"
+[workspace]
+browse = true
 EOF
       ;;
     knowledge)

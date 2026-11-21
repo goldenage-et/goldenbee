@@ -320,17 +320,12 @@ export function SessionInspector({
   return (
     <aside
       aria-label="Focused session inspector"
-      className="flex min-h-0 w-[264px] shrink-0 flex-col border-l border-line bg-surface"
+      className="flex min-h-0 w-[236px] shrink-0 flex-col border-l border-line bg-surface"
     >
-      <div className="flex items-center justify-between border-b border-line px-3 py-2.5">
-        <div className="min-w-0">
-          <p className="text-micro font-bold tracking-[0.14em] text-dim uppercase">
-            Focused session
-          </p>
-          <p className="truncate text-meta font-medium text-foreground">
-            {chatId ? (title ?? "Local chat") : "No focused panel"}
-          </p>
-        </div>
+      <div className="flex items-center justify-between gap-2 border-b border-line px-2.5 py-1.5">
+        <p className="min-w-0 truncate text-meta font-medium text-foreground">
+          {chatId ? (title ?? "Local chat") : "No panel"}
+        </p>
         <Button
           type="button"
           size="icon-xs"
@@ -345,7 +340,7 @@ export function SessionInspector({
       <div
         role="tablist"
         aria-label="Inspector sections"
-        className="flex gap-1 border-b border-line px-2 py-2"
+        className="flex gap-0.5 border-b border-line px-1.5 py-1.5"
       >
         {tabs.map((entry) => (
           <button
@@ -404,55 +399,48 @@ export function SessionInspector({
             className="grid gap-2"
           >
             <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-micro font-bold tracking-[0.14em] text-dim uppercase">
+              <div className="flex min-w-0 items-baseline gap-1.5">
+                <span className="shrink-0 text-micro font-semibold text-foreground">
                   Workspace
-                </p>
-                <p className="truncate text-micro text-muted-foreground">
-                  {workerId ? `${workerId} · read-only` : "No Worker selected"}
-                </p>
+                </span>
+                <span className="truncate text-micro text-dim">
+                  {workerId ?? "No Worker"}
+                </span>
               </div>
-              <span
-                role="status"
-                className={
-                  liveStatus === "live"
-                    ? "text-micro text-positive"
-                    : liveStatus === "reconnecting"
-                      ? "text-micro text-gold"
-                      : "text-micro text-dim"
-                }
-              >
-                {liveStatus === "live"
-                  ? "● Live"
-                  : liveStatus === "reconnecting"
-                    ? "○ Reconnecting"
-                    : "Read-only"}
-              </span>
+              {liveStatus === "live" ? (
+                <span role="status" className="text-micro text-positive">
+                  ● Live
+                </span>
+              ) : liveStatus === "reconnecting" ? (
+                <span role="status" className="text-micro text-gold">
+                  ○ Reconnecting
+                </span>
+              ) : null}
             </div>
 
             {!workerId ? (
-              <p className="text-meta text-muted-foreground">
-                Send a message first so the session panel selects a Worker.
+              <p className="text-micro text-muted-foreground">
+                Select a Worker first.
               </p>
             ) : workspaceClient === null ? (
-              <p className="text-meta text-muted-foreground">
-                Workspace browsing is unavailable for this connection.
+              <p className="text-micro text-muted-foreground">
+                Workspace unavailable.
               </p>
             ) : workspaceRoot.isLoading ? (
-              <p role="status" className="text-meta text-muted-foreground">
-                Loading workspace…
+              <p role="status" className="text-micro text-muted-foreground">
+                Loading…
               </p>
             ) : workspaceFailure ? (
               workspaceDisabled(workspaceFailure) ? (
-                <p role="alert" className="text-meta text-destructive">
-                  Workspace browsing is disabled for this Worker.
+                <p role="alert" className="text-micro text-muted-foreground">
+                  Workspace browsing is disabled.
                 </p>
               ) : (
-                <div role="alert" className="grid gap-1">
-                  <p className="text-meta text-destructive">
-                    The Worker workspace could not be read.
+                <div role="alert" className="grid gap-0.5">
+                  <p className="text-micro text-destructive">
+                    Workspace unavailable.
                   </p>
-                  <p className="text-micro text-muted-foreground">
+                  <p className="text-micro text-dim">
                     {workspaceFailure.message}
                   </p>
                 </div>

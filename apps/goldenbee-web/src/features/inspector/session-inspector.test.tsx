@@ -223,7 +223,7 @@ describe("focused session inspector", () => {
     renderInspector({ workspace, events: eventsClient() })
 
     expect(
-      await screen.findByText("Workspace browsing is disabled for this Worker."),
+      await screen.findByText("Workspace browsing is disabled."),
     ).toBeInTheDocument()
 
     await user.click(screen.getByRole("tab", { name: "Artifacts" }))

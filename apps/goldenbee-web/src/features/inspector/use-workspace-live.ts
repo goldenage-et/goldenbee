@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
-import type { GatewayTaskStream } from "@goldenbee/sdk"
+import { isGatewayError, type GatewayTaskStream } from "@goldenbee/sdk"
 
 export type WorkspaceLiveStatus = "disabled" | "connecting" | "live" | "reconnecting"
 
@@ -103,15 +103,27 @@ export function useWorkspaceLive(
             : undefined
           push(paths)
         }
-      } catch {
-        if (!closed) {
-          // oxlint-disable-next-line react/set-state-in-effect
-          setStatus("reconnecting")
+      } catch (cause: unknown) {
+        if (closed) {
+          return
         }
+        if (
+          isGatewayError(cause) &&
+          (cause.code === "workspace.disabled" ||
+            cause.kind === "forbidden" ||
+            cause.kind === "unauthorized")
+        ) {
+          // oxlint-disable-next-line react/set-state-in-effect
+          setStatus("disabled")
+          return
+        }
+        // oxlint-disable-next-line react/set-state-in-effect
+        setStatus("reconnecting")
       }
       if (closed) {
         return
       }
+      // oxlint-disable-next-line react/set-state-in-effect
       setStatus("reconnecting")
       reconnectRef.current = setTimeout(() => {
         void connect()

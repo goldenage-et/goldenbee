@@ -892,7 +892,7 @@ impl WorkerSettings {
         }))
     }
 
-    fn resolve_path(&self, value: &str) -> PathBuf {
+    pub fn resolve_path(&self, value: &str) -> PathBuf {
         let path = PathBuf::from(value);
         if path.is_absolute() {
             path

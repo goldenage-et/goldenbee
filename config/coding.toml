@@ -38,3 +38,7 @@ max_memory_bytes = "1073741824"
 # configured checks without a human approver.
 [permissions]
 mode = "full-auto"
+
+# Read-only workspace browsing for the web Client.
+[workspace]
+browse = true
