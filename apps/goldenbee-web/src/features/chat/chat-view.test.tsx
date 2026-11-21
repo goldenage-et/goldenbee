@@ -1,10 +1,18 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it } from "vitest"
+import type { ReactNode } from "react"
 
 import { App } from "@/App"
 import { ChatView } from "@/features/chat/chat-view"
 import type { ChatGateway, ChatStream } from "@/features/chat/chat-runner"
+import {
+  chatSelectionStorageKey,
+  createChatSelectionStore,
+  type ChatSelectionStore,
+} from "@/features/chat/chat-selection-store"
+import type { SelectionGateway } from "@/features/chat/chat-profiles"
 import {
   createConnectionStore,
   type ConnectionStore,
@@ -17,6 +25,8 @@ import {
   type GatewaySubmitRequest,
   type GatewaySubmitResponse,
   type GatewayTask,
+  type Profile,
+  type ProfileVersionRequest,
   type StreamEvent,
   type WorkerSummary,
 } from "@goldenbee/sdk"
@@ -49,18 +59,35 @@ const worker: WorkerSummary = {
   locality: "local",
   capabilities: [
     { id: "general", kind: "agent", description: "General agent" },
+    { id: "echo", kind: "agent", description: "Echo agent" },
   ],
 }
 
-function connectedStore(): ConnectionStore {
+function activeProfile(revision = 1): Profile {
+  return {
+    name: "default",
+    active_revision: revision,
+    revisions: [
+      {
+        revision,
+        instruction: "You are helpful.",
+        model: `provider/model-${revision}`,
+        composition: "single",
+        created_at: revision,
+      },
+    ],
+  }
+}
+
+function connectedStore(workers: WorkerSummary[] = [worker]): ConnectionStore {
   const store = createConnectionStore({
     tokenStore: createTokenStore({ sessionStorage: memoryStorage() }),
     defaultUrl: "http://gateway.test",
     createClient: () => ({
       checkConnection: async () => ({
         status: "connected",
-        health: { status: "ok", workers: 1, reachable: 1 },
-        workers: [worker],
+        health: { status: "ok", workers: workers.length, reachable: 1 },
+        workers,
       }),
     }),
   })
@@ -68,9 +95,18 @@ function connectedStore(): ConnectionStore {
     status: "connected",
     gatewayUrl: "http://gateway.test",
     token: "caller-token",
-    health: { status: "ok", workers: 1, reachable: 1 },
-    workers: [worker],
+    health: { status: "ok", workers: workers.length, reachable: 1 },
+    workers,
   })
+  return store
+}
+
+function selectionWith(
+  values: Partial<{ worker: string; agent: string; profile: string }>,
+): ChatSelectionStore {
+  const storage = memoryStorage()
+  const store = createChatSelectionStore(storage)
+  store.write({ worker: "", agent: "", ...values })
   return store
 }
 
@@ -123,11 +159,45 @@ class TestStream implements ChatStream {
   }
 }
 
+class GatedStream implements ChatStream {
+  lastDurableSeq = 0
+  private readonly before: StreamEvent[]
+  private readonly gate: Promise<void>
+  private readonly after: StreamEvent[]
+
+  constructor(
+    before: StreamEvent[],
+    gate: Promise<void>,
+    after: StreamEvent[],
+  ) {
+    this.before = before
+    this.gate = gate
+    this.after = after
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<GatewayStreamFrame> {
+    for (const next of this.before) {
+      yield { type: "event", event: next }
+      if (next.durable) {
+        this.lastDurableSeq = Math.max(this.lastDurableSeq, next.seq)
+      }
+    }
+    await this.gate
+    for (const next of this.after) {
+      yield { type: "event", event: next }
+      if (next.durable) {
+        this.lastDurableSeq = Math.max(this.lastDurableSeq, next.seq)
+      }
+    }
+  }
+}
+
 class ChatGatewayDouble implements ChatGateway {
   submits: GatewaySubmitRequest[] = []
   watches: Array<{ taskId: string; after: number }> = []
   cancels: string[] = []
   streams: StreamEvent[][] = []
+  streamFactories: Array<() => ChatStream> = []
   submitError: GatewayError | null = null
   cancelTask: GatewayTask | null = null
 
@@ -157,6 +227,10 @@ class ChatGatewayDouble implements ChatGateway {
     options?: GatewayRequestOptions,
   ): Promise<ChatStream> {
     this.watches.push({ taskId, after })
+    const factory = this.streamFactories.shift()
+    if (factory) {
+      return Promise.resolve(factory())
+    }
     const events = this.streams.shift() ?? []
     return Promise.resolve(new TestStream(events, options?.signal))
   }
@@ -182,13 +256,96 @@ class ChatGatewayDouble implements ChatGateway {
   }
 }
 
+class ProfileGatewayDouble implements SelectionGateway {
+  activations: Array<{
+    worker: string
+    name: string
+    revision: number | undefined
+  }> = []
+  activationError: GatewayError | null = null
+  private readonly fallback: Profile[]
+  private readonly lists = new Map<string, Profile[]>()
+
+  constructor(fallback: Profile[] = [activeProfile()]) {
+    this.fallback = fallback
+  }
+
+  set(workerId: string, profiles: Profile[]): void {
+    this.lists.set(workerId, profiles)
+  }
+
+  profiles(workerId: string): Promise<Profile[]> {
+    return Promise.resolve(this.lists.get(workerId) ?? this.fallback)
+  }
+
+  activateProfile(
+    workerId: string,
+    name: string,
+    request?: ProfileVersionRequest,
+  ): Promise<Profile> {
+    this.activations.push({ worker: workerId, name, revision: request?.revision })
+    if (this.activationError) {
+      return Promise.reject(this.activationError)
+    }
+    const list = this.lists.get(workerId) ?? this.fallback
+    const index = list.findIndex((candidate) => candidate.name === name)
+    if (index < 0) {
+      return Promise.reject(new Error("profile not found"))
+    }
+    const current = list[index]!
+    const next: Profile = {
+      ...current,
+      active_revision: request?.revision ?? current.active_revision,
+    }
+    this.lists.set(
+      workerId,
+      list.map((candidate, position) =>
+        position === index ? next : candidate,
+      ),
+    )
+    return Promise.resolve(next)
+  }
+}
+
+interface RenderChatOptions {
+  store?: ConnectionStore
+  profiles?: ProfileGatewayDouble
+  selection?: ChatSelectionStore
+}
+
+function renderChat(
+  gateway: ChatGateway,
+  options: RenderChatOptions = {},
+): ReturnType<typeof render> {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  function wrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+  }
+  return render(
+    <ChatView
+      store={options.store ?? connectedStore()}
+      client={gateway}
+      profileClient={options.profiles ?? new ProfileGatewayDouble()}
+      selectionStore={options.selection ?? createChatSelectionStore(memoryStorage())}
+    />,
+    { wrapper },
+  )
+}
+
 async function sendPrompt(user: ReturnType<typeof userEvent.setup>, text: string) {
   await user.type(screen.getByLabelText("Message"), text)
-  await user.click(screen.getByRole("button", { name: "Send message" }))
+  const send = screen.getByRole("button", { name: "Send message" })
+  await waitFor(() => expect(send).toBeEnabled())
+  await user.click(send)
 }
 
 afterEach(() => {
   window.location.hash = ""
+  window.localStorage.clear()
 })
 
 describe("chat view", () => {
@@ -206,7 +363,7 @@ describe("chat view", () => {
       ],
     ]
     const user = userEvent.setup()
-    render(<ChatView store={connectedStore()} client={gateway} />)
+    renderChat(gateway)
 
     await sendPrompt(user, "say hello")
 
@@ -244,7 +401,7 @@ describe("chat view", () => {
       ],
     ]
     const user = userEvent.setup()
-    render(<ChatView store={connectedStore()} client={gateway} />)
+    renderChat(gateway)
 
     await sendPrompt(user, "retry me")
 
@@ -276,7 +433,7 @@ describe("chat view", () => {
       details: { execution_id: "exec-unknown", worker: "general-a" },
     })
     const user = userEvent.setup()
-    render(<ChatView store={connectedStore()} client={gateway} />)
+    renderChat(gateway)
 
     await sendPrompt(user, "did it start?")
 
@@ -293,7 +450,7 @@ describe("chat view", () => {
     const gateway = new ChatGatewayDouble()
     gateway.streams = [[]]
     const user = userEvent.setup()
-    render(<ChatView store={connectedStore()} client={gateway} />)
+    renderChat(gateway)
 
     await sendPrompt(user, "long task")
     await waitFor(() => {
@@ -307,12 +464,304 @@ describe("chat view", () => {
   })
 })
 
+describe("target selection", () => {
+  it("persists only the non-secret target names", async () => {
+    const gateway = new ChatGatewayDouble()
+    const storage = memoryStorage()
+    const selection = createChatSelectionStore(storage)
+    renderChat(gateway, { selection })
+
+    await waitFor(() =>
+      expect(selection.read()).toEqual({
+        worker: "general-a",
+        agent: "general",
+        profile: "default",
+      }),
+    )
+
+    const raw = storage.getItem(chatSelectionStorageKey) ?? ""
+    expect(raw).not.toContain("caller-token")
+    expect(raw).not.toContain("Authorization")
+    expect(Object.keys(JSON.parse(raw)).sort()).toEqual([
+      "agent",
+      "profile",
+      "worker",
+    ])
+  })
+
+  it("blocks sending when no reachable Worker is visible", async () => {
+    const gateway = new ChatGatewayDouble()
+    const user = userEvent.setup()
+    renderChat(gateway, { store: connectedStore([]) })
+
+    await user.type(screen.getByLabelText("Message"), "hello?")
+
+    expect(
+      await screen.findByText(/No reachable Worker is visible/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
+    expect(gateway.submits).toEqual([])
+  })
+
+  it("blocks sending when the selected Worker advertises no agent", async () => {
+    const toolsOnly: WorkerSummary = {
+      ...worker,
+      id: "tools-only",
+      instance: "tools-only",
+      capabilities: [
+        { id: "exec_command", kind: "tool", description: "Shell tool" },
+      ],
+    }
+    const gateway = new ChatGatewayDouble()
+    const user = userEvent.setup()
+    renderChat(gateway, {
+      store: connectedStore([toolsOnly]),
+      selection: selectionWith({
+        worker: "tools-only",
+        agent: "exec_command",
+        profile: "default",
+      }),
+    })
+
+    await user.type(screen.getByLabelText("Message"), "hello?")
+
+    expect(
+      await screen.findByText(/advertises no agent capability/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
+    expect(gateway.submits).toEqual([])
+  })
+
+  it("keeps an unreachable persisted Worker selected and disables Send", async () => {
+    const down: WorkerSummary = {
+      ...worker,
+      id: "down-a",
+      instance: "down-a",
+      reachable: false,
+    }
+    const fallback: WorkerSummary = { ...worker, id: "general-b" }
+    const gateway = new ChatGatewayDouble()
+    const user = userEvent.setup()
+    renderChat(gateway, {
+      store: connectedStore([down, fallback]),
+      selection: selectionWith({
+        worker: "down-a",
+        agent: "general",
+        profile: "default",
+      }),
+    })
+
+    await user.type(screen.getByLabelText("Message"), "hello?")
+
+    expect(
+      await screen.findByText(/unreachable or not accepting tasks/),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText("Worker")).toHaveValue("down-a")
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
+    expect(gateway.submits).toEqual([])
+  })
+
+  it("blocks sending when a persisted profile disappeared", async () => {
+    const gateway = new ChatGatewayDouble()
+    const user = userEvent.setup()
+    renderChat(gateway, {
+      selection: selectionWith({
+        worker: "general-a",
+        agent: "general",
+        profile: "retired",
+      }),
+    })
+
+    await user.type(screen.getByLabelText("Message"), "hello?")
+
+    expect(
+      await screen.findByText(/Runtime Profile retired is not available/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
+    expect(gateway.submits).toEqual([])
+  })
+
+  it("shows the active revision and activates the latest revision", async () => {
+    const profiles = new ProfileGatewayDouble()
+    const inactive: Profile = {
+      name: "default",
+      active_revision: 0,
+      revisions: [
+        {
+          revision: 1,
+          instruction: "",
+          model: "provider/model-1",
+          composition: "single",
+          created_at: 1,
+        },
+        {
+          revision: 3,
+          instruction: "",
+          model: "provider/model-3",
+          composition: "single",
+          created_at: 3,
+        },
+      ],
+    }
+    profiles.set("general-a", [inactive])
+    const gateway = new ChatGatewayDouble()
+    gateway.streams = [
+      [
+        event(1, "task.accepted", { state: "accepted" }),
+        event(2, "task.succeeded", { state: "succeeded", output: "done" }),
+      ],
+    ]
+    const user = userEvent.setup()
+    renderChat(gateway, {
+      profiles,
+      selection: selectionWith({
+        worker: "general-a",
+        agent: "general",
+        profile: "default",
+      }),
+    })
+
+    expect(
+      await screen.findByText(/No active revision · latest r3 · provider\/model-3/),
+    ).toBeInTheDocument()
+    await user.type(screen.getByLabelText("Message"), "after activation")
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled()
+
+    await user.click(screen.getByRole("button", { name: "Activate r3" }))
+
+    expect(await screen.findByText("Activated default revision 3.")).toBeInTheDocument()
+    expect(profiles.activations).toEqual([
+      { worker: "general-a", name: "default", revision: 3 },
+    ])
+    expect(
+      await screen.findByText(/Active revision 3 · provider\/model-3/),
+    ).toBeInTheDocument()
+
+    const send = screen.getByRole("button", { name: "Send message" })
+    await waitFor(() => expect(send).toBeEnabled())
+    await user.click(send)
+
+    expect(await screen.findByText("done")).toBeInTheDocument()
+    expect(gateway.submits[0]).toMatchObject({
+      worker: "general-a",
+      agent: "general",
+      profile: "default",
+    })
+  })
+
+  it("shows a denied activation without changing the active revision", async () => {
+    const profiles = new ProfileGatewayDouble()
+    profiles.set("general-a", [
+      {
+        name: "default",
+        active_revision: 1,
+        revisions: [
+          {
+            revision: 1,
+            instruction: "",
+            model: "provider/model-1",
+            composition: "single",
+            created_at: 1,
+          },
+          {
+            revision: 2,
+            instruction: "",
+            model: "provider/model-2",
+            composition: "single",
+            created_at: 2,
+          },
+        ],
+      },
+    ])
+    profiles.activationError = new GatewayError({
+      kind: "forbidden",
+      status: 403,
+      code: "scope.profile.write",
+      message: "The caller token lacks the profile:write scope.",
+      retryable: false,
+    })
+    const user = userEvent.setup()
+    renderChat(new ChatGatewayDouble(), { profiles })
+
+    const activate = await screen.findByRole("button", { name: "Activate r2" })
+    await user.click(activate)
+
+    expect(
+      await screen.findByText(/The caller token lacks the profile:write scope\./),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/cannot activate profiles; scope cannot be widened/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Active revision 1 · provider\/model-1/)).toBeInTheDocument()
+    expect(screen.queryByText(/Activated default/)).not.toBeInTheDocument()
+  })
+
+  it("applies selection changes to the next task without rewriting the active one", async () => {
+    const gateway = new ChatGatewayDouble()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    gateway.streamFactories = [
+      () =>
+        new GatedStream(
+          [
+            event(1, "task.accepted", { state: "accepted" }),
+            event(2, "model.delta", { text: "working" }, false),
+          ],
+          gate,
+          [
+            event(3, "task.succeeded", {
+              state: "succeeded",
+              output: "working done",
+            }),
+          ],
+        ),
+      () =>
+        new TestStream([
+          event(4, "task.accepted", { state: "accepted" }),
+          event(5, "task.succeeded", { state: "succeeded", output: "echo done" }),
+        ]),
+    ]
+    const user = userEvent.setup()
+    renderChat(gateway)
+
+    await sendPrompt(user, "first task")
+    expect(await screen.findByText("working")).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText("Agent"), "echo")
+
+    expect(gateway.submits).toHaveLength(1)
+    expect(gateway.submits[0]?.agent).toBe("general")
+
+    release()
+    expect(await screen.findByText("working done")).toBeInTheDocument()
+
+    await sendPrompt(user, "second task")
+
+    expect(await screen.findByText("echo done")).toBeInTheDocument()
+    expect(gateway.submits[1]).toMatchObject({
+      worker: "general-a",
+      agent: "echo",
+      profile: "default",
+      input: "second task",
+    })
+  })
+})
+
 describe("app shell chat navigation", () => {
   it("routes to chat from the primary navigation", async () => {
     window.location.hash = "#/overview"
     const store = connectedStore()
     const user = userEvent.setup()
-    render(<App store={store} />)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <App store={store} />
+      </QueryClientProvider>,
+    )
 
     expect(screen.getByText("Gateway connected")).toBeInTheDocument()
 
