@@ -2,6 +2,7 @@
 
 use crate::agents::definition::{skill_index, AgentSpec};
 use crate::agents::{AgentDefinition, SkillAsset};
+use crate::context::ContextBundle;
 use crate::data::memory::{preload_callback, NativeMemory};
 use crate::execution::plugins::AgentCallbacks;
 use crate::execution::providers::{ProviderRegistry, ProviderRequirements};
@@ -19,6 +20,7 @@ pub(super) struct AgentBindings<'a> {
     pub(super) effect_tools: std::collections::BTreeSet<String>,
     pub(super) prompts: &'a BTreeMap<String, String>,
     pub(super) skills: &'a [SkillAsset],
+    pub(super) context: &'a ContextBundle,
     pub(super) callbacks: Option<&'a (dyn Fn() -> AgentCallbacks + Send + Sync)>,
     pub(super) memory: Option<&'a Arc<NativeMemory>>,
 }
@@ -70,7 +72,7 @@ pub(super) fn build_loaded_agent(
             )
         })?
     };
-    let instruction = prompts.get(&definition.prompt).cloned().ok_or_else(|| {
+    let prompt = prompts.get(&definition.prompt).cloned().ok_or_else(|| {
         ApiError::new(
             "asset.prompt_missing",
             format!(
@@ -79,6 +81,7 @@ pub(super) fn build_loaded_agent(
             ),
         )
     })?;
+    let instruction = bindings.context.apply_to_instruction(&prompt);
     for name in &definition.skills {
         if !skills.iter().any(|skill| &skill.name == name) {
             return Err(ApiError::new(

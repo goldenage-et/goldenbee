@@ -297,7 +297,7 @@ impl Runtime {
                 let resolved_model = self.resolve_invocation_model(
                     revision,
                     &agent,
-                    limits.max_tokens,
+                    &limits,
                     revision.compaction.as_ref(),
                 )?;
                 let timestamp = now();

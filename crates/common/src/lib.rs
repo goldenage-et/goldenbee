@@ -95,7 +95,8 @@ pub use providers::{
 };
 pub use redaction::redact;
 pub use session::{
-    SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionTurn, SessionView,
+    SessionCompaction, SessionForkRequest, SessionRenameRequest, SessionTranscript, SessionTurn,
+    SessionView,
 };
 pub use socket::{
     SocketCommand, SocketCommandFrame, SocketOutcome, SocketScope, SocketServerFrame, SocketTicket,

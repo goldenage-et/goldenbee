@@ -20,6 +20,7 @@ mod models;
 mod profiles;
 
 pub use crate::agents::{AgentDefinition, AgentDescriptor, AgentOrigin, SkillAsset};
+pub use crate::context::{ContextConfig, MemorySource};
 pub use crate::execution::plugins::AgentCallbacks;
 pub use crate::tools::{BuiltinTool, ToolDescriptor, ToolEffect, ToolKernel, ToolRisk};
 pub use config::{
@@ -823,6 +824,7 @@ impl Worker {
             &graphs,
             ExecutorServices {
                 sessions: sessions.clone(),
+                file_sessions: sessions.clone(),
                 plugins: plugins.clone(),
                 callbacks: self.callbacks.clone(),
                 artifacts: runtime.artifact_store(),
@@ -856,7 +858,8 @@ impl Worker {
                 settings: RwLock::new(settings),
                 assets: RwLock::new(Arc::new(assets)),
                 runtime,
-                sessions,
+                sessions: sessions.clone(),
+                file_sessions: sessions,
                 executor: RwLock::new(executor.clone()),
                 graph: graph.clone(),
                 manifest,
@@ -929,6 +932,7 @@ impl Worker {
 
 struct ExecutorServices {
     sessions: Arc<dyn SessionService>,
+    file_sessions: Arc<FileSessionService>,
     plugins: Option<Arc<PluginManager>>,
     callbacks: Option<Arc<dyn Fn() -> AgentCallbacks + Send + Sync>>,
     artifacts: Arc<crate::data::artifacts::NativeArtifactStore>,
@@ -949,6 +953,7 @@ fn build_executor(
 ) -> WorkerResult<NativeExecutor> {
     let ExecutorServices {
         sessions,
+        file_sessions,
         plugins,
         callbacks,
         artifacts,
@@ -974,6 +979,7 @@ fn build_executor(
     let skills = assets.skills.clone();
     let profile_memory = memory.clone();
     let profile_mcp = mcp.clone();
+    let profile_context = assets.context.clone();
     let effect_tools: BTreeSet<String> = effect_approvals.keys().cloned().collect();
     let profile_effect_tools = effect_tools.clone();
     let builder: crate::execution::profile::ProfileAgentBuilder =
@@ -986,6 +992,7 @@ fn build_executor(
                 &profile_effect_tools,
                 callbacks.as_deref(),
                 profile_memory.as_ref(),
+                &profile_context,
                 &providers,
                 reporter,
                 Some(&profile_mcp),
@@ -998,7 +1005,13 @@ fn build_executor(
         .with_mcp(mcp, declarations)
         .with_remote_mcp(remote_mcp)
         .with_effect_approvals(effect_approvals)
-        .with_tool_concurrency(max_parallel);
+        .with_tool_concurrency(max_parallel)
+        .with_context(
+            assets.context.clone(),
+            assets.prompts.clone(),
+            assets.specs.clone(),
+        )
+        .with_file_sessions(file_sessions);
     if let Some(memory) = memory {
         executor = executor.with_memory(memory);
     }

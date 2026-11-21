@@ -8,6 +8,7 @@
 mod agents;
 pub mod browser;
 pub mod checkpoints;
+pub mod context;
 mod core;
 mod data;
 mod execution;

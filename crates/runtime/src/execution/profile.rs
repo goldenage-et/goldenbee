@@ -7,6 +7,7 @@
 
 use crate::agents::definition::{skill_index, AgentSpec};
 use crate::agents::{workflow, SkillAsset};
+use crate::context::ContextBundle;
 use crate::data::memory::{preload_callback, NativeMemory};
 use crate::execution::plugins::AgentCallbacks;
 use crate::execution::providers::{FallbackReporter, ProviderRegistry, ProviderRequirements};
@@ -46,6 +47,7 @@ pub(crate) fn build_profile_agent(
     effect_tools: &BTreeSet<String>,
     callbacks: Option<&(dyn Fn() -> AgentCallbacks + Send + Sync)>,
     memory: Option<&Arc<NativeMemory>>,
+    context: &ContextBundle,
     providers: &Arc<ProviderRegistry>,
     reporter: Option<FallbackReporter>,
     mcp: Option<&Arc<McpRegistry>>,
@@ -113,7 +115,7 @@ pub(crate) fn build_profile_agent(
     let mut leaves = Vec::new();
     for member in &revision.members {
         if let Some(spec) = specs.get(member) {
-            let instruction = leaf_instruction(revision, member);
+            let instruction = context.apply_to_instruction(&leaf_instruction(revision, member));
             let mut builder = LlmAgentBuilder::new(member)
                 .description(spec.description.clone())
                 .instruction(instruction)
@@ -185,6 +187,7 @@ pub(crate) fn build_profile_agent(
             max_iterations,
             callbacks,
             memory,
+            context,
         ),
         Some(_) => workflow::compile_workflow(revision, leaves, max_iterations),
         None => Err(ApiError::new(
@@ -204,8 +207,9 @@ fn build_team(
     max_iterations: u32,
     callbacks: Option<&(dyn Fn() -> AgentCallbacks + Send + Sync)>,
     memory: Option<&Arc<NativeMemory>>,
+    context: &ContextBundle,
 ) -> WorkerResult<Arc<dyn Agent>> {
-    let mut instruction = revision.instruction.clone();
+    let mut instruction = context.apply_to_instruction(&revision.instruction);
     instruction.push_str(
         "\nYou are the team coordinator. Delegate exact work to the specialists and return the aggregated result.",
     );

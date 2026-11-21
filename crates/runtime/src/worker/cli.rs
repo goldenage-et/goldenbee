@@ -605,6 +605,22 @@ impl Worker {
                             }
                             Ok(())
                         }
+                        "compact" => {
+                            let id = id.ok_or_else(|| {
+                                ApiError::new(
+                                    "cli.session_required",
+                                    "session compact requires a session id",
+                                )
+                            })?;
+                            let scheduled =
+                                runtime.request_session_compaction(&principal, &id).await?;
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&scheduled)
+                                    .unwrap_or_else(|_| "{}".into())
+                            );
+                            Ok(())
+                        }
                         "fork" => {
                             let source = id.ok_or_else(|| {
                                 ApiError::new(
@@ -1110,7 +1126,7 @@ impl Worker {
              dev --config <path> [--agent <id>] [--profile <name>]\n      Native ADK Runner launcher console. No Gateway or SDK.\n  \
              serve --config <path> [--addr 127.0.0.1:8080] [--agent <id>]\n      Native ADK web server, REST, and A2A. No Gateway or SDK.\n  \
              profile list|show|create|revise|activate|deactivate|delete|export --config <path> [options]\n      Worker-native immutable profile management.\n      Compaction options: --compaction-budget <tokens> [--compaction-strategy truncation]\n      [--compaction-preserve-recent <events>] [--compaction-max-retries <attempts>].\n  \
-             session list|latest|show|fork|rename|export|transcript --config <path> [options]\n      Continue, resume, fork, rename, and durably export canonical sessions.\n      Fork: session fork <source> <new> [--title <title>]. Rename: --title <title>.\n  \
+             session list|latest|show|compact|fork|rename|export|transcript --config <path> [options]\n      Continue, resume, compact, fork, rename, and durably export canonical sessions.\n      Compact schedules native compaction for the next model turn.\n      Fork: session fork <source> <new> [--title <title>]. Rename: --title <title>.\n  \
              checkpoint list|diff|restore --config <path> [options]\n      Inspect turn-boundary file checkpoints and rewind/undo/restore a turn or file set.\n      Restore options: --mode rewind|undo|restore [--file <workspace-relative-path> ...].\n  \
              up --config <path> [--addr ADDR] [--json]\n      Start this Worker in the background and wait for readiness.\n  \
              status --config <path> [--json]\n      Report background process and health.\n  \

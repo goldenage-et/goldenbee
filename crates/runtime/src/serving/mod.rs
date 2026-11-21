@@ -141,6 +141,7 @@ pub fn api_router(state: WorkerState) -> Router {
         .route("/v1/sessions/{session}", get(sessions::session))
         .route("/v1/sessions/{session}/fork", post(sessions::fork))
         .route("/v1/sessions/{session}/rename", post(sessions::rename))
+        .route("/v1/sessions/{session}/compact", post(sessions::compact))
         .route(
             "/v1/sessions/{session}/transcript",
             get(sessions::transcript).post(sessions::export),
