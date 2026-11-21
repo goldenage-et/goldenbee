@@ -411,7 +411,7 @@ describe("chat view", () => {
     await sendPrompt(user, "say hello")
 
     expect(await screen.findByText("Hello world")).toBeInTheDocument()
-    expect(screen.getByText("Task succeeded")).toBeInTheDocument()
+    expect(screen.queryByText("Task succeeded")).not.toBeInTheDocument()
     expect(gateway.submits[0]).toMatchObject({
       worker: "general-a",
       agent: "general",
@@ -455,7 +455,8 @@ describe("chat view", () => {
 
     await user.click(screen.getByRole("button", { name: "Retry" }))
 
-    expect(await screen.findByText("Task succeeded")).toBeInTheDocument()
+    expect(await screen.findByText("second try")).toBeInTheDocument()
+    expect(screen.queryByText("Task succeeded")).not.toBeInTheDocument()
     expect(screen.getAllByText("retry me")).toHaveLength(1)
     expect(gateway.submits).toHaveLength(2)
     expect(gateway.submits[0]?.idempotency_key).not.toBe(

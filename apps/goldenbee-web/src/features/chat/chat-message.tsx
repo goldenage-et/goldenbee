@@ -199,7 +199,7 @@ export function ChatMessageView({
           </div>
         ) : null}
 
-        {task ? (
+        {task && task.state !== "succeeded" ? (
           <TaskView
             task={task}
             busy={busy}
