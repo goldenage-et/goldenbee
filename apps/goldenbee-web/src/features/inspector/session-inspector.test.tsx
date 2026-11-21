@@ -57,6 +57,12 @@ function inspectionStore(): ChatInspectionStore {
       agent: "general",
       profile: "default",
     },
+    usage: {
+      prompt_tokens: 219,
+      candidate_tokens: 11,
+      model_calls: 1,
+      tool_calls: 0,
+    },
     gap: null,
     recovery: null,
   })
@@ -226,5 +232,9 @@ describe("focused session inspector", () => {
       within(panel).getByText(/continues when this panel is hidden/),
     ).toBeInTheDocument()
     expect(within(panel).getByText("9")).toBeInTheDocument()
+    expect(within(panel).getByText("Prompt tokens")).toBeInTheDocument()
+    expect(within(panel).getByText("219")).toBeInTheDocument()
+    expect(within(panel).getByText("Candidate tokens")).toBeInTheDocument()
+    expect(within(panel).getByText("11")).toBeInTheDocument()
   })
 })

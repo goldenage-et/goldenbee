@@ -1,5 +1,6 @@
 import { useStore } from "zustand"
 import { createStore, type StoreApi } from "zustand/vanilla"
+import type { TaskUsage } from "@goldenbee/sdk"
 
 import type {
   ChatRecoveryNotice,
@@ -24,6 +25,7 @@ export interface ChatInspection {
   activeAssistantId: string | null
   lastDurableSeq: number
   selection: ChatSelection | null
+  usage: TaskUsage | null
   gap: ChatStreamGap | null
   recovery: ChatRecoveryNotice | null
 }
@@ -53,6 +55,7 @@ function sameInspection(
     left.selection?.worker === right.selection?.worker &&
     left.selection?.agent === right.selection?.agent &&
     left.selection?.profile === right.selection?.profile &&
+    JSON.stringify(left.usage) === JSON.stringify(right.usage) &&
     left.gap?.reason === right.gap?.reason &&
     left.gap?.fromSeq === right.gap?.fromSeq &&
     left.recovery?.kind === right.recovery?.kind &&

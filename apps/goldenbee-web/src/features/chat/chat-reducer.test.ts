@@ -804,6 +804,37 @@ describe("chat reducer usage trace", () => {
 })
 
 describe("chat reducer unknown events", () => {
+  it("keeps ordinary control and metadata events out of the chat timeline", () => {
+    let state = started()
+    for (const [seq, kind] of [
+      [1, "context.manifest"],
+      [2, "sandbox.decision"],
+      [3, "permission.decision"],
+    ] as const) {
+      state = streamed(state, event(seq, kind, { anything: true }))
+    }
+    state = streamed(
+      state,
+      event(4, "tool.started", { tool: "save_artifact", call_id: "call-1" }),
+    )
+    state = streamed(
+      state,
+      event(5, "tool.completed", {
+        tool: "save_artifact",
+        call_id: "call-1",
+        ok: true,
+      }),
+    )
+    state = streamed(state, event(6, "model.delta", { text: "still here" }, false))
+
+    expect(partsOf(state, "diagnostic")).toHaveLength(0)
+    expect(partsOf(state, "tool")).toMatchObject([
+      { id: "call-1", name: "save_artifact", status: "ok" },
+    ])
+    expect(textOf(state)).toBe("still here")
+    expect(state.lastDurableSeq).toBe(5)
+  })
+
   it("surfaces unknown event kinds as diagnostics without breaking the stream", () => {
     let state = started()
     state = streamed(state, event(1, "future.event", { anything: true }))

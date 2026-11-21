@@ -14,7 +14,6 @@ import {
   ReasoningView,
   TaskView,
   ToolView,
-  UsageView,
 } from "@/features/chat/chat-trace"
 import type {
   ChatMessage,
@@ -118,10 +117,6 @@ export function ChatMessageView({
     (part): part is Extract<ChatPart, { type: "approval" }> =>
       part.type === "approval",
   )
-  const usages = message.parts.filter(
-    (part): part is Extract<ChatPart, { type: "usage" }> =>
-      part.type === "usage",
-  )
   const errors = message.parts.filter(
     (part): part is Extract<ChatPart, { type: "error" }> => part.type === "error",
   )
@@ -215,10 +210,6 @@ export function ChatMessageView({
             }
           />
         ) : null}
-
-        {usages.map((part, index) => (
-          <UsageView key={`${message.id}-usage-${index}`} part={part} />
-        ))}
       </MessageContent>
     </Message>
   )

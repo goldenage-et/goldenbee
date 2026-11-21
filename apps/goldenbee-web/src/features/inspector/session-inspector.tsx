@@ -12,6 +12,7 @@ import type {
   RestoredChat,
   StoredTask,
 } from "@/features/chat/local-chat-history"
+import { UsageFacts } from "@/features/usage/usage-facts"
 
 export interface ArtifactGateway {
   artifacts(taskId: string): Promise<Artifact[]>
@@ -160,6 +161,7 @@ export function SessionInspector({
     tasks.find((task) => task.taskId === taskId) ?? null
   const gap = inspection?.gap ?? record?.chat.gap ?? null
   const recovery = inspection?.recovery ?? record?.chat.recovery ?? null
+  const usage = inspection?.usage ?? null
 
   const artifacts = useQuery({
     queryKey: ["focused-session-artifacts", taskId],
@@ -430,6 +432,15 @@ export function SessionInspector({
               Streamed text and reasoning are not durable. A reconnect can only
               replay events after the saved durable cursor.
             </p>
+            <div className="mt-1 border-t border-line pt-3">
+              <h3 className="mb-2 text-micro font-semibold tracking-[0.12em] text-dim uppercase">
+                Usage
+              </h3>
+              <UsageFacts
+                usage={usage}
+                emptyMessage="No usage counters were reported for this task."
+              />
+            </div>
           </section>
         ) : null}
       </div>

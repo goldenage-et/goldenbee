@@ -186,6 +186,18 @@ export function ChatView({
     recovery: liveRecovery,
   } = chat.state
 
+  const liveUsage = (() => {
+    const message =
+      chat.state.messages.find(
+        (candidate) => candidate.id === liveAssistantId,
+      ) ??
+      [...chat.state.messages]
+        .reverse()
+        .find((candidate) => candidate.role === "assistant")
+    const part = message?.parts.find((candidate) => candidate.type === "usage")
+    return part?.type === "usage" ? part.usage : null
+  })()
+
   // Publish in a layout effect so the inspector's first passive read already
   // sees the live status instead of reading the same chat twice.
   useLayoutEffect(() => {
@@ -208,6 +220,7 @@ export function ChatView({
               profile: effectiveSelection.profile ?? "",
             }
           : null,
+      usage: liveUsage,
       gap: liveGap,
       recovery: liveRecovery,
     })
@@ -224,6 +237,7 @@ export function ChatView({
     liveSessionId,
     liveStatus,
     liveTaskId,
+    liveUsage,
     title,
   ])
 

@@ -65,7 +65,13 @@ const textKinds = new Set([
 
 const reasoningKinds = new Set(["model.thinking", "model.thinking.complete"])
 
-const toolKinds = new Set(["tool.call", "tool.result", "tool.outcome_unknown"])
+const toolKinds = new Set([
+  "tool.call",
+  "tool.started",
+  "tool.result",
+  "tool.completed",
+  "tool.outcome_unknown",
+])
 
 const planKinds = new Set(["master.plan_created", "master.child_observed"])
 
@@ -76,11 +82,48 @@ const diagnosticKinds = new Set([
   "artifact.recording_failed",
   "model.fallback",
   "context.compacted",
+  "context.compaction_request_failed",
   "graph.interrupted",
   "graph.thread_bound",
   "team.receipt",
   "operation.reconciled",
   "hook.after_task_failed",
+  "hook.denied",
+  "approval.unavailable",
+  "user.question",
+])
+
+/**
+ * Durable control/metadata events that carry no chat-facing content.
+ *
+ * They remain available in task detail and raw evidence, but rendering one
+ * diagnostic line per event makes ordinary tasks look broken.
+ */
+const quietKinds = new Set([
+  "context.manifest",
+  "sandbox.decision",
+  "permission.decision",
+  "tool.output",
+  "tool.effect",
+  "diff.recorded",
+  "checkpoint.committed",
+  "checkpoint.restored",
+  "process.started",
+  "process.exited",
+  "process.terminated",
+  "subagent.spawned",
+  "subagent.terminal",
+  "subagent.stop",
+  "subagent.closed",
+  "subagent.continued",
+  "subagent.interrupted",
+  "plan.updated",
+  "operation.committed",
+  "operation.failed",
+  "operation.replayed",
+  "operation.reserved",
+  "operation.retry",
+  "operation.unknown",
 ])
 
 const usagePriority: Record<ChatUsagePart["source"], number> = {
@@ -316,7 +359,7 @@ function applyToolEvent(
       detail: `Tool outcome unknown: ${reason}.`,
     })
   }
-  const id = textField(payload.id)
+  const id = textField(payload.id) ?? textField(payload.call_id)
   if (!id) {
     return appendDiagnostic(message, {
       type: "diagnostic",
@@ -326,7 +369,7 @@ function applyToolEvent(
   }
 
   const current = findTool(message, id)
-  const name = textField(payload.name) ?? current?.name
+  const name = textField(payload.name) ?? textField(payload.tool) ?? current?.name
   if (!name) {
     return appendDiagnostic(message, {
       type: "diagnostic",
@@ -337,7 +380,7 @@ function applyToolEvent(
   const agent = textField(payload.agent) ?? current?.agent
   const server = textField(payload.server) ?? current?.server
 
-  if (event.kind === "tool.call") {
+  if (event.kind === "tool.call" || event.kind === "tool.started") {
     return upsertTool(message, {
       type: "tool",
       id,
@@ -782,6 +825,12 @@ function diagnosticDetail(event: StreamEvent): string {
       return `The task fell back to another model.`
     case "context.compacted":
       return "The context was compacted."
+    case "context.compaction_request_failed": {
+      const code = textField(payload.code)
+      return code
+        ? `Context compaction could not be requested: ${code}.`
+        : "Context compaction could not be requested."
+    }
     case "graph.interrupted":
       return "The graph paused at a checkpoint."
     case "graph.thread_bound":
@@ -798,6 +847,25 @@ function diagnosticDetail(event: StreamEvent): string {
     case "hook.after_task_failed": {
       const code = textField(payload.code)
       return code ? `After-task hook failed: ${code}.` : "After-task hook failed."
+    }
+    case "hook.denied": {
+      const eventName = textField(payload.event) ?? "hook"
+      const reason = textField(payload.reason)
+      return reason
+        ? `${eventName} hook blocked the action: ${reason}.`
+        : `${eventName} hook blocked the action.`
+    }
+    case "approval.unavailable": {
+      const reason = textField(payload.reason) ?? textField(payload.message)
+      return reason
+        ? `Approval is unavailable: ${reason}.`
+        : "Approval is unavailable."
+    }
+    case "user.question": {
+      const question = textField(payload.question)
+      return question
+        ? `Waiting for an answer: ${question}`
+        : "Waiting for an answer."
     }
     default:
       return `Unrecognized event "${event.kind}".`
@@ -1244,6 +1312,10 @@ export function applyStreamEvent(
 
   if (event.kind.startsWith("task.")) {
     return { message: applyTaskEvent(message, event), gap: null }
+  }
+
+  if (quietKinds.has(event.kind)) {
+    return { message, gap: null }
   }
 
   if (diagnosticKinds.has(event.kind)) {

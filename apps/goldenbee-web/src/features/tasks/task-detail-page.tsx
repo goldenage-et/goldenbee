@@ -12,7 +12,6 @@ import type {
   GatewayTask,
   StreamEvent,
   StreamPage,
-  TaskUsage,
 } from "@goldenbee/sdk"
 
 import { routeHref } from "@/app/router"
@@ -21,6 +20,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
 import { Spinner } from "@/components/ui/spinner"
+import { UsageFacts } from "@/features/usage/usage-facts"
 
 /** The read-only Gateway surface a task detail page needs. */
 export interface TaskDetailGateway {
@@ -137,40 +137,7 @@ function LoadFailure({
   )
 }
 
-function usageNumber(usage: TaskUsage | undefined, key: string): number | undefined {
-  const value = usage?.[key]
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
 
-function UsageFacts({ usage }: { usage: TaskUsage | undefined }) {
-  const rows: Array<[string, number | undefined]> = [
-    ["Prompt tokens", usageNumber(usage, "prompt_tokens")],
-    ["Candidate tokens", usageNumber(usage, "candidate_tokens")],
-    ["Estimated tokens", usageNumber(usage, "estimated_tokens")],
-    ["Estimated cost (micro-units)", usageNumber(usage, "estimated_cost_micros")],
-    ["Model calls", usageNumber(usage, "model_calls")],
-    ["Tool calls", usageNumber(usage, "tool_calls")],
-  ]
-  if (rows.every(([, value]) => value === undefined)) {
-    return (
-      <p className="text-meta text-muted-foreground">
-        The task projection reports no usage counters. Missing values are not
-        treated as zero.
-      </p>
-    )
-  }
-  return (
-    <dl>
-      {rows
-        .filter(([, value]) => value !== undefined)
-        .map(([label, value]) => (
-          <Fact key={label} label={label}>
-            <span className="tabular-nums">{value}</span>
-          </Fact>
-        ))}
-    </dl>
-  )
-}
 
 function EventRow({ event }: { event: StreamEvent }) {
   const facts = safeFacts(event.payload)

@@ -464,7 +464,7 @@ describe("chat view", () => {
     expect(gateway.submits[1]?.input).toBe("retry me")
   })
 
-  it("renders reasoning, tools, plan, and reported usage around the answer", async () => {
+  it("renders reasoning, tools, and plan around the answer without inline usage noise", async () => {
     const gateway = new ChatGatewayDouble()
     gateway.streams = [
       [
@@ -542,11 +542,10 @@ describe("chat view", () => {
     expect(screen.getByText("general · mcp")).toBeInTheDocument()
     expect(screen.getByText("Error code: tool.failed")).toBeInTheDocument()
     expect(screen.getByText("1 of 2 done")).toBeInTheDocument()
-    expect(screen.getByText("Prompt tokens")).toBeInTheDocument()
-    expect(screen.getByText("10")).toBeInTheDocument()
+    expect(screen.queryByText("Prompt tokens")).not.toBeInTheDocument()
     expect(
-      screen.getByText("42 micro-units (operator estimate)"),
-    ).toBeInTheDocument()
+      screen.queryByText("42 micro-units (operator estimate)"),
+    ).not.toBeInTheDocument()
   })
 
   it("shows a 202 unknown submission as uncertainty with no retry action", async () => {

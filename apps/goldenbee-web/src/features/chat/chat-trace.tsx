@@ -3,7 +3,6 @@ import {
   CircleAlertIcon,
   CircleCheckIcon,
   CircleHelpIcon,
-  GaugeIcon,
   LoaderCircleIcon,
   RotateCcwIcon,
   WrenchIcon,
@@ -28,7 +27,6 @@ import type {
   ChatReasoningPart,
   ChatTaskPart,
   ChatToolPart,
-  ChatUsagePart,
 } from "@/features/chat/chat-types"
 
 function traceStatus(
@@ -171,69 +169,7 @@ export function PlanView({ part }: { part: ChatPlanPart }) {
   )
 }
 
-function reportedNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
 
-function UsageRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="contents">
-      <dt>{label}</dt>
-      <dd className="text-foreground tabular-nums">{value}</dd>
-    </div>
-  )
-}
-
-export function UsageView({ part }: { part: ChatUsagePart }) {
-  const usage = part.usage as Record<string, unknown>
-  const promptTokens = reportedNumber(usage.prompt_tokens)
-  const candidateTokens = reportedNumber(usage.candidate_tokens)
-  const estimatedTokens = reportedNumber(usage.estimated_tokens)
-  const estimatedCost = reportedNumber(usage.estimated_cost_micros)
-  const modelCalls = reportedNumber(usage.model_calls)
-  const toolCalls = reportedNumber(usage.tool_calls)
-  const source =
-    part.source === "terminal"
-      ? "from task"
-      : part.source === "budget"
-        ? "budget policy"
-        : "task projection"
-
-  return (
-    <Trace>
-      <TraceLine>
-        <TraceIcon>
-          <GaugeIcon />
-        </TraceIcon>
-        <TraceTitle>Usage</TraceTitle>
-        <TraceDescription>{source}</TraceDescription>
-      </TraceLine>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 pl-6 text-xs text-muted-foreground">
-        {promptTokens !== undefined ? (
-          <UsageRow label="Prompt tokens" value={String(promptTokens)} />
-        ) : null}
-        {candidateTokens !== undefined ? (
-          <UsageRow label="Candidate tokens" value={String(candidateTokens)} />
-        ) : null}
-        {estimatedTokens !== undefined ? (
-          <UsageRow label="Estimated tokens" value={String(estimatedTokens)} />
-        ) : null}
-        {modelCalls !== undefined ? (
-          <UsageRow label="Model calls" value={String(modelCalls)} />
-        ) : null}
-        {toolCalls !== undefined ? (
-          <UsageRow label="Tool calls" value={String(toolCalls)} />
-        ) : null}
-        {estimatedCost !== undefined ? (
-          <UsageRow
-            label="Estimated cost"
-            value={`${estimatedCost} micro-units (operator estimate)`}
-          />
-        ) : null}
-      </dl>
-    </Trace>
-  )
-}
 
 export function TaskView({
   task,
