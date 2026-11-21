@@ -5,12 +5,14 @@
 //! `TeamSpec` and compile it with the native `team-tools` delegation support.
 //! No harness-owned orchestration interpreter is involved.
 
-use crate::agents::definition::{skill_index, AgentSpec};
+use crate::agents::definition::AgentSpec;
+use crate::agents::skills::{self, SkillDisclosure};
 use crate::agents::{workflow, SkillAsset};
 use crate::data::memory::{preload_callback, NativeMemory};
 use crate::execution::plugins::AgentCallbacks;
 use crate::execution::providers::{FallbackReporter, ProviderRegistry, ProviderRequirements};
 use crate::mcp::McpRegistry;
+use crate::tools::ToolKernel;
 use crate::worker::WorkerResult;
 use adk_agent::team::{
     RelationshipKind, TeamArchitectureTemplate, TeamBudget, TeamFailurePolicy, TeamPolicy, TeamSpec,
@@ -43,12 +45,14 @@ pub(crate) fn build_profile_agent(
     agents: &BTreeMap<String, Arc<dyn Agent>>,
     specs: &BTreeMap<String, AgentSpec>,
     skills: &[SkillAsset],
+    disclosure: &SkillDisclosure,
     effect_tools: &BTreeSet<String>,
     callbacks: Option<&(dyn Fn() -> AgentCallbacks + Send + Sync)>,
     memory: Option<&Arc<NativeMemory>>,
     providers: &Arc<ProviderRegistry>,
     reporter: Option<FallbackReporter>,
     mcp: Option<&Arc<McpRegistry>>,
+    kernel: Option<&ToolKernel>,
 ) -> WorkerResult<Arc<dyn Agent>> {
     if revision.members.is_empty() {
         return Err(ApiError::new(
@@ -124,9 +128,18 @@ pub(crate) fn build_profile_agent(
             } else {
                 &revision.skills
             };
-            if let Some(index) = skill_index(skills, selected_skills)? {
-                builder = builder.with_skills(index);
+            let mut skill_tools = BTreeMap::new();
+            for tool in &spec.tools {
+                skill_tools.insert(tool.name().to_string(), tool.clone());
             }
+            builder = skills::bind(
+                builder,
+                skills,
+                selected_skills,
+                disclosure,
+                skill_tools,
+                kernel,
+            )?;
             for tool in &spec.tools {
                 if effect_tools.contains(tool.name()) {
                     builder = builder.require_tool_confirmation(tool.name().to_string());
@@ -181,10 +194,12 @@ pub(crate) fn build_profile_agent(
             &model,
             leaves,
             skills,
+            disclosure,
             &coordinator_skills,
             max_iterations,
             callbacks,
             memory,
+            kernel,
         ),
         Some(_) => workflow::compile_workflow(revision, leaves, max_iterations),
         None => Err(ApiError::new(
@@ -200,10 +215,12 @@ fn build_team(
     model: &Arc<dyn adk_rust::Llm>,
     leaves: Vec<Arc<dyn Agent>>,
     skills: &[SkillAsset],
+    disclosure: &SkillDisclosure,
     coordinator_skills: &[String],
     max_iterations: u32,
     callbacks: Option<&(dyn Fn() -> AgentCallbacks + Send + Sync)>,
     memory: Option<&Arc<NativeMemory>>,
+    kernel: Option<&ToolKernel>,
 ) -> WorkerResult<Arc<dyn Agent>> {
     let mut instruction = revision.instruction.clone();
     instruction.push_str(
@@ -214,9 +231,14 @@ fn build_team(
         .instruction(instruction)
         .model(model.clone())
         .max_iterations(max_iterations);
-    if let Some(index) = skill_index(skills, coordinator_skills)? {
-        builder = builder.with_skills(index);
-    }
+    builder = skills::bind(
+        builder,
+        skills,
+        coordinator_skills,
+        disclosure,
+        BTreeMap::new(),
+        kernel,
+    )?;
     let agent_callbacks = callbacks_with_memory(callbacks, memory, COORDINATOR)?;
     builder = agent_callbacks.apply(builder);
     let coordinator = Arc::new(builder.build().map_err(|error| {

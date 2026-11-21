@@ -9,6 +9,7 @@
 
 pub mod artifact;
 pub mod backup;
+pub mod command;
 pub mod control;
 pub mod delegation;
 pub mod diagnostics;
@@ -40,6 +41,10 @@ pub use artifact::{Artifact, ArtifactGrant};
 pub use backup::{
     BackupApproval, BackupArtifact, BackupExecution, BackupFile, BackupManifest, BackupProfile,
     BackupRelease, BackupTask, GatewayBackup, WorkerBackup, BACKUP_FORMAT, BACKUP_SCHEMA,
+};
+pub use command::{
+    kinds as command_kinds, CommandArgument, CommandDescriptor, CommandRequest, CommandResponse,
+    SkillDescriptor,
 };
 pub use control::{
     ControlAuditEntry, ControlCommand, ControlCommandRequest, ControlCommandResponse,

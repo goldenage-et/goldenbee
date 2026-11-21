@@ -74,6 +74,8 @@ pub(super) struct Capabilities {
     capabilities: Vec<common::CapabilityDescriptor>,
     /// Installed executable functionality declared by the package manifest.
     installed_capabilities: Vec<common::CapabilityDescriptor>,
+    /// Discoverable runtime and Worker-defined commands.
+    commands: Vec<common::CommandDescriptor>,
     /// Package-declared browser capability, when installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     browser: Option<BrowserCapability>,
@@ -129,6 +131,10 @@ pub(super) async fn capabilities(
         artifact_max_bytes: crate::data::artifacts::MAX_ARTIFACT_BYTES,
         capabilities: state.runtime.config().capabilities.clone(),
         installed_capabilities: state.manifest.capabilities.clone(),
+        commands: match &state.commands {
+            Some(commands) => commands.descriptors().to_vec(),
+            None => Vec::new(),
+        },
         browser,
     }))
 }

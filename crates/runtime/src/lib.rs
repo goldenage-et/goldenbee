@@ -7,6 +7,7 @@
 
 mod agents;
 pub mod browser;
+pub(crate) mod commands;
 mod core;
 mod data;
 mod execution;

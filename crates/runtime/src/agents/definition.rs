@@ -175,6 +175,9 @@ pub struct AgentDefinition {
 #[derive(Clone)]
 pub(crate) struct AgentSpec {
     pub(crate) description: String,
+    /// Resolved model reference from the definition. Commands may override it
+    /// only with another model the Worker already declares.
+    pub(crate) model: String,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
     pub(crate) toolsets: Vec<Arc<dyn Toolset>>,
     /// MCP connection ids declared by this agent. They are resolved from the

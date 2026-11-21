@@ -161,6 +161,9 @@ pub struct RuntimeConfig {
     pub tokens: BTreeMap<String, Principal>,
     /// Registered binary capabilities.
     pub capabilities: Vec<CapabilityDescriptor>,
+    /// Internal command routes admitted by this revision but not advertised as
+    /// capabilities. Every route resolves to a prebuilt, narrowed command agent.
+    pub routing_agents: std::collections::BTreeSet<String>,
     /// Instance grants. A validated reload narrows these for future profiles.
     pub instance_grants: Arc<RwLock<Vec<String>>>,
     /// Discovered native skill names available to profiles.
@@ -287,6 +290,7 @@ impl RuntimeConfig {
             data_dir: data_dir.into(),
             tokens,
             capabilities,
+            routing_agents: std::collections::BTreeSet::new(),
             instance_grants: Arc::new(RwLock::new(vec!["*".into()])),
             skills: Vec::new(),
             max_active: 4,

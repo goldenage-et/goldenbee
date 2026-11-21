@@ -9,10 +9,10 @@
 //! plugins, launcher, and server. This module adds configuration resolution,
 //! reference checking, immutable snapshots, and Worker lifecycle hooks.
 
-mod agent;
-mod assets;
+pub(crate) mod agent;
+pub(crate) mod assets;
 mod cli;
-mod config;
+pub(crate) mod config;
 mod gateway;
 mod hooks;
 mod instance;
@@ -155,6 +155,8 @@ pub struct Worker {
     plugins: Vec<Plugin>,
     knowledge: bool,
     features: BTreeSet<String>,
+    /// Package declares support for operator-selected progressive disclosure.
+    progressive_skills: bool,
     browser: Option<String>,
     pub(crate) duplicate_ids: BTreeSet<String>,
 }
@@ -190,6 +192,7 @@ impl Worker {
                 .into_iter()
                 .map(String::from)
                 .collect(),
+            progressive_skills: false,
             browser: None,
             duplicate_ids: BTreeSet::new(),
         }
@@ -452,8 +455,16 @@ impl Worker {
         self
     }
 
-    /// Enable the package's runtime-owned native knowledge tools.
-    ///
+    /// Declare that this package supports operator-selected progressive skill
+    /// disclosure. Configuration may select `progressive`; it cannot create the
+    /// mechanism for a package that did not declare it here.
+    pub fn progressive_skills(mut self) -> Self {
+        self.progressive_skills = true;
+        self.features.insert("skills-progressive-disclosure".into());
+        self
+    }
+
+    /// Enable the package's runtime-owned native knowledge tools.    ///
     /// The tools read and write the installed native graph store. A profile can
     /// select an agent that references them, but it cannot add a tool the
     /// package did not declare here.
@@ -652,6 +663,12 @@ impl Worker {
             }
         }
         settings.kernel = Some(self.kernel.clone());
+        if settings.file.skills.disclosure == "progressive" && !self.progressive_skills {
+            return Err(ApiError::new(
+                "config.capability_not_declared",
+                "skills.disclosure = \"progressive\" requires a package that declares progressive skill disclosure",
+            ));
+        }
         self.kernel
             .configure(ToolKernelConfig {
                 workspace: (!self.builtin_tools.is_empty()).then(|| settings.tool_workspace()),
@@ -825,6 +842,7 @@ impl Worker {
                 providers,
                 effect_approvals: self.effect_approvals.clone(),
                 max_parallel: settings.file.tools.max_parallel.max(1),
+                kernel: self.kernel.clone(),
             },
         )?;
         let executor = Arc::new(executor);
@@ -931,6 +949,7 @@ struct ExecutorServices {
     providers: Arc<ProviderRegistry>,
     effect_approvals: BTreeMap<String, crate::EffectApprovalPolicy>,
     max_parallel: usize,
+    kernel: crate::tools::ToolKernel,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -951,10 +970,12 @@ fn build_executor(
         providers,
         effect_approvals,
         max_parallel,
+        kernel,
     } = services;
     let agents: Vec<(String, Arc<dyn Agent>)> = assets
         .agents
         .iter()
+        .chain(assets.command_agents.iter())
         .map(|(id, agent)| (id.clone(), agent.clone()))
         .collect();
     let specs = assets.specs.clone();
@@ -962,13 +983,21 @@ fn build_executor(
         .specs
         .iter()
         .map(|(id, spec)| (id.clone(), spec.mcp_servers.clone()))
+        .chain(
+            assets
+                .command_mcp
+                .iter()
+                .map(|(id, servers)| (id.clone(), servers.clone())),
+        )
         .collect();
     let registered = assets.agents.clone();
     let skills = assets.skills.clone();
+    let skill_disclosure = assets.skill_disclosure.clone();
     let profile_memory = memory.clone();
     let profile_mcp = mcp.clone();
     let effect_tools: BTreeSet<String> = effect_approvals.keys().cloned().collect();
     let profile_effect_tools = effect_tools.clone();
+    let profile_kernel = kernel.clone();
     let builder: crate::execution::profile::ProfileAgentBuilder =
         Arc::new(move |revision, _default_agent, reporter| {
             build_profile_agent(
@@ -976,12 +1005,14 @@ fn build_executor(
                 &registered,
                 &specs,
                 &skills,
+                &skill_disclosure,
                 &profile_effect_tools,
                 callbacks.as_deref(),
                 profile_memory.as_ref(),
                 &providers,
                 reporter,
                 Some(&profile_mcp),
+                Some(&profile_kernel),
             )
         });
     let mut executor = NativeExecutor::with_plugins(app_name, agents, sessions, plugins)?
@@ -991,7 +1022,8 @@ fn build_executor(
         .with_mcp(mcp, declarations)
         .with_remote_mcp(remote_mcp)
         .with_effect_approvals(effect_approvals)
-        .with_tool_concurrency(max_parallel);
+        .with_tool_concurrency(max_parallel)
+        .with_tool_kernel(kernel);
     if let Some(memory) = memory {
         executor = executor.with_memory(memory);
     }

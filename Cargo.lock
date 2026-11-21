@@ -368,12 +368,14 @@ checksum = "ff7555fee150a1504671e7de726610c13e8cf77d780cabd177519e852b4a5a51"
 dependencies = [
  "adk-core",
  "adk-plugin",
+ "async-trait",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
  "walkdir",
 ]

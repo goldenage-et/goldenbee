@@ -11,6 +11,7 @@ pub mod a2a;
 mod approvals;
 mod artifacts;
 mod auth;
+mod commands;
 mod control;
 mod diagnostics;
 mod error;
@@ -44,6 +45,8 @@ pub struct WorkerState {
     pub a2a_durable: bool,
     /// Optional package-declared browser capability.
     pub browser: Option<Arc<BrowserController>>,
+    /// Active command registry for this asset revision.
+    pub(crate) commands: Option<Arc<crate::commands::CommandRegistry>>,
 }
 
 impl WorkerState {
@@ -54,6 +57,7 @@ impl WorkerState {
             manifest,
             a2a_durable: false,
             browser: None,
+            commands: None,
         }
     }
 
@@ -68,6 +72,12 @@ impl WorkerState {
         self.browser = browser;
         self
     }
+
+    /// Attach the active command registry for this asset revision.
+    pub(crate) fn with_commands(mut self, commands: Arc<crate::commands::CommandRegistry>) -> Self {
+        self.commands = Some(commands);
+        self
+    }
 }
 
 /// Harness management routes. Merge these with the native ADK router, then
@@ -78,6 +88,11 @@ pub fn api_router(state: WorkerState) -> Router {
         .route("/v1/status", get(health::status))
         .route("/v1/diagnostics", get(diagnostics::diagnostics))
         .route("/v1/capabilities", get(health::capabilities))
+        .route("/v1/commands", get(commands::list))
+        .route(
+            "/v1/commands/{name}",
+            get(commands::get).post(commands::invoke),
+        )
         .route("/v1/drain", post(lifecycle::drain))
         .route("/v1/tasks", get(tasks::list).post(tasks::submit))
         .route("/v1/tasks/{id}", get(tasks::task))
