@@ -13,12 +13,12 @@ path = "src/main.rs"
 [dependencies]
 common = { path = "../../crates/common" }
 crossterm = "0.29"
-nix = { version = "0.31", features = ["term"] }
+nix = { version = "0.32", features = ["term"] }
 unicode-width = "0.2"
 sdk = { path = "../../crates/sdk" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tokio = { workspace = true }
 
 [dev-dependencies]

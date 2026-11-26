@@ -29,9 +29,9 @@ adk-agent = { version = "=2.3.0", default-features = false, features = ["team-to
 # The A2A v1 extension point (`TaskStore`) and its wire types live in
 # a2a-protocol-types. Pin the exact version adk-server 2.3.0 resolves so the
 # adapter implements the same trait and serializes the same wire values.
-a2a-protocol-types = "=0.12.1"
+a2a-protocol-types = "=0.16.0"
 # Dedicated per-instance task store; sqlx 0.8.6 is already pinned by adk-memory.
-sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "=0.9.1", default-features = false, features = ["runtime-tokio", "sqlite"] }
 adk-artifact = "=2.3.0"
 adk-memory = { version = "=2.3.0", default-features = false, features = ["sqlite-memory", "graph-memory"] }
 adk-tool = { version = "=2.3.0", default-features = false, features = ["memory-tools", "mcp", "http-transport"] }
@@ -47,7 +47,7 @@ adk-runner = { version = "=2.3.0", default-features = false, features = ["plugin
 # inspect native valid-time history.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-toml = "0.8"
+toml = "1.2"
 sha2.workspace = true
 hmac.workspace = true
 base64.workspace = true
@@ -64,7 +64,7 @@ reqwest.workspace = true
 reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 chrono.workspace = true
 tokio-util = { version = "0.7", features = ["rt"] }
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 tempfile = { workspace = true }
