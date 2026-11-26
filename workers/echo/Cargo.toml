@@ -21,7 +21,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 base64.workspace = true
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 install = { path = "../../crates/install" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 tempfile = { workspace = true }
